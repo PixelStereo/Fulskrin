@@ -6,6 +6,7 @@
 #include <QThread>
 #include <QWindow>
 #include <atomic>
+#include <functional>
 
 #import <AppKit/AppKit.h>
 #import <IOSurface/IOSurface.h>
@@ -152,13 +153,24 @@ std::shared_ptr<MetalOutput> MetalOutput::forWindow(QWindow *w)
     id<MTLDevice> device = sharedDevice();
     if (!w || !device || w->surfaceType() != QSurface::MetalSurface) return nullptr;
     NSView *view = (__bridge NSView *)reinterpret_cast<void *>(w->winId());
-    if (!view || ![view.layer isKindOfClass:[CAMetalLayer class]]) {
+    // Qt's own layer, or under the container layer Qt puts around it
+    CAMetalLayer *metal = nil;
+    std::function<void(CALayer *)> find = [&](CALayer *l) {
+        if (!l || metal) return;
+        if ([l isKindOfClass:[CAMetalLayer class]]) {
+            metal = (CAMetalLayer *)l;
+            return;
+        }
+        for (CALayer *c in l.sublayers) find(c);
+    };
+    find(view.layer);
+    if (!metal) {
         qWarning("Metal output: the window has no Metal layer (%s)", view ? view.layer.className.UTF8String : "no view");
         return nullptr;
     }
     std::shared_ptr<MetalOutput> out(new MetalOutput);
     D &d = *out->d;
-    d.layer = (CAMetalLayer *)view.layer;
+    d.layer = metal;
     d.layer.device = device;
     d.layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     d.layer.framebufferOnly = YES;
