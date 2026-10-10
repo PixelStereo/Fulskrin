@@ -64,7 +64,7 @@ struct MetalOutput::D {
     id<MTLCommandQueue> queue = nil;
     id<MTLRenderPipelineState> pipeline = nil;
     id<MTLSamplerState> sampler = nil;
-    Slot slots[3];
+    Slot ring[3];
     int next = 0;
     QSize drawable;
 
@@ -133,7 +133,7 @@ MetalOutput::MetalOutput() : d(std::make_unique<D>()) {}
 
 MetalOutput::~MetalOutput()
 {
-    for (Slot &s : d->slots) d->releaseSlot(s, nullptr); // the OpenGL side went with releaseGl
+    for (Slot &s : d->ring) d->releaseSlot(s, nullptr); // the OpenGL side went with releaseGl
 }
 
 std::shared_ptr<MetalOutput> MetalOutput::forWindow(QWindow *w)
@@ -179,7 +179,7 @@ bool MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool
     if (!ctx || !framebuffer || w <= 0 || h <= 0 || pixels.isEmpty()) return false;
     auto *f = ctx->extraFunctions();
     @autoreleasepool {
-        Slot &s = d->slots[d->next];
+        Slot &s = d->ring[d->next];
         d->waitIdle(s);
         if (!d->ensure(s, w, h, f)) return false;
         d->next = (d->next + 1) % 3;
@@ -220,5 +220,5 @@ bool MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool
 void MetalOutput::releaseGl()
 {
     QOpenGLContext *ctx = QOpenGLContext::currentContext();
-    for (Slot &s : d->slots) d->releaseSlot(s, ctx ? ctx->extraFunctions() : nullptr);
+    for (Slot &s : d->ring) d->releaseSlot(s, ctx ? ctx->extraFunctions() : nullptr);
 }
