@@ -221,6 +221,21 @@ bool Engine::initialize(QString *err)
         if (err) *err = QStringLiteral("Internal shaders: ") + log;
         return false;
     }
+    // A crossfade between two pictures (a missing one: transparent), mixed in the shader rather than by blending
+    m_fadeProgram = compileProgram(quadVs,
+                                   "#version 330 core\nuniform sampler2D u_a; uniform sampler2D u_b; uniform vec3 u_k;\n"
+                                   "in vec2 v_uv; out vec4 o;\n"
+                                   "void main(){ vec4 a = u_k.y > 0.5 ? texture(u_a, v_uv) : vec4(0.0);\n"
+                                   "  vec4 b = u_k.z > 0.5 ? texture(u_b, v_uv) : vec4(0.0);\n"
+                                   "  o = mix(a, b, u_k.x); }\n",
+                                   &log);
+    if (!m_fadeProgram) {
+        if (err) *err = QStringLiteral("Internal shaders: ") + log;
+        return false;
+    }
+    m_fadeALoc = f->glGetUniformLocation(m_fadeProgram, "u_a");
+    m_fadeBLoc = f->glGetUniformLocation(m_fadeProgram, "u_b");
+    m_fadeKLoc = f->glGetUniformLocation(m_fadeProgram, "u_k");
     m_maskInLoc = f->glGetUniformLocation(m_maskProgram, "u_in");
     m_maskFxLoc = f->glGetUniformLocation(m_maskProgram, "u_fx");
     m_maskMaskLoc = f->glGetUniformLocation(m_maskProgram, "u_mask");
@@ -426,7 +441,8 @@ void Engine::releaseAll()
     for (RenderTarget &o : m_output) o.destroy();
     m_previewTarget.destroy();
     m_videoConv.release();
-    for (GLuint p : {m_blitProgram, m_compProgram, m_diffProgram, m_presentProgram, m_flipProgram, m_prepProgram, m_maskProgram})
+    for (GLuint p : {m_blitProgram, m_compProgram, m_diffProgram, m_presentProgram, m_flipProgram, m_prepProgram, m_maskProgram,
+                     m_fadeProgram})
         if (p) f->glDeleteProgram(p);
     GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};
     f->glDeleteBuffers(3, bufs);
@@ -435,6 +451,7 @@ void Engine::releaseAll()
     f->glDeleteTextures(1, &m_blackTex);
     m_quadVao = m_meshVao = 0;
     m_blitProgram = m_compProgram = m_diffProgram = m_presentProgram = m_flipProgram = m_prepProgram = m_maskProgram = 0;
+    m_fadeProgram = 0;
 }
 
 // ---------------------------------------------------------------------------

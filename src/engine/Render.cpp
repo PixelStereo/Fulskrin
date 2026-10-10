@@ -343,23 +343,20 @@ void Engine::renderTransition(Layer &l, SourceTransition &t, const IsfRenderCont
         if (IsfInput *in = t.shader->input(QStringLiteral("progress"))) in->fValue = p * p * (3 - 2 * p);
         t.shader->render(rc, 0, 0, 0, t.target, w, h);
     } else {
-        // A crossfade: the outgoing picture, then the incoming one over it at the progress
+        // A crossfade: the outgoing picture to the incoming one at the progress
         auto f = gl();
-        t.target.clear(0, 0, 0, 0);
-        if (a) blit(a, t.target);
-        if (b) {
-            t.target.bind();
-            f->glEnable(GL_BLEND);
-            const float k = float(p * p * (3 - 2 * p));
-            f->glBlendColor(0, 0, 0, k);
-            f->glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA);
-            f->glUseProgram(m_blitProgram);
-            f->glActiveTexture(GL_TEXTURE0);
-            f->glBindTexture(GL_TEXTURE_2D, b);
-            f->glUniform1i(m_blitTexLoc, 0);
-            drawQuad();
-            f->glDisable(GL_BLEND);
-        }
+        t.target.bind();
+        f->glDisable(GL_BLEND);
+        f->glUseProgram(m_fadeProgram);
+        f->glActiveTexture(GL_TEXTURE0);
+        f->glBindTexture(GL_TEXTURE_2D, a);
+        f->glUniform1i(m_fadeALoc, 0);
+        f->glActiveTexture(GL_TEXTURE1);
+        f->glBindTexture(GL_TEXTURE_2D, b);
+        f->glUniform1i(m_fadeBLoc, 1);
+        f->glUniform3f(m_fadeKLoc, float(p * p * (3 - 2 * p)), a ? 1.0f : 0.0f, b ? 1.0f : 0.0f);
+        drawQuad();
+        f->glActiveTexture(GL_TEXTURE0);
     }
     l.finalTex = t.target.tex;
     l.finalW = w;

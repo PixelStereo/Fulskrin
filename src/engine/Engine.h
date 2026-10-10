@@ -724,4 +724,6 @@ private:
     GLint m_flipTexLoc = -1;
     GLuint m_maskProgram = 0; // an effect's result over its input, through a mask
     GLint m_maskInLoc = -1, m_maskFxLoc = -1, m_maskMaskLoc = -1, m_maskInvertLoc = -1;
+    GLuint m_fadeProgram = 0; // a crossfade of two pictures (a source transition without a shader)
+    GLint m_fadeALoc = -1, m_fadeBLoc = -1, m_fadeKLoc = -1;
 };

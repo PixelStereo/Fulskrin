@@ -402,8 +402,8 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
     };
     const Case cases[] = {
         {"fmt_yuv420p.mp4", "yuv420p", false},       {"fmt_yuv420p_odd.nut", "yuv420p", false},
-        {"fmt_yuvj420p.mov", "yuvj420p", false},     {"fmt_yuv422p10.mov", "yuv422p10le", false},
-        {"fmt_yuva444p10.mov", "yuva444p12le", true}, {"fmt_nv12.nut", "nv12", false},
+        {"fmt_yuvj420p.mov", "yuvj420p", false},     {"fmt_yuv422p10.mov", "yuv422p10le|p210le", false},
+        {"fmt_yuva444p10.mov", "yuva444p12le|ayuv64le", true}, {"fmt_nv12.nut", "nv12", false},
         {"fmt_yuv444p.nut", "yuv444p", false},
         {"fmt_gbrp10le.nut", "gbrp10le", false},     {"fmt_gray.nut", "gray", false},
         {"fmt_gray16le.nut", "gray16le", false},     {"fmt_bgr0.nut", "bgr0", false},
@@ -420,7 +420,9 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         const Diff d = compare(gpu, ref, c.alpha);
         std::printf("      %-22s %-34s max %3d  mean %.2f  staged %llu\n", c.file, qPrintable(desc), d.max, d.mean,
                     (unsigned long long)staged);
-        VCHECK(d.sameSize && desc.startsWith(QString::fromUtf8(c.layout)));
+        // The layout the decoder gives (FFmpeg versions differ: ProRes is planar, or packed since FFmpeg 8)
+        const QStringList layouts = QString::fromUtf8(c.layout).split('|');
+        VCHECK(d.sameSize && std::any_of(layouts.begin(), layouts.end(), [&](const QString &l) { return desc.startsWith(l); }));
         VCHECK(d.max <= 8 && d.mean <= 1.5);
         VCHECK(staged >= 1); // frames came through upload buffers
     }
