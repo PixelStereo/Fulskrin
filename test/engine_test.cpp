@@ -154,6 +154,22 @@ int main(int argc, char **argv)
         CHECK(std::abs(m.bounds().width() - to.width()) < 1e-9 && std::abs(m.bounds().center().x() - to.center().x()) < 1e-9);
     }
 
+    { // Only a Fulskrin project is opened, and the one open stays when another file is refused
+        const int before = e.layerCount();
+        auto write = [&](const QString &name, const QByteArray &json) {
+            QFile f(tmp + "/" + name);
+            f.open(QIODevice::WriteOnly);
+            f.write(json);
+            return tmp + "/" + name;
+        };
+        QString why;
+        CHECK(!e.loadProject(write("empty.fulskrin", "{}"), nullptr, &why) && why.startsWith("Not a Fulskrin project"));
+        CHECK(!e.loadProject(write("other.json", R"({"app":"Other","layers":[]})"), nullptr, &why));
+        CHECK(!e.loadProject(write("future.fulskrin", R"({"app":"Fulskrin","format_version":99,"layers":[]})"), nullptr, &why) &&
+              why.contains("format 99"));
+        CHECK(e.layerCount() == before);
+    }
+
     // 2. Video: seeking and end of playback without loop
     e.newProject();
     int v = e.addLayer("v");
