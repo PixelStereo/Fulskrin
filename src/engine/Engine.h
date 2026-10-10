@@ -14,6 +14,7 @@
 //    which runs it on the render thread. These tasks never take the lock: it is safe to wait
 //    on a task while holding the lock, with no risk of deadlock.
 
+#include "PresentMetal.h"
 #include "AudioOutput.h"
 #include "IsfLibrary.h"
 #include "Layer.h"
@@ -457,6 +458,10 @@ public:
 
     // --- Output: window in which the render thread presents the composition
     // One window per viewport; the render thread presents the viewport's picture into it
+    // macOS: the output windows are shown through Metal (their surface type must then be Metal), the engine rendering
+    // on its own thread; elsewhere (or without Metal) through OpenGL
+    static bool metalOutput() { return MetalOutput::available(); }
+    quint64 windowFrames(quint64 viewport); // pictures the viewport's window was given (tests)
     void setViewportWindow(quint64 viewport, QWindow *w);
     void setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize);
     GLuint viewportTexture(quint64 viewport) const; // last finished picture of a viewport (shared context)
@@ -580,6 +585,8 @@ private:
         QSize pixels;
         QOpenGLContext *context = nullptr; // created on first presentation (render thread)
         GLuint vao = 0;                    // vertex arrays are not shared between contexts
+        std::shared_ptr<MetalOutput> metal; // macOS: the window shown through Metal instead (PresentMetal.h)
+        quint64 presented = 0;              // pictures it was given
     };
     void releaseOutputSurface(OutputSurface &o);
     void present(const Layer &viewport, OutputSurface &out);

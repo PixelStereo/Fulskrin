@@ -2514,13 +2514,32 @@ int main(int argc, char **argv)
     };
     // macOS: Qt renders OpenGL on the main thread only (AppKit), so the engine renders on the UI thread there and
     // what needs the render thread is left to the other platforms
-    if (!QOpenGLContext::supportsThreadedOpenGL()) {
+    if (!QOpenGLContext::supportsThreadedOpenGL() && !Engine::metalOutput()) {
         std::printf("SKIP render thread, sound and threaded video: no OpenGL on another thread on this platform\n");
     } else {
     e.newProject();
     CHECK(e.start());
     CHECK(e.isThreaded());
     CHECK(waitFrames(5));
+    { // A window gets the viewport's picture from the render thread: through Metal on macOS, OpenGL elsewhere
+        QWindow w;
+        w.setSurfaceType(Engine::metalOutput() ? QSurface::MetalSurface : QSurface::OpenGLSurface);
+        if (w.surfaceType() == QSurface::OpenGLSurface) w.setFormat(QSurfaceFormat::defaultFormat());
+        w.setGeometry(100, 100, 160, 90);
+        w.create();
+        w.show();
+        QElapsedTimer t;
+        t.start();
+        while (!w.isExposed() && t.elapsed() < 3000) QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        const quint64 vp = e.mainViewportId();
+        e.setViewportWindow(vp, &w);
+        e.setViewportExposed(vp, true, w.size() * w.devicePixelRatio());
+        CHECK(waitFrames(10));
+        std::printf("       window frames: %llu (%s)\n", (unsigned long long)e.windowFrames(vp),
+                    Engine::metalOutput() ? "Metal" : "OpenGL");
+        CHECK(e.windowFrames(vp) >= 5);
+        e.setViewportWindow(vp, nullptr);
+    }
     {
         // The main thread "blocks": output keeps being produced.
         const quint64 before = e.frameCount();
