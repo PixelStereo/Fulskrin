@@ -13,8 +13,9 @@
 
 OutputWindow::OutputWindow(Engine *engine, quint64 viewport) : m_engine(engine), m_viewport(viewport)
 {
-    setSurfaceType(QSurface::OpenGLSurface);
-    setFormat(QSurfaceFormat::defaultFormat());
+    // macOS: shown through Metal by the render thread; elsewhere through OpenGL
+    setSurfaceType(Engine::metalOutput() ? QSurface::MetalSurface : QSurface::OpenGLSurface);
+    if (surfaceType() == QSurface::OpenGLSurface) setFormat(QSurfaceFormat::defaultFormat());
     setTitle(QStringLiteral("Fulskrin — Output"));
     create();
     m_engine->setViewportWindow(m_viewport, this);

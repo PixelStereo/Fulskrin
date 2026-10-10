@@ -115,6 +115,16 @@ target_include_directories(fulskrin_engine PRIVATE "${bcdec_SOURCE_DIR}")
 option(FULSKRIN_SYPHON "Syphon publishing (macOS)" ON)
 option(FULSKRIN_SPOUT "Spout publishing (Windows)" ON)
 
+# macOS: the output windows shown through Metal (OpenGL into a window only works on the main thread there)
+if(APPLE)
+  enable_language(OBJCXX)
+  target_sources(fulskrin_engine PRIVATE src/engine/PresentMetal.mm)
+  set_source_files_properties(src/engine/PresentMetal.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_compile_definitions(fulskrin_engine PRIVATE GL_SILENCE_DEPRECATION)
+  target_link_libraries(fulskrin_engine PRIVATE "-framework Metal" "-framework QuartzCore" "-framework IOSurface"
+    "-framework AppKit")
+endif()
+
 if(APPLE AND FULSKRIN_SYPHON)
   enable_language(C OBJC OBJCXX) # Syphon: C and Objective-C sources
   FetchContent_Declare(syphon

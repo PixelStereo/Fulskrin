@@ -88,6 +88,7 @@ bool Engine::initialize(QString *err)
         return false;
     }
     auto f = gl();
+    m_glRenderer = QString::fromLatin1(reinterpret_cast<const char *>(f->glGetString(GL_RENDERER)));
     qInfo().noquote() << "OpenGL" << reinterpret_cast<const char *>(f->glGetString(GL_VERSION)) << "-"
                       << reinterpret_cast<const char *>(f->glGetString(GL_RENDERER));
 
@@ -294,7 +295,9 @@ bool Engine::initialize(QString *err)
 bool Engine::start()
 {
     if (!m_initialized || m_threaded) return m_threaded;
-    if (!QOpenGLContext::supportsThreadedOpenGL()) {
+    // macOS never offers OpenGL in a window from another thread: the engine still renders on its own thread (into its
+    // framebuffers), the windows being shown through Metal
+    if (!QOpenGLContext::supportsThreadedOpenGL() && !metalOutput()) {
         qWarning("Platform does not support OpenGL rendering on a separate thread: rendering on the UI thread.");
         return false;
     }
@@ -459,13 +462,20 @@ void Engine::releaseAll()
 // ---------------------------------------------------------------------------
 void Engine::setViewportWindow(quint64 viewport, QWindow *w)
 {
-    runGl([this, viewport, w] {
+    // Its Metal layer is taken here, on the main thread (AppKit)
+    std::shared_ptr<MetalOutput> metal = MetalOutput::forWindow(w);
+    runGl([this, viewport, w, metal] {
         auto it = m_outWindows.find(viewport);
         if (it != m_outWindows.end() && it->second.window != w) {
             releaseOutputSurface(it->second); // before the window goes
             m_outWindows.erase(it);
         }
-        if (w && !m_outWindows.count(viewport)) m_outWindows[viewport] = OutputSurface{w, false, {}};
+        if (w && !m_outWindows.count(viewport)) {
+            OutputSurface o;
+            o.window = w;
+            o.metal = metal;
+            m_outWindows[viewport] = std::move(o);
+        }
     });
 }
 
@@ -482,6 +492,12 @@ void Engine::setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize)
 // The window's context goes; its vertex array goes with it
 void Engine::releaseOutputSurface(OutputSurface &o)
 {
+    if (o.metal) { // its shared surfaces, with the engine's context current
+        m_context->makeCurrent(m_surface);
+        m_currentSurface = m_surface;
+        o.metal->releaseGl();
+        o.metal.reset();
+    }
     if (o.context && o.vao && o.window && o.context->makeCurrent(o.window)) {
         o.context->extraFunctions()->glDeleteVertexArrays(1, &o.vao);
         o.context->doneCurrent();
@@ -559,10 +575,23 @@ bool Engine::presentViewports()
             if (it != m_outWindows.end() && it->second.window && it->second.exposed) shown.push_back({l.get(), &it->second});
         }
     }
-    bool any = false;
+    bool any = false, glUsed = false;
     for (size_t k = 0; k < shown.size(); ++k) {
         const Layer *vp = shown[k].first;
         OutputSurface &out = *shown[k].second;
+        const bool last = k + 1 == shown.size();
+        if (out.metal) { // drawn by Metal from here, with the engine's context current
+            const RenderTarget &pic = vp->vpOut[vp->vpPublished.load()];
+            if (out.metal->present(pic.fbo, pic.w, pic.h, out.pixels, last)) {
+                any = true;
+                ++out.presented;
+            }
+            continue;
+        }
+#ifdef Q_OS_MACOS
+        if (m_threaded) continue; // OpenGL into a window: the main thread only
+#endif
+        glUsed = true;
         if (!out.context) {
             out.context = new QOpenGLContext;
             out.context->setShareContext(m_context);
@@ -576,15 +605,26 @@ bool Engine::presentViewports()
         }
         if (!out.context->makeCurrent(out.window)) continue;
         present(*vp, out);
-        setSwapInterval(out.context, k + 1 == shown.size() ? 1 : 0); // only the last one waits for the screen
+        setSwapInterval(out.context, last ? 1 : 0); // only the last one waits for the screen
         out.context->swapBuffers(out.window);
         any = true;
+        ++out.presented;
     }
-    if (!shown.empty()) {
+    if (glUsed) {
         m_context->makeCurrent(m_surface);
         m_currentSurface = m_surface;
     }
     return any;
+}
+
+quint64 Engine::windowFrames(quint64 viewport)
+{
+    quint64 n = 0;
+    runGl([this, viewport, &n] {
+        const auto it = m_outWindows.find(viewport);
+        if (it != m_outWindows.end()) n = it->second.presented;
+    });
+    return n;
 }
 
 GLuint Engine::outputTexture() const { return m_output[m_published.load()].tex; }
