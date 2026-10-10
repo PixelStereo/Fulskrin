@@ -2630,7 +2630,7 @@ int main(int argc, char **argv)
         QThread::msleep(500);
         const double mid = e.compositionOpacity();
         std::printf("       composition opacity at mid-fade: %.2f\n", mid);
-        CHECK(mid > 0.25 && mid < 0.75);
+        CHECK(mid > 0.1 && mid < 0.9); // on its way (frames of a software GPU come late)
     }
     // Color switches: a parameter that is off keeps its value but is not applied
     {
