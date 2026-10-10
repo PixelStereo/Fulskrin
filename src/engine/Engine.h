@@ -689,6 +689,7 @@ private:
     void animationsFromJson(const QJsonArray &a);
     void startLayerAnim(Animation &a); // from the start: the "current value" keys read now (lock held)
     void assignLayerAnims(Layer &l, const std::vector<Animation> &anims); // see setLayerAnims (lock held)
+    void recallLayerAnims(Layer &l, const QJsonArray &stored);            // a snapshot's (lock held)
     std::vector<Sequence> m_sequences;
     int m_currentSequence = -1, m_sequencePosition = -1;
     std::vector<StepRun> m_runs; // of the current sequence

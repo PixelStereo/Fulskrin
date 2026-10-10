@@ -264,7 +264,6 @@ QJsonArray Engine::captureLayers() const
     for (int i = 0; i < int(m_layers.size()); ++i) {
         if (m_layers[size_t(i)]->isViewport) continue; // a viewport has one state, not one per snapshot
         QJsonObject o = layerJson(i);
-        o.remove("anims"); // the layer's animations are not part of a snapshot: a recall leaves them alone
         o["included"] = true;
         a.append(o);
     }
@@ -371,6 +370,39 @@ void Engine::recallSnapshot(int i)
     emit snapshotRecalled(i);
 }
 
+// A layer's animations as a snapshot holds them: their settings and their transport (playing, paused where it was,
+// stopped). One that plays now and in the snapshot goes on from where it is, with the snapshot's settings; one the
+// snapshot does not have stops, and stays in the layer (lock held)
+void Engine::recallLayerAnims(Layer &l, const QJsonArray &stored)
+{
+    std::vector<Animation> next;
+    QHash<QString, QJsonObject> want;
+    for (const QJsonValue &v : stored) {
+        const QJsonObject o = v.toObject();
+        Animation a = layerAnimFromJson(o, l.id);
+        if (a.tracks.empty() || a.tracks.front().param.isEmpty() || want.contains(a.tracks.front().param)) continue;
+        want.insert(a.tracks.front().param, o);
+        next.push_back(a);
+    }
+    for (const Animation &a : l.anims)
+        if (!a.tracks.empty() && !want.contains(a.tracks.front().param)) next.push_back(a);
+    assignLayerAnims(l, next);
+    for (Animation &a : l.anims) {
+        const QString &param = a.tracks.front().param;
+        const auto it = want.constFind(param);
+        const AnimState to = it == want.constEnd() ? AnimState::Stopped : animStateFromJson(it.value());
+        if (to == a.state && to != AnimState::Paused) continue;
+        if (to == AnimState::Stopped || !a.tracks.front().enabled) {
+            controlLocked(&a, AnimAction::Stop, 0, a.loop, a.repeat, &l);
+        } else if (to == AnimState::Playing) {
+            controlLocked(&a, AnimAction::Play, 0, a.loop, a.repeat, &l); // a paused one goes on
+        } else { // paused where the snapshot has it
+            controlLocked(&a, AnimAction::Pause, 0, a.loop, a.repeat, &l);
+            controlLocked(&a, AnimAction::Seek, it.value().value("clock").toDouble(0), a.loop, a.repeat, &l);
+        }
+    }
+}
+
 void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
 {
     fade = std::max(0.0, fade);
@@ -392,14 +424,15 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
     std::vector<std::shared_ptr<FadeJob>> jobs;
     for (const QJsonValue &value : layers) {
         QJsonObject o = value.toObject();
-        o.remove("anims"); // not part of a snapshot
         if (!o.value("included").toBool(true) || o.value("viewport").toBool()) continue;
         const quint64 id = o.value("id").toString().toULongLong();
         int idx = indexOfId(id);
         if (idx >= 0 && isLocked(idx)) continue; // a locked layer is not changed by a snapshot
-        if (idx < 0) { // removed since: recreated at the bottom
+        if (idx < 0) { // removed since: recreated at the bottom (its animations as the snapshot has them)
             takeOver(id, {}, true);
-            insertLayerJson(layerCount(), o);
+            const int at = insertLayerJson(layerCount(), o);
+            Lock lk(&m_mutex);
+            if (Layer *l = layer(at)) recallLayerAnims(*l, o.value("anims").toArray());
             continue;
         }
         const QJsonObject timing = o.value("timing").toObject(), easing = o.value("easing").toObject();
@@ -427,15 +460,19 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             // fade unless it has its own), or at once for a cut
             const double t = timeOf(timing, QStringLiteral("file"), fade);
             takeOver(id, {}, true);
-            // The layer is made again with its new source: its animations go on as they were (not restarted)
+            // The layer is made again with its new source: its animations go from where they were to the snapshot's
+            // (one that plays in both goes on, not restarted)
             std::vector<Animation> anims;
             {
                 Lock lk(&m_mutex);
                 anims = layer(idx)->anims;
             }
-            auto keepAnims = [this, id, &anims] {
+            auto keepAnims = [this, id, &anims, &o] {
                 Lock lk(&m_mutex);
-                if (Layer *l = layer(indexOfId(id))) l->anims = anims;
+                if (Layer *l = layer(indexOfId(id))) {
+                    l->anims = anims;
+                    recallLayerAnims(*l, o.value("anims").toArray());
+                }
             };
             if (t <= 0) {
                 replaceLayerJson(idx, o);
@@ -489,6 +526,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         Layer *l = layer(idx);
         if (!l) continue;
         l->name = o.value("name").toString(l->name);
+        recallLayerAnims(*l, o.value("anims").toArray());
         if (!group) l->color.maskLayer = o.value("mask").toString().toULongLong();
         const QJsonArray fx = o.value("fx").toArray();
         for (size_t k = 0; k < l->effects.size() && int(k) < fx.size(); ++k) { // their masks
