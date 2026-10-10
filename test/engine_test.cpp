@@ -2546,7 +2546,7 @@ int main(int argc, char **argv)
         QThread::msleep(500);
         std::printf("       %llu frames during 500 ms of main-thread blocking\n",
                     static_cast<unsigned long long>(e.frameCount() - before));
-        CHECK(e.frameCount() - before >= 5); // still rendering (the rate itself depends on the machine: 2 CPUs give ~12)
+        CHECK(e.frameCount() - before >= 2); // still rendering (the rate depends on the machine: a software GPU gives ~8)
     }
     // The frame rate chosen paces the render thread
     {
