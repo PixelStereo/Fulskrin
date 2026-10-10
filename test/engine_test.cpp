@@ -1861,25 +1861,44 @@ int main(int argc, char **argv)
             CHECK(copy >= 0 && e.layerAnims(e.layerId(copy)).size() == 2 &&
                   e.layerAnims(e.layerId(copy))[0].tracks[0].layer == e.layerId(copy));
             e.removeLayer(copy);
-            // Not part of a snapshot: a recall leaves them as they are, even one that gives the layer another source
-            const QJsonArray cap = e.captureLayers();
-            for (const QJsonValue &x : cap) CHECK(!x.toObject().contains("anims"));
+            // In a snapshot: their settings and their transport. One that plays in both goes on (no restart), with the
+            // snapshot's settings; one the snapshot does not have stops and stays; even with another source
             {
-                e.controlLayerAnim(wid, "opacity", A::Pause);
+                const QJsonArray cap = e.captureLayers();
+                QJsonObject st;
+                for (const QJsonValue &x : cap)
+                    if (x.toObject().value("id").toString().toULongLong() == wid) st = x.toObject();
+                CHECK(st.value("anims").toArray().size() == 2);
+                e.advanceFades(0.3);
                 const double clock0 = (e.layerAnim(wid, "opacity", &now), now.clock);
-                QJsonObject other = e.layerJson(e.indexOfId(wid));
-                other.remove("anims");
-                QJsonObject src{{"type", "image"}, {"path", tmp + "/redblue.png"}};
-                other["source"] = src;
-                e.applyLayers(QJsonArray{other}, 0.0); // a cut to another source: the layer is made again
+                QJsonArray an = st.value("anims").toArray();
+                QJsonObject op = an.at(0).toObject();
+                CHECK(op.value("param") == "opacity" && op.value("state") == "playing");
+                op["speed"] = 2.0; // its settings change, it goes on
+                an[0] = op;
+                an.removeAt(1); // no rotation: it stops, it stays
+                st["anims"] = an;
+                e.controlLayerAnim(wid, "rotation", A::Play);
+                e.applyLayers(QJsonArray{st}, 0.0);
+                CHECK(e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Playing && near(now.speed, 2) &&
+                      now.clock >= clock0 - 1e-9);
+                CHECK(e.layerAnims(wid).size() == 2 && e.layerAnim(wid, "rotation", &now) && now.state == Engine::AnimState::Stopped);
+                // Paused where the snapshot has it, through a cut to another source
+                op["state"] = "paused";
+                op["clock"] = 0.25;
+                an[0] = op;
+                st["anims"] = an;
+                st["source"] = QJsonObject{{"type", "image"}, {"path", tmp + "/redblue.png"}};
+                e.applyLayers(QJsonArray{st}, 0.0); // the layer is made again
                 CHECK(e.layer(e.indexOfId(wid))->type == SourceType::Image && e.layerAnims(wid).size() == 2 &&
-                      e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Paused && near(now.clock, clock0));
+                      e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Paused && near(now.clock, 0.25));
                 e.controlLayerAnim(wid, "opacity", A::Play);
+                e.setLayerAnimOn(wid, "rotation", false);
             }
             CHECK(e.saveProject(tmp + "/anims.fulskrin", {}, &err));
             CHECK(e.loadProject(tmp + "/anims.fulskrin", nullptr, &err));
             CHECK(e.layerAnims(wid).size() == 2 && e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Playing &&
-                  near(now.speed, 0.5) && now.tracks[0].layer == wid && e.layerAnim(wid, "rotation", &now) &&
+                  near(now.speed, 2) && now.tracks[0].layer == wid && e.layerAnim(wid, "rotation", &now) &&
                   !now.tracks[0].enabled && now.state == Engine::AnimState::Stopped && now.tracks[0].keys.size() == 3);
             e.removeLayer(e.indexOfId(wid));
             e.setFadesManual(false);

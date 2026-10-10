@@ -24,6 +24,7 @@ inline QString animWaveKey(AnimWave w) { return animWaveKeys().value(int(w)); }
 // A layer's animation of one of its numbers in its layer state ("anims"): its number, transport, keys, oscillator
 QJsonObject layerAnimToJson(const Animation &a);
 Animation layerAnimFromJson(const QJsonObject &o, quint64 layer);
+AnimState animStateFromJson(const QJsonObject &o); // its transport in a file (none: the ones on play)
 
 struct Engine::Garbage {
     std::unique_ptr<VideoDecoder> video;

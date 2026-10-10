@@ -797,6 +797,22 @@ void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObjec
              QStringLiteral("Its warp's points"), QStringLiteral("mesh"));
     }
 
+    // Its animations: the recall gives them these settings and this transport
+    const QJsonArray anims = o.value("anims").toArray();
+    if (!anims.isEmpty()) {
+        QTreeWidgetItem *sec = node(parent, QStringLiteral("Animations (%1)").arg(anims.size()), QStringLiteral("anims"), QString());
+        for (const QJsonValue &v : anims) {
+            const QJsonObject a = v.toObject();
+            const QString state = a.value("state").toString(a.value("enable").toBool(true) ? QStringLiteral("playing")
+                                                                                          : QStringLiteral("stopped"));
+            const QString what = a.contains("oscillator") ? a.value("oscillator").toObject().value("wave").toString() : QStringLiteral("keys");
+            info(sec, a.value("param").toString(),
+                 state == "paused" ? QStringLiteral("paused at %1 s").arg(a.value("clock").toDouble(), 0, 'f', 2) : state,
+                 QStringLiteral("%1 · %2 s · %3").arg(what).arg(a.value("duration").toDouble(), 0, 'g', 4).arg(a.value("loop").toString()));
+        }
+        expand(sec);
+    }
+
     // Its parameters: what they are, from the layer when it is still there (else from their values)
     std::vector<ParamInfo> list;
     {

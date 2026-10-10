@@ -808,7 +808,19 @@ QJsonObject layerAnimToJson(const Animation &a)
     trackToJson(a.tracks.front(), o);
     if (a.pinned) o["pinned"] = true;
     if (a.folded) o["folded"] = true;
+    // Its transport (what a snapshot recalls; a project opened plays the ones that are on)
+    o["state"] = a.state == AnimState::Playing ? "playing" : a.state == AnimState::Paused ? "paused" : "stopped";
+    if (a.state == AnimState::Paused) o["clock"] = a.clock;
     return o;
+}
+
+AnimState animStateFromJson(const QJsonObject &o)
+{
+    const QString s = o.value("state").toString();
+    if (s == QLatin1String("paused")) return AnimState::Paused;
+    if (s == QLatin1String("stopped")) return AnimState::Stopped;
+    if (s == QLatin1String("playing")) return AnimState::Playing;
+    return o.value("enable").toBool(true) ? AnimState::Playing : AnimState::Stopped; // none: the ones on play
 }
 
 Animation layerAnimFromJson(const QJsonObject &o, quint64 layer)
