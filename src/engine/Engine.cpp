@@ -88,6 +88,7 @@ bool Engine::initialize(QString *err)
         return false;
     }
     auto f = gl();
+    m_glRenderer = QString::fromLatin1(reinterpret_cast<const char *>(f->glGetString(GL_RENDERER)));
     qInfo().noquote() << "OpenGL" << reinterpret_cast<const char *>(f->glGetString(GL_VERSION)) << "-"
                       << reinterpret_cast<const char *>(f->glGetString(GL_RENDERER));
 

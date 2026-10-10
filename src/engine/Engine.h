@@ -461,6 +461,7 @@ public:
     // macOS: the output windows are shown through Metal (their surface type must then be Metal), the engine rendering
     // on its own thread; elsewhere (or without Metal) through OpenGL
     static bool metalOutput() { return MetalOutput::available(); }
+    QString glRenderer() const { return m_glRenderer; } // the OpenGL renderer's name
     quint64 windowFrames(quint64 viewport); // pictures the viewport's window was given (tests)
     void setViewportWindow(quint64 viewport, QWindow *w);
     void setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize);
@@ -648,6 +649,7 @@ private:
     int m_defaultColorModels = 1;
     std::vector<Snapshot> m_snapshots;
     std::vector<std::shared_ptr<FadeJob>> m_fades;
+    QString m_glRenderer;
     // A snapshot gives a layer another source: the outgoing one keeps playing, invisible, and the two pictures
     // are mixed by an ISF transition into the layer's picture (before its mapping) until it is over
     struct SourceTransition {

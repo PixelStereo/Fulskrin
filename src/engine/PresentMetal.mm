@@ -67,6 +67,12 @@ struct MetalOutput::D {
     Slot ring[3];
     int next = 0;
     QSize drawable;
+    bool warned = false;
+    void warnOnce(const char *what)
+    {
+        if (!warned) qWarning("Metal output: %s", what);
+        warned = true;
+    }
 
     void waitIdle(Slot &s)
     {
@@ -96,11 +102,15 @@ struct MetalOutput::D {
             (id)kIOSurfacePixelFormat: @((uint32_t)'BGRA'),
         };
         s.surface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
-        if (!s.surface) return false;
+        if (!s.surface) {
+            warnOnce("IOSurfaceCreate failed");
+            return false;
+        }
         f->glGenTextures(1, &s.tex);
         f->glBindTexture(GL_TEXTURE_RECTANGLE, s.tex);
         if (CGLTexImageIOSurface2D(CGLGetCurrentContext(), GL_TEXTURE_RECTANGLE, GL_RGBA, GLsizei(w), GLsizei(h), GL_BGRA,
                                    GL_UNSIGNED_INT_8_8_8_8_REV, s.surface, 0) != kCGLNoError) {
+            warnOnce("CGLTexImageIOSurface2D failed");
             f->glBindTexture(GL_TEXTURE_RECTANGLE, 0);
             releaseSlot(s, f);
             return false;
@@ -118,6 +128,7 @@ struct MetalOutput::D {
         td.usage = MTLTextureUsageShaderRead;
         s.mtl = [sharedDevice() newTextureWithDescriptor:td iosurface:s.surface plane:0];
         if (!complete || !s.mtl) {
+            warnOnce(!complete ? "the shared surface's framebuffer is incomplete" : "no Metal texture on the shared surface");
             releaseSlot(s, f);
             return false;
         }
@@ -141,7 +152,10 @@ std::shared_ptr<MetalOutput> MetalOutput::forWindow(QWindow *w)
     id<MTLDevice> device = sharedDevice();
     if (!w || !device || w->surfaceType() != QSurface::MetalSurface) return nullptr;
     NSView *view = (__bridge NSView *)reinterpret_cast<void *>(w->winId());
-    if (!view || ![view.layer isKindOfClass:[CAMetalLayer class]]) return nullptr;
+    if (!view || ![view.layer isKindOfClass:[CAMetalLayer class]]) {
+        qWarning("Metal output: the window has no Metal layer (%s)", view ? view.layer.className.UTF8String : "no view");
+        return nullptr;
+    }
     std::shared_ptr<MetalOutput> out(new MetalOutput);
     D &d = *out->d;
     d.layer = (CAMetalLayer *)view.layer;
@@ -196,7 +210,10 @@ bool MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool
         }
         d->layer.displaySyncEnabled = waitForScreen ? YES : NO;
         id<CAMetalDrawable> drawable = [d->layer nextDrawable];
-        if (!drawable) return false;
+        if (!drawable) {
+            d->warnOnce("no drawable from the window's layer");
+            return false;
+        }
         MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = drawable.texture;
         pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
