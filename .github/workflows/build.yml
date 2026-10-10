@@ -114,6 +114,8 @@ jobs:
       - uses: ssciwr/setup-mesa-dist-win@v2
       - name: Engine tests
         shell: pwsh
+        env:
+          LP_NUM_THREADS: '1' # the software GPU on one core: the sound's threads keep their time
         run: |
           $env:PATH = "C:\ffmpeg\$env:FFMPEG_ZIP\bin;$env:PATH"
           .\build\fulskrin_tests.exe

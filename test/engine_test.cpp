@@ -21,6 +21,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QGuiApplication>
+#include <QOpenGLContext>
 #include <QScreen>
 #include <QWindow>
 #include <QJsonDocument>
@@ -1093,6 +1094,7 @@ int main(int argc, char **argv)
             e.advanceFades(0.5);
             CHECK(std::abs(e.layer(e.indexOfId(tid))->transitionGain - 0.5f) < 0.01f); // the sound crosses too
             CHECK(e.layer(e.indexOfId(tid))->roi.width() > 0.6 && e.layer(e.indexOfId(tid))->roi.width() < 0.9); // no cut
+            for (int k = 0; k < 3; ++k) e.renderFrame(); // the incoming picture uploaded (the fade does not move)
             QColor c = center();
             std::printf("      halfway: r %d b %d\n", c.red(), c.blue());
             CHECK(c.red() > 90 && c.red() < 170 && c.blue() > 90 && c.blue() < 170); // halfway: both
@@ -2510,6 +2512,11 @@ int main(int argc, char **argv)
         while (e.frameCount() < target && t.elapsed() < 10000) QThread::msleep(5);
         return e.frameCount() >= target;
     };
+    // macOS: Qt renders OpenGL on the main thread only (AppKit), so the engine renders on the UI thread there and
+    // what needs the render thread is left to the other platforms
+    if (!QOpenGLContext::supportsThreadedOpenGL()) {
+        std::printf("SKIP render thread, sound and threaded video: no OpenGL on another thread on this platform\n");
+    } else {
     e.newProject();
     CHECK(e.start());
     CHECK(e.isThreaded());
@@ -3260,6 +3267,7 @@ int main(int argc, char **argv)
 
     e.stop();
     CHECK(!e.isThreaded());
+    } // threaded
     e.renderFrame(); // back to manual mode
     CHECK(!e.grabOutput().isNull());
 
