@@ -65,6 +65,7 @@ add_library(fulskrin_engine STATIC
   src/engine/Snapshots.cpp
   src/engine/Sequencer.cpp
   src/engine/Publishing.cpp
+  src/engine/TestCard.cpp
   src/engine/Presets.cpp
   src/engine/Animations.cpp
   src/engine/Parameter.cpp

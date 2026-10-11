@@ -16,6 +16,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QScreen>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -35,6 +36,7 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
     QSize size;
     QString screen;
     int mode = 0;
+    bool testCard = false;
     PublishSettings ps = m_engine->publishSettings(viewport);
     {
         Engine::Lock lk(&m_engine->mutex());
@@ -42,11 +44,27 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
             size = l->viewportSize();
             screen = l->vpScreen;
             mode = l->vpMode;
+            testCard = l->testCard;
         }
     }
     auto *v = new QVBoxLayout(this);
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(10);
+
+    // --- Test card: sent instead of the picture while on (a setup aid: not saved)
+    m_testCard = new QPushButton(QStringLiteral("Test Card"));
+    m_testCard->setCheckable(true);
+    m_testCard->setChecked(testCard);
+    m_testCard->setToolTip(QStringLiteral("Shows this viewport's test card on its screen instead of its picture: its name "
+                                          "and size, a grid and a circle (round when the aspect is right), the corners "
+                                          "numbered 1 to 4 clockwise from the top left, color bars, grey steps, and "
+                                          "motion (a frozen output shows)."));
+    m_testCard->setStyleSheet("QPushButton { padding:6px; } QPushButton:checked { background:#2f6f8f; color:white; font-weight:bold; }");
+    v->addWidget(m_testCard);
+    connect(m_testCard, &QPushButton::toggled, this, [this](bool on) {
+        Engine::Lock lk(&m_engine->mutex());
+        if (Layer *l = m_engine->layer(index())) l->testCard = on;
+    });
 
     // --- Picture: its size in pixels
     auto *picture = new QGroupBox(QStringLiteral("Picture"));
@@ -272,13 +290,19 @@ void ViewportOutputPanel::applyPublish()
 void ViewportOutputPanel::refreshStatus()
 {
     int mode = 0;
+    bool testCard = false;
     {
         Engine::Lock lk(&m_engine->mutex());
         const Layer *l = m_engine->layer(index());
         if (!l) return;
         mode = l->vpMode;
+        testCard = l->testCard;
     }
     if (QAbstractButton *b = m_mode->button(mode); b && !b->isChecked()) b->setChecked(true);
+    if (m_testCard && m_testCard->isChecked() != testCard) { // set by OSC
+        const QSignalBlocker block(m_testCard);
+        m_testCard->setChecked(testCard);
+    }
     for (int k = 0; k < kPublishKindCount; ++k) {
         const PublishState st = m_engine->publishState(m_viewport, PublishKind(k));
         QString text = st.text, color = "#888";

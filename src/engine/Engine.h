@@ -14,6 +14,7 @@
 //    which runs it on the render thread. These tasks never take the lock: it is safe to wait
 //    on a task while holding the lock, with no risk of deadlock.
 
+#include "TestCard.h"
 #include "PresentMetal.h"
 #include "Sequencer.h"
 #include "AudioOutput.h"
@@ -591,6 +592,7 @@ private:
     GLint m_prepMaskLoc = -1, m_prepMaskModeLoc = -1;
     GLuint m_blackTex = 0;
     VideoConverter m_videoConv; // video frames to RGBA (render thread)
+    TestCard m_testCard;        // the viewports' test cards (render thread)
     RenderTarget m_output[2];
     std::atomic<int> m_published{0};
     int m_back = 1;

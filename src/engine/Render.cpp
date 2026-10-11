@@ -513,6 +513,14 @@ void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const I
     v.finalTex = v.rawTex = v.preFxTex = 0;
     if (!v.enabled) return;
     const QSize size = v.viewportSize();
+    // Its test card: what goes to its screen, as it is (no ROI, color or effect)
+    if (v.testCard) {
+        m_testCard.render(v.name, size, v.groupTarget, m_quadVao);
+        v.finalTex = v.rawTex = v.preFxTex = v.groupTarget.tex;
+        v.finalW = v.rawW = v.preFxW = v.groupTarget.w;
+        v.finalH = v.rawH = v.preFxH = v.groupTarget.h;
+        return;
+    }
     v.groupTarget.ensure(size.width(), size.height());
     // Its region: a rectangle of the composition, upright or turned
     const Mapping::Rect r = v.mapping.rect(m_compSize);

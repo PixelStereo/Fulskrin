@@ -2296,6 +2296,42 @@ int main(int argc, char **argv)
     } // masks
 
     if (area("rendering")) {
+    // Test card: a viewport shows it instead of its picture: the corners 1 red, 2 green, 3 blue, 4 yellow clockwise from
+    // the top left, a dark plate in the middle, and motion
+    {
+        e.newProject();
+        e.fadeCompositionOpacity(1.0, 0);
+        e.setBlackout(false, 0);
+        const quint64 vp = e.mainViewportId();
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(vp))->testCard = true;
+        }
+        e.renderFrame();
+        const QImage a = e.grabViewport(vp);
+        CHECK(!a.isNull());
+        if (!a.isNull()) {
+            const int w = a.width(), h = a.height(), d = std::max(3, std::min(w, h) / 40);
+            const QColor tl = a.pixelColor(d, d), tr = a.pixelColor(w - 1 - d, d), br = a.pixelColor(w - 1 - d, h - 1 - d),
+                         bl = a.pixelColor(d, h - 1 - d);
+            CHECK(tl.red() > 200 && tl.green() < 80 && tl.blue() < 80);
+            CHECK(tr.green() > 150 && tr.red() < 80 && tr.blue() < 120);
+            CHECK(br.blue() > 200 && br.red() < 80);
+            CHECK(bl.red() > 200 && bl.green() > 180 && bl.blue() < 80);
+            QThread::msleep(300);
+            e.renderFrame();
+            CHECK(e.grabViewport(vp) != a); // it moves
+        }
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(vp))->testCard = false;
+        }
+        e.renderFrame();
+        const QImage off = e.grabViewport(vp);
+        CHECK(!off.isNull() && off.pixelColor(2, 2).red() < 5); // its picture again (an empty composition)
+        const QImage card = TestCard::still(QStringLiteral("Front"), QSize(320, 180));
+        CHECK(card.size() == QSize(320, 180) && card.pixelColor(4, 4).red() > 200);
+    }
     // Live inputs: a layer's source by URI (a camera, NDI, OMT, Syphon); the test one is a solid color
     {
         e.newProject();
