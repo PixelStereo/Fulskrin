@@ -18,17 +18,18 @@ QString publishKindName(PublishKind k)
     case PublishKind::Omt: return QStringLiteral("OMT");
     case PublishKind::Syphon: return QStringLiteral("Syphon");
     case PublishKind::Spout: return QStringLiteral("Spout");
+    case PublishKind::DeckLink: return QStringLiteral("DeckLink");
     }
     return {};
 }
 
-static const char *kKeys[kPublishKindCount] = {"ndi", "omt", "syphon", "spout"};
+static const char *kKeys[kPublishKindCount] = {"ndi", "omt", "syphon", "spout", "decklink"};
 
 bool PublishSettings::operator==(const PublishSettings &o) const
 {
     for (int i = 0; i < kPublishKindCount; ++i)
         if (targets[i] != o.targets[i]) return false;
-    return omtQuality == o.omtQuality && libraryFolder == o.libraryFolder;
+    return omtQuality == o.omtQuality && libraryFolder == o.libraryFolder && decklinkMode == o.decklinkMode;
 }
 
 QJsonObject PublishSettings::toJson() const
@@ -38,6 +39,7 @@ QJsonObject PublishSettings::toJson() const
         o[kKeys[i]] = QJsonObject{{"enable", targets[i].enabled}, {"name", targets[i].name}};
     o["omt_quality"] = omtQuality;
     if (!libraryFolder.isEmpty()) o["library_folder"] = libraryFolder;
+    if (!decklinkMode.isEmpty()) o["decklink_mode"] = decklinkMode;
     return o;
 }
 
@@ -47,11 +49,16 @@ PublishSettings PublishSettings::fromJson(const QJsonObject &o)
     for (int i = 0; i < kPublishKindCount; ++i) {
         const QJsonObject t = o.value(kKeys[i]).toObject();
         s.targets[i].enabled = t.value("enable").toBool(false);
+        if (i == int(PublishKind::DeckLink)) { // a port, none: the first one
+            s.targets[i].name = t.value("name").toString();
+            continue;
+        }
         s.targets[i].name = t.value("name").toString(QStringLiteral("Fulskrin"));
         if (s.targets[i].name.trimmed().isEmpty()) s.targets[i].name = QStringLiteral("Fulskrin");
     }
     s.omtQuality = o.value("omt_quality").toInt(0);
     s.libraryFolder = o.value("library_folder").toString();
+    s.decklinkMode = o.value("decklink_mode").toString();
     return s;
 }
 
@@ -65,6 +72,9 @@ bool publishCompiledIn(PublishKind k)
 #endif
 #ifdef FULSKRIN_HAS_SPOUT
     case PublishKind::Spout: return true;
+#endif
+#ifdef FULSKRIN_HAS_DECKLINK
+    case PublishKind::DeckLink: return true;
 #endif
     default: return false;
     }

@@ -10,7 +10,7 @@ macOS). macOS, Windows, Linux.
 - **Mapping**: position, scale, rotation, pivot, corner pin, warp mesh. Viewports send parts of the composition to screens.
 - **Snapshots, presets and sequences**: every value fades to the snapshot's own way (time and easing per value or group); snapshots in nested groups, reordered by dragging; presets hold only the values put in them; cue lists with waits and auto-follows.
 - **Animations**: any number animated by a waveform or Bézier keys, per layer or in timelines.
-- **Outputs**: fullscreen windows, Syphon, Spout, NDI, OMT.
+- **Outputs**: fullscreen windows, Syphon, Spout, NDI, OMT, Blackmagic DeckLink / UltraStudio (SDI, HDMI).
 - **Control**: OSC and OSCQuery (UDP 1234, TCP 5678, Zeroconf). One address per value everywhere: OSC, project file, snapshots, timelines (`/layer/<name>/position/x`, `…/fx/<fx>/param/<input>`, `…/<param>/anim/play`).
 
 ## Build
@@ -43,6 +43,12 @@ play together, per codec, with and without zero copy).
   decompressed on the CPU and sampled compressed, except Hap R and Hap HDR on macOS (no BPTC in its OpenGL: decoded
   on the CPU, slow in 4K; Hap Q is the fast one there). One stereo audio output.
 - No MIDI/DMX; ISF audio inputs are black. Cameras need Qt Multimedia (without it, none are listed).
-- NDI and OMT send a GPU readback (one frame of latency).
+- NDI and OMT send a GPU readback (one frame of latency). DeckLink plays the same readback on the card's clock,
+  three frames ahead (a new picture is shown at most four frames later; a missing one repeats the last). Its ports
+  show up when Blackmagic Desktop Video is installed. A picture of another size than the mode is scaled (nearest):
+  set the viewport to the mode's size. Video only, 8 bits, no keying.
+
+Third party in the source tree: the Blackmagic DeckLink SDK's interfaces (`third_party/decklink`, SDK 12.0, Boost
+Software License 1.0, see its LICENSE).
 
 Links: [ISF](https://www.interactiveshaderformat.com/) · [OSCQuery](https://github.com/Vidvox/OSCQueryProposal)

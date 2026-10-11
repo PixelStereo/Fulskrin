@@ -1,4 +1,5 @@
 #include "ViewportOutput.h"
+#include "DeckLink.h"
 #include "Engine.h"
 #include "OutputWindow.h"
 #include "Widgets.h"
@@ -190,8 +191,10 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
         QStringLiteral("OMT (Open Media Transport): network, free and open. Requires libomt and libvmx."),
         QStringLiteral("Syphon: shares the picture with apps on the same Mac (MadMapper, Resolume, OBS…)."),
         QStringLiteral("Spout: shares the picture with apps on the same PC (Resolume, TouchDesigner, OBS…)."),
+        QString(),
     };
     for (int k = 0; k < kPublishKindCount; ++k) {
+        if (k == int(PublishKind::DeckLink)) continue; // its own box, below
         m_pubEnabled[k] = new FlagBox(publishKindName(PublishKind(k)));
         m_pubEnabled[k]->setToolTip(tips[k]);
         m_pubEnabled[k]->setChecked(ps.targets[k].enabled);
@@ -242,6 +245,53 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
     pv->addWidget(note(QStringLiteral("NDI and OMT send the picture at the viewport's size; "
                                       "Syphon and Spout share it directly on the GPU.")));
     v->addWidget(pub);
+
+    // --- DeckLink: SDI / HDMI out of a Blackmagic card (shown when this machine has a port that plays out)
+    m_dlGroup = new QGroupBox(QStringLiteral("DeckLink"));
+    auto *df = new QFormLayout(m_dlGroup);
+    m_dlEnabled = new FlagBox(QStringLiteral("Play out"));
+    m_dlEnabled->setToolTip(QStringLiteral("Sends this viewport to a DeckLink or UltraStudio output (SDI, HDMI), "
+                                           "on the card's own clock"));
+    m_dlEnabled->setChecked(ps[PublishKind::DeckLink].enabled);
+    m_dlPort = new QComboBox;
+    m_dlPort->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_dlPort->setMinimumContentsLength(8);
+    m_dlMode = new QComboBox;
+    m_dlMode->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_dlMode->setMinimumContentsLength(8);
+    m_dlMode->setToolTip(QStringLiteral("Auto: the mode of the viewport's size, at the closest rate to the render's"));
+    auto *dlFit = new QPushButton(QStringLiteral("= mode"));
+    dlFit->setToolTip(QStringLiteral("The viewport's size set to the mode's (else its picture is scaled)"));
+    auto *modeRow = new QHBoxLayout;
+    modeRow->addWidget(m_dlMode, 1);
+    modeRow->addWidget(dlFit);
+    m_dlState = new QLabel;
+    m_dlState->setWordWrap(true);
+    m_dlState->setStyleSheet("font-size:11px;");
+    df->addRow(m_dlEnabled);
+    df->addRow(QStringLiteral("Output"), m_dlPort);
+    df->addRow(QStringLiteral("Mode"), modeRow);
+    df->addRow(m_dlState);
+    m_dlGroup->setVisible(false);
+    v->addWidget(m_dlGroup);
+    connect(m_dlEnabled, &QCheckBox::toggled, this, &ViewportOutputPanel::applyPublish);
+    connect(m_dlPort, qOverload<int>(&QComboBox::activated), this, [this] {
+        m_dlSeen.clear(); // its modes
+        refreshDeckLink();
+        applyPublish();
+    });
+    connect(m_dlMode, qOverload<int>(&QComboBox::activated), this, &ViewportOutputPanel::applyPublish);
+    connect(dlFit, &QPushButton::clicked, this, [this] {
+        const QSize s = m_dlMode->currentData(Qt::UserRole + 1).toSize();
+        if (!s.isValid()) return;
+        m_syncing = true;
+        m_width->setValue(s.width());
+        m_height->setValue(s.height());
+        m_syncing = false;
+        applySize();
+    });
+    refreshDeckLink();
+
     connect(m_omtQuality, qOverload<int>(&QComboBox::activated), this, &ViewportOutputPanel::applyPublish);
     connect(m_libFolder, &QLineEdit::editingFinished, this, &ViewportOutputPanel::applyPublish);
     connect(browse, &QPushButton::clicked, this, [this] {
@@ -275,12 +325,18 @@ void ViewportOutputPanel::applyPublish()
 {
     PublishSettings s = m_engine->publishSettings(m_viewport);
     for (int k = 0; k < kPublishKindCount; ++k) {
+        if (!m_pubEnabled[k]) continue;
         s.targets[k].enabled = m_pubEnabled[k]->isChecked();
         const QString n = m_pubName[k]->text().trimmed();
         s.targets[k].name = n.isEmpty() ? QStringLiteral("Fulskrin") : n;
     }
     s.omtQuality = m_omtQuality->currentData().toInt();
     s.libraryFolder = m_libFolder->text().trimmed();
+    if (m_dlGroup->isVisible()) { // no port now: its settings stay as they are (it may come back)
+        s[PublishKind::DeckLink].enabled = m_dlEnabled->isChecked();
+        s[PublishKind::DeckLink].name = m_dlPort->currentData().toString();
+        s.decklinkMode = m_dlMode->currentData().toString();
+    }
     if (s == m_engine->publishSettings(m_viewport)) return;
     m_engine->setPublishSettings(m_viewport, s);
     emit edited();
@@ -304,6 +360,7 @@ void ViewportOutputPanel::refreshStatus()
         m_testCard->setChecked(testCard);
     }
     for (int k = 0; k < kPublishKindCount; ++k) {
+        if (!m_pubState[k]) continue;
         const PublishState st = m_engine->publishState(m_viewport, PublishKind(k));
         QString text = st.text, color = "#888";
         if (!publishCompiledIn(PublishKind(k))) {
@@ -319,11 +376,48 @@ void ViewportOutputPanel::refreshStatus()
         if (text.isEmpty()) text = QStringLiteral("Disabled");
         m_pubState[k]->setText(QStringLiteral("<span style='color:%1'>%2</span>").arg(color, text.toHtmlEscaped()));
     }
-    // Library lookup: roughly every two seconds (disk access)
+    {
+        const PublishState st = m_engine->publishState(m_viewport, PublishKind::DeckLink);
+        const QString color = st.level == PublishState::Ok ? "#5fd47a" : st.level == PublishState::Error ? "#ff6e5f" : "#888";
+        m_dlState->setText(QStringLiteral("<span style='color:%1'>%2</span>")
+                               .arg(color, (st.text.isEmpty() ? QStringLiteral("Off") : st.text).toHtmlEscaped()));
+    }
+    // Library lookup and the DeckLink ports: roughly every two seconds (disk access, the driver)
     if (m_libTick++ % 20 != 0) return;
+    refreshDeckLink();
     const QString folder = m_libFolder->text().trimmed();
     const QString ndi = ndiLibraryPath(folder), omt = omtLibraryPath(folder);
     m_libInfo->setText(QStringLiteral("NDI: %1<br>OMT: %2")
                            .arg(ndi.isEmpty() ? QStringLiteral("not found") : ndi.toHtmlEscaped(),
                                 omt.isEmpty() ? QStringLiteral("not found") : omt.toHtmlEscaped()));
+}
+
+void ViewportOutputPanel::refreshDeckLink()
+{
+    const std::vector<decklink::Port> ports = decklink::outputPorts();
+    QString seen;
+    for (const decklink::Port &p : ports) seen += p.id + '\n';
+    m_dlGroup->setVisible(!ports.empty());
+    if (seen == m_dlSeen) return;
+    m_dlSeen = seen;
+    const PublishSettings ps = m_engine->publishSettings(m_viewport);
+    // The port: the one chosen if it is here (else the first; one chosen but gone is kept, marked)
+    const QString want = m_dlPort->count() ? m_dlPort->currentData().toString() : ps[PublishKind::DeckLink].name;
+    m_dlPort->clear();
+    for (const decklink::Port &p : ports) m_dlPort->addItem(p.name, p.id);
+    int at = m_dlPort->findData(want);
+    if (at < 0 && !want.isEmpty()) {
+        m_dlPort->addItem(QStringLiteral("%1 (not found)").arg(want), want);
+        at = m_dlPort->count() - 1;
+    }
+    m_dlPort->setCurrentIndex(std::max(0, at));
+    // Its modes
+    const QString mode = m_dlMode->count() ? m_dlMode->currentData().toString() : ps.decklinkMode;
+    m_dlMode->clear();
+    m_dlMode->addItem(QStringLiteral("Auto"), QString());
+    for (const decklink::Mode &m : decklink::outputModes(m_dlPort->currentData().toString())) {
+        m_dlMode->addItem(QStringLiteral("%1  (%2 × %3)").arg(m.name).arg(m.width).arg(m.height), m.key);
+        m_dlMode->setItemData(m_dlMode->count() - 1, QSize(m.width, m.height), Qt::UserRole + 1);
+    }
+    m_dlMode->setCurrentIndex(std::max(0, m_dlMode->findData(mode)));
 }

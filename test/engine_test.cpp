@@ -1,5 +1,6 @@
 // Headless engine tests: load/save, video, ISF (multi-pass, .vs, errors).
 #include "Commands.h"
+#include "DeckLink.h"
 #include "Engine.h"
 #include "LayerTree.h"
 #include "Osc.h"
@@ -3173,6 +3174,61 @@ int main(int argc, char **argv)
         e.setPublishSettings(vp, PublishSettings());
         CHECK(waitFrames(3));
         CHECK(e.publishState(vp, PublishKind::Ndi).level == PublishState::Off);
+    }
+    {
+        // DeckLink: its settings (the first port by default), the modes, the picture in 4:2:2, a port that is not there
+        PublishSettings ps;
+        CHECK(ps[PublishKind::DeckLink].name.isEmpty() && !ps[PublishKind::DeckLink].enabled);
+        ps[PublishKind::DeckLink].enabled = true;
+        ps.decklinkMode = "Hp25";
+        CHECK(PublishSettings::fromJson(ps.toJson()) == ps && PublishSettings::fromJson(QJsonObject()) == PublishSettings());
+        CHECK(publishKindName(PublishKind::DeckLink) == "DeckLink");
+        std::vector<decklink::Mode> modes = {{"Hp25", "1080p25", 1920, 1080, 25, false},
+                                             {"Hi50", "1080i50", 1920, 1080, 25, true},
+                                             {"Hp30", "1080p30", 1920, 1080, 30, false},
+                                             {"Hp29", "1080p29.97", 1920, 1080, 30000.0 / 1001, false},
+                                             {"hp50", "720p50", 1280, 720, 50, false},
+                                             {"4k25", "2160p25", 3840, 2160, 25, false}};
+        CHECK(decklink::bestMode(modes, QSize(1920, 1080), 25)->key == "Hp25");
+        CHECK(decklink::bestMode(modes, QSize(1920, 1080), 60)->key == "Hp30"); // the closest rate, a whole one first
+        CHECK(decklink::bestMode(modes, QSize(1280, 720), 60)->key == "hp50");
+        CHECK(decklink::bestMode(modes, QSize(1000, 500), 25)->key == "Hp25"); // no such size: 1080
+        CHECK(decklink::bestMode({}, QSize(1920, 1080), 25) == nullptr);
+        // White, black and red (BT.709, video range): Cb Y Cr Y
+        auto uyvy = [](QColor c, int h) {
+            std::vector<uint8_t> in(2 * 4), out(4);
+            for (int x = 0; x < 2; ++x) {
+                in[size_t(x * 4)] = uint8_t(c.blue());
+                in[size_t(x * 4 + 1)] = uint8_t(c.green());
+                in[size_t(x * 4 + 2)] = uint8_t(c.red());
+                in[size_t(x * 4 + 3)] = 255;
+            }
+            decklink::bgraToUyvy(in.data(), 8, 2, 1, out.data(), 4);
+            (void)h;
+            return out;
+        };
+        auto near = [](const std::vector<uint8_t> &v, std::initializer_list<int> want) {
+            size_t i = 0;
+            for (int w : want)
+                if (std::abs(int(v[i++]) - w) > 1) return false;
+            return true;
+        };
+        CHECK(near(uyvy(Qt::white, 1080), {128, 235, 128, 235}));
+        CHECK(near(uyvy(Qt::black, 1080), {128, 16, 128, 16}));
+        // (the conversion takes the matrix from the picture's height: one line here is SD, BT.601)
+        CHECK(near(uyvy(QColor(255, 0, 0), 1), {90, 82, 240, 82}));
+        // No such port (no card, or no driver on the test machine): an error, not a crash
+        const quint64 vp = e.mainViewportId();
+        ps[PublishKind::DeckLink].name = "p-not-a-port";
+        e.setPublishSettings(vp, ps);
+        CHECK(waitFrames(3));
+        const PublishState st = e.publishState(vp, PublishKind::DeckLink);
+        std::printf("       DeckLink: %s (driver %s)\n", qPrintable(st.text),
+                    qPrintable(decklink::driverVersion().isEmpty() ? QStringLiteral("none") : decklink::driverVersion()));
+        CHECK(decklink::compiledIn() ? st.level == PublishState::Error : st.level == PublishState::Unavailable);
+        e.setPublishSettings(vp, PublishSettings());
+        CHECK(waitFrames(3));
+        CHECK(e.publishState(vp, PublishKind::DeckLink).level == PublishState::Off);
     }
     } // publishing
 

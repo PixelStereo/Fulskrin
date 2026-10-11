@@ -55,6 +55,7 @@ add_library(fulskrin_engine STATIC
   src/engine/Project.cpp
   src/engine/Media.cpp
   src/engine/Publish.cpp
+  src/engine/DeckLink.cpp
   src/engine/LiveInput.cpp
   src/engine/Permissions.cpp
   src/engine/AudioStream.cpp
@@ -169,6 +170,47 @@ if(APPLE AND FULSKRIN_SYPHON)
   set_source_files_properties(src/engine/PublishSyphon.mm src/engine/LiveInputSyphon.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(fulskrin_engine PRIVATE syphon)
   target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_SYPHON)
+endif()
+
+# DeckLink (Blackmagic SDI / HDMI cards): the SDK's headers are in third_party/decklink (Boost license), the driver
+# (Desktop Video) is loaded at run time. Windows: its interfaces come from the SDK's IDL, compiled by MIDL.
+option(FULSKRIN_DECKLINK "DeckLink outputs (Blackmagic Desktop Video)" ON)
+if(FULSKRIN_DECKLINK)
+  set(DECKLINK_SDK "${CMAKE_SOURCE_DIR}/third_party/decklink")
+  if(APPLE)
+    target_include_directories(fulskrin_engine PRIVATE "${DECKLINK_SDK}/mac")
+    target_sources(fulskrin_engine PRIVATE "${DECKLINK_SDK}/mac/DeckLinkAPIDispatch.cpp")
+    set_source_files_properties("${DECKLINK_SDK}/mac/DeckLinkAPIDispatch.cpp" PROPERTIES COMPILE_OPTIONS "-w")
+    target_link_libraries(fulskrin_engine PRIVATE "-framework CoreFoundation")
+    target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_DECKLINK)
+  elseif(WIN32)
+    find_program(MIDL_EXE midl)
+    if(MIDL_EXE)
+      set(DECKLINK_GEN "${CMAKE_BINARY_DIR}/decklink")
+      file(MAKE_DIRECTORY "${DECKLINK_GEN}")
+      file(GLOB DECKLINK_IDL "${DECKLINK_SDK}/win/*.idl")
+      add_custom_command(
+        OUTPUT "${DECKLINK_GEN}/DeckLinkAPI_h.h" "${DECKLINK_GEN}/DeckLinkAPI_i.c"
+        COMMAND "${MIDL_EXE}" /nologo /env x64 /I "${DECKLINK_SDK}/win" /out "${DECKLINK_GEN}"
+                /h DeckLinkAPI_h.h /iid DeckLinkAPI_i.c /tlb DeckLinkAPI.tlb /proxy DeckLinkAPI_p.c /dlldata dlldata.c
+                "${DECKLINK_SDK}/win/DeckLinkAPI.idl"
+        DEPENDS ${DECKLINK_IDL}
+        COMMENT "DeckLink SDK interfaces (MIDL)")
+      add_custom_target(decklink_idl DEPENDS "${DECKLINK_GEN}/DeckLinkAPI_h.h" "${DECKLINK_GEN}/DeckLinkAPI_i.c")
+      add_dependencies(fulskrin_engine decklink_idl)
+      target_include_directories(fulskrin_engine PRIVATE "${DECKLINK_GEN}")
+      target_link_libraries(fulskrin_engine PRIVATE ole32 oleaut32)
+      target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_DECKLINK)
+    else()
+      message(WARNING "MIDL not found (run from a Visual Studio developer prompt): built without DeckLink outputs")
+    endif()
+  else()
+    target_include_directories(fulskrin_engine PRIVATE "${DECKLINK_SDK}/linux")
+    target_sources(fulskrin_engine PRIVATE "${DECKLINK_SDK}/linux/DeckLinkAPIDispatch.cpp")
+    set_source_files_properties("${DECKLINK_SDK}/linux/DeckLinkAPIDispatch.cpp" PROPERTIES COMPILE_OPTIONS "-w")
+    target_link_libraries(fulskrin_engine PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_DECKLINK)
+  endif()
 endif()
 
 if(WIN32 AND FULSKRIN_SPOUT)

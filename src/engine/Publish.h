@@ -2,9 +2,10 @@
 // Output publishing to other software / machines:
 //  - Syphon (macOS) and Spout (Windows): GPU texture sharing, no copy;
 //  - NDI and OMT (Open Media Transport): network. The image is read back from the GPU (asynchronously)
-//    then sent by a dedicated thread so it never slows down rendering.
+//    then sent by a dedicated thread so it never slows down rendering;
+//  - DeckLink (Blackmagic SDI / HDMI cards): the same picture read back, played out by the card on its own clock.
 //
-// NDI and OMT are loaded at runtime: Fulskrin builds and runs without them,
+// NDI, OMT and the DeckLink driver are loaded at runtime: Fulskrin builds and runs without them,
 // publishing becomes available as soon as the library is installed on the machine.
 //
 // This file depends on no OpenGL header (the Syphon / Spout implementations have their own).
@@ -20,21 +21,23 @@
 #include <thread>
 #include <vector>
 
-enum class PublishKind { Ndi = 0, Omt = 1, Syphon = 2, Spout = 3 };
-constexpr int kPublishKindCount = 4;
+enum class PublishKind { Ndi = 0, Omt = 1, Syphon = 2, Spout = 3, DeckLink = 4 };
+constexpr int kPublishKindCount = 5;
 QString publishKindName(PublishKind k);
 
 struct PublishTarget {
     bool enabled = false;
-    QString name = QStringLiteral("Fulskrin");
+    QString name = QStringLiteral("Fulskrin"); // DeckLink: the port's id (decklink::Port), empty for the first one
     bool operator==(const PublishTarget &o) const { return enabled == o.enabled && name == o.name; }
     bool operator!=(const PublishTarget &o) const { return !(*this == o); }
 };
 
 struct PublishSettings {
     PublishTarget targets[kPublishKindCount];
+    PublishSettings() { targets[int(PublishKind::DeckLink)].name.clear(); } // DeckLink: the first port
     int omtQuality = 0;    // 0 = automatic, 1 = low, 50 = medium, 100 = high
     QString libraryFolder; // additional folder in which to look for the NDI / OMT libraries
+    QString decklinkMode;  // DeckLink: its display mode (decklink::Mode::key), empty: the picture's size and rate
 
     PublishTarget &operator[](PublishKind k) { return targets[int(k)]; }
     const PublishTarget &operator[](PublishKind k) const { return targets[int(k)]; }
@@ -81,12 +84,15 @@ public:
     virtual bool start(const QString &name, const PublishSettings &s, QString *err) = 0;
     virtual void send(const CpuFrame &f) = 0;
     int receivers() const { return m_receivers.load(); }
+    // Its state as it goes (what it plays, an error found after its start): false to keep the one given at its start
+    virtual bool liveState(PublishState *) const { return false; }
 
 protected:
     std::atomic<int> m_receivers{-1};
 };
 std::unique_ptr<CpuPublisher> createNdiPublisher();
 std::unique_ptr<CpuPublisher> createOmtPublisher();
+std::unique_ptr<CpuPublisher> createDeckLinkPublisher(); // DeckLink.cpp (nullptr: built without the SDK)
 // For tests: receives every frame sent
 std::unique_ptr<CpuPublisher> createTapPublisher(std::function<void(const CpuFrame &)> fn);
 

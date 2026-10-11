@@ -6,13 +6,15 @@ class Engine;
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
 
 // Output tab of a viewport: its size in pixels, the screen it goes to and how it is shown there (hidden,
-// in a window, fullscreen), and what it publishes (NDI, OMT, Syphon, Spout). Each viewport has its own.
+// in a window, fullscreen), and what it publishes (NDI, OMT, Syphon, Spout), and the DeckLink port it plays out
+// (shown when this machine has one). Each viewport has its own.
 class ViewportOutputPanel : public QWidget
 {
     Q_OBJECT
@@ -27,6 +29,7 @@ signals:
 private:
     void applySize();
     void applyPublish();
+    void refreshDeckLink(); // the ports plugged in, and their modes
     int index() const;
     Engine *m_engine;
     quint64 m_viewport;
@@ -39,6 +42,11 @@ private:
     QPushButton *m_testCard = nullptr;
     QLineEdit *m_libFolder = nullptr;
     QLabel *m_libInfo = nullptr;
+    QGroupBox *m_dlGroup = nullptr;
+    QCheckBox *m_dlEnabled = nullptr;
+    QComboBox *m_dlPort = nullptr, *m_dlMode = nullptr;
+    QLabel *m_dlState = nullptr;
+    QString m_dlSeen; // the ports listed (to fill again when one comes or goes)
     bool m_syncing = false;
     unsigned m_libTick = 0;
 };
