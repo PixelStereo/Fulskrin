@@ -940,7 +940,7 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
         if (err) *err = QStringLiteral("Unreadable image: ") + path;
         return false;
     }
-    img = img.convertToFormat(QImage::Format_RGBA8888).mirrored(false, true);
+    img = flippedVertically(img.convertToFormat(QImage::Format_RGBA8888));
     std::shared_ptr<Garbage> g;
     {
         Lock lk(&m_mutex);
