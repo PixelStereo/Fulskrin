@@ -34,7 +34,9 @@ private:
 
     Engine *m_engine;
     QUndoStack *m_undo;
-    int m_layer, m_slot;
+    int m_layer;
+    quint64 m_layerId;
+    int m_slot;
     SliderField *m_speed = nullptr;
     std::vector<std::pair<int, std::function<void(const IsfValue &)>>> m_followers; // input, shows its value
     // The widgets of each number (its name, its field; a point's x and y fields), for the Animate menu

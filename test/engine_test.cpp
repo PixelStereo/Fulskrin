@@ -251,12 +251,17 @@ int main(int argc, char **argv)
         int g = e.addLayer("Test Pattern");
         e.setLayerIsf(g, root + "/../isf/generators/TestPattern.fs", &err);
         undo.push(new cmd::AddLayer(&e, g, "add"));
-        // Parameter: two close moves merge into a single step
-        IsfValue v0 = cmd::resolveIsf(&e, g, -1)->inputs()[0].value(), v1 = v0, v2 = v0;
-        v1.f = 20;
-        v2.f = 30;
-        undo.push(new cmd::SetParam(&e, g, -1, 0, v0, v1, "divisions"));
-        undo.push(new cmd::SetParam(&e, g, -1, 0, v1, v2, "divisions"));
+        // Parameter, by its address: two close moves merge into a single step
+        IsfValue v0 = cmd::resolveIsf(&e, g, -1)->inputs()[0].value();
+        auto divisions = [&](double f) {
+            IsfValue x = v0;
+            x.f = f;
+            return cmd::isfValueJson(QString(), cmd::resolveIsf(&e, g, -1)->inputs()[0], x);
+        };
+        CHECK(divisions(1).keys() == QStringList{"param/divisions"});
+        CHECK(cmd::setValues(&undo, &e, e.layerId(g), divisions(20), "divisions"));
+        CHECK(cmd::setValues(&undo, &e, e.layerId(g), divisions(30), "divisions"));
+        CHECK(!cmd::setValues(&undo, &e, e.layerId(g), divisions(30), "divisions")); // unchanged: no step
         CHECK(undo.count() == 2);
         CHECK(cmd::resolveIsf(&e, g, -1)->inputs()[0].fValue == 30);
         undo.undo();
@@ -266,8 +271,8 @@ int main(int argc, char **argv)
         {
             CHECK(cmd::resolveIsf(&e, g, -1)->speed == 1.0);
             const int n0 = undo.count();
-            undo.push(new cmd::SetIsfSpeed(&e, g, -1, 1.0, 2.0));
-            undo.push(new cmd::SetIsfSpeed(&e, g, -1, 2.0, 3.0));
+            cmd::setValue(&undo, &e, e.layerId(g), "speed", 2.0, "speed");
+            cmd::setValue(&undo, &e, e.layerId(g), "speed", 3.0, "speed");
             CHECK(undo.count() == n0 + 1 && cmd::resolveIsf(&e, g, -1)->speed == 3.0);
             undo.undo();
             CHECK(cmd::resolveIsf(&e, g, -1)->speed == 1.0);
@@ -300,8 +305,7 @@ int main(int argc, char **argv)
             undo.clear();
             undo.push(new cmd::AddLayer(&e, g, "add"));
             v0 = cmd::resolveIsf(&e, g, -1)->inputs()[0].value();
-            v1 = v0; v2 = v0; v1.f = 20; v2.f = 30;
-            undo.push(new cmd::SetParam(&e, g, -1, 0, v0, v2, "divisions"));
+            CHECK(cmd::setValues(&undo, &e, e.layerId(g), divisions(30), "divisions"));
         }
         // Mapping
         Mapping before = cmd::SetMapping::read(&e, g), after = before;
@@ -496,13 +500,25 @@ int main(int argc, char **argv)
             CHECK(e.layerCount() == V + 3 && e.groupMembers(V + 2).isEmpty());
             undo.undo();
             CHECK(e.structure() == t0);
-            undo.push(new cmd::SetLayerProp(&e, V + 1, cmd::SetLayerProp::Roi, e.layer(V + 1)->roi, QRectF(0, 0, 0.5, 0.5)));
-            CHECK(e.layer(V + 1)->roi == QRectF(0, 0, 0.5, 0.5));
+            // A ROI moved past its old sides: one step, every side reached (each holds the others in)
+            e.layer(V + 1)->roi = QRectF(QPointF(0, 0), QPointF(0.4, 0.4));
+            CHECK(cmd::setValues(&undo, &e, e.layerId(V + 1),
+                                 {{"roi/left", 0.6}, {"roi/top", 0.6}, {"roi/right", 0.9}, {"roi/bottom", 0.9}}, "roi"));
+            CHECK(QLineF(e.layer(V + 1)->roi.topLeft(), QPointF(0.6, 0.6)).length() < 1e-9 &&
+                  QLineF(e.layer(V + 1)->roi.bottomRight(), QPointF(0.9, 0.9)).length() < 1e-9);
             undo.undo();
-            undo.push(new cmd::SetLayerProp(&e, V + 1, cmd::SetLayerProp::ColorRemove, QColor(Qt::black), QColor(Qt::red)));
+            CHECK(QLineF(e.layer(V + 1)->roi.bottomRight(), QPointF(0.4, 0.4)).length() < 1e-9);
+            e.layer(V + 1)->roi = Layer::fullRoi();
+            CHECK(cmd::setValues(&undo, &e, e.layerId(V + 1), {{"remove/r", 1.0}, {"remove/g", 0.0}, {"remove/b", 0.0}}, "c"));
             CHECK(e.layer(V + 1)->color.remove[0] == 1.0f && e.layer(V + 1)->color.remove[1] == 0.0f);
+            // By id: the layer moved in the list, the step still finds it
+            const quint64 cid = e.layerId(V + 1);
+            const int extra = e.addLayer("Test Pattern");
+            e.moveLayer(extra, V + 0);
+            CHECK(e.indexOfId(cid) == V + 2);
             undo.undo();
-            CHECK(e.layer(V + 1)->color.remove[0] == 0.0f);
+            CHECK(e.layer(e.indexOfId(cid))->color.remove[0] == 0.0f);
+            e.removeLayer(V + 0);
         }
         // Removing a group keeps its members, at the top level
         e.removeLayer(V + 0);

@@ -1,7 +1,9 @@
 #include "Commands.h"
+#include "Osc.h"
 
 #include <QColor>
 #include <QDateTime>
+#include <QUndoStack>
 #include <algorithm>
 
 namespace cmd {
@@ -17,55 +19,61 @@ IsfInstance *resolveIsf(Engine *e, int layer, int slot)
     return slot < int(l->effects.size()) ? l->effects[size_t(slot)].get() : nullptr;
 }
 
-// --- SetParam ---------------------------------------------------------------
+// --- SetValues --------------------------------------------------------------
 
-SetParam::SetParam(Engine *e, int layer, int slot, int input, const IsfValue &before, const IsfValue &after,
-                   const QString &label)
-    : m_e(e), m_layer(layer), m_slot(slot), m_input(input), m_before(before), m_after(after), m_time(nowMs())
+SetValues::SetValues(Engine *e, std::vector<ValueChange> changes, const QString &text)
+    : m_e(e), m_changes(std::move(changes)), m_time(nowMs())
 {
-    setText(QStringLiteral("Change \"%1\"").arg(label));
+    setText(text);
 }
 
-void SetParam::apply(const IsfValue &v)
+void SetValues::apply(bool after)
 {
-    Engine::Lock lk(&m_e->mutex());
-    IsfInstance *inst = resolveIsf(m_e, m_layer, m_slot);
-    if (!inst || m_input < 0 || m_input >= int(inst->inputs().size())) return;
-    inst->inputs()[size_t(m_input)].setValue(v);
+    // Twice when several: values that hold each other in (a ROI's sides, in and out) all reach theirs
+    const int passes = m_changes.size() > 1 ? 2 : 1;
+    for (int k = 0; k < passes; ++k)
+        for (const ValueChange &c : m_changes) m_e->setParameter(c.layer, c.path, after ? c.after : c.before);
 }
 
-void SetParam::undo() { apply(m_before); }
-void SetParam::redo() { apply(m_after); }
-
-bool SetParam::mergeWith(const QUndoCommand *other)
+bool SetValues::mergeWith(const QUndoCommand *other)
 {
-    auto *o = static_cast<const SetParam *>(other);
-    if (o->m_layer != m_layer || o->m_slot != m_slot || o->m_input != m_input) return false;
-    if (o->m_time - m_time > kMergeWindowMs) return false;
-    m_after = o->m_after;
+    auto *o = static_cast<const SetValues *>(other);
+    if (o->m_changes.size() != m_changes.size() || o->m_time - m_time > kMergeWindowMs) return false;
+    for (size_t k = 0; k < m_changes.size(); ++k)
+        if (o->m_changes[k].layer != m_changes[k].layer || o->m_changes[k].path != m_changes[k].path) return false;
+    for (size_t k = 0; k < m_changes.size(); ++k) m_changes[k].after = o->m_changes[k].after;
     m_time = o->m_time;
     return true;
 }
 
-SetIsfSpeed::SetIsfSpeed(Engine *e, int layer, int slot, double before, double after)
-    : m_e(e), m_layer(layer), m_slot(slot), m_before(before), m_after(after), m_time(nowMs())
+bool setValues(QUndoStack *undo, Engine *e, quint64 layer, const QJsonObject &after, const QString &text)
 {
-    setText(QStringLiteral("Change Speed"));
-}
-
-void SetIsfSpeed::apply(double v)
-{
-    Engine::Lock lk(&m_e->mutex());
-    if (IsfInstance *inst = resolveIsf(m_e, m_layer, m_slot)) inst->speed = v;
-}
-
-bool SetIsfSpeed::mergeWith(const QUndoCommand *other)
-{
-    auto *o = static_cast<const SetIsfSpeed *>(other);
-    if (o->m_layer != m_layer || o->m_slot != m_slot || o->m_time - m_time > kMergeWindowMs) return false;
-    m_after = o->m_after;
-    m_time = o->m_time;
+    std::vector<ValueChange> changes;
+    for (auto it = after.begin(); it != after.end(); ++it) {
+        const QJsonValue before = e->parameterValue(layer, it.key());
+        if (before.isUndefined() || before == it.value()) continue;
+        changes.push_back({layer, it.key(), before, it.value()});
+    }
+    if (changes.empty()) return false;
+    undo->push(new SetValues(e, std::move(changes), text));
     return true;
+}
+
+QJsonObject isfValueJson(const QString &prefix, const IsfInput &in, const IsfValue &v)
+{
+    const QString path = prefix + QStringLiteral("param/") + osc::safeName(in.name);
+    switch (in.type) {
+    case IsfInput::Float: return {{path, v.f}};
+    case IsfInput::Long: return {{path, v.l}};
+    case IsfInput::Bool: return {{path, v.b}};
+    case IsfInput::Point2D: return {{path + "/x", v.p.x()}, {path + "/y", v.p.y()}};
+    case IsfInput::Color: {
+        QJsonObject o;
+        for (int c = 0; c < 4; ++c) o.insert(path + "/" + QChar("rgba"[c]), double(v.c[c]));
+        return o;
+    }
+    default: return {};
+    }
 }
 
 // --- SetLayerProp -----------------------------------------------------------
@@ -75,155 +83,65 @@ static QString propText(SetLayerProp::Prop p)
     switch (p) {
     case SetLayerProp::Name: return QStringLiteral("Rename Layer");
     case SetLayerProp::Enabled: return QStringLiteral("Change Enable");
-    case SetLayerProp::Opacity: return QStringLiteral("Change Opacity");
-    case SetLayerProp::Blend: return QStringLiteral("Change Blend Mode");
-    case SetLayerProp::Speed: return QStringLiteral("Change Speed");
-    case SetLayerProp::Mode: return QStringLiteral("Change Play Mode");
-    case SetLayerProp::Volume: return QStringLiteral("Change Volume");
-    case SetLayerProp::Muted: return QStringLiteral("Toggle Mute");
-    case SetLayerProp::InPoint: return QStringLiteral("Set In Point");
-    case SetLayerProp::OutPoint: return QStringLiteral("Set Out Point");
     case SetLayerProp::Locked: return QStringLiteral("Lock / Unlock Layer");
-    case SetLayerProp::EffectsEnabled: return QStringLiteral("Enable / Disable FX");
-    case SetLayerProp::ColorAdd: return QStringLiteral("Change Added Color");
-    case SetLayerProp::ColorRemove: return QStringLiteral("Change Removed Color");
-    case SetLayerProp::Roi: return QStringLiteral("Change ROI");
-    case SetLayerProp::ColorOn: return QStringLiteral("Switch Color");
-    case SetLayerProp::TempOn: return QStringLiteral("Switch Temperature");
-    case SetLayerProp::TintOn: return QStringLiteral("Switch Tint");
-    case SetLayerProp::AddOn: return QStringLiteral("Switch Added Color");
-    case SetLayerProp::RemoveOn: return QStringLiteral("Switch Removed Color");
-    case SetLayerProp::Temp: return QStringLiteral("Change Temperature");
-    case SetLayerProp::Tint: return QStringLiteral("Change Tint");
     case SetLayerProp::Transition: return QStringLiteral("Change Transition");
     case SetLayerProp::ColorMask: return QStringLiteral("Change Color Mask");
-    case SetLayerProp::ColorMaskInvert: return QStringLiteral("Invert Color Mask");
     }
     return {};
 }
 
-SetLayerProp::SetLayerProp(Engine *e, int layer, Prop prop, const QVariant &before, const QVariant &after)
+SetLayerProp::SetLayerProp(Engine *e, quint64 layer, Prop prop, const QVariant &before, const QVariant &after)
     : m_e(e), m_layer(layer), m_prop(prop), m_before(before), m_after(after), m_time(nowMs())
 {
     setText(propText(prop));
 }
 
-QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
+QVariant SetLayerProp::read(Engine *e, quint64 layer, Prop prop)
 {
     Engine::Lock lk(&e->mutex());
-    Layer *l = e->layer(layer);
+    const Layer *l = e->layer(e->indexOfId(layer));
     if (!l) return {};
     switch (prop) {
     case Name: return l->name;
     case Enabled: return l->enabled;
-    case Opacity: return double(l->opacity);
-    case Blend: return int(l->blend);
-    case Speed: return l->speed;
-    case Mode: return int(l->mode);
-    case Volume: return double(l->volume);
-    case Muted: return l->muted;
-    case InPoint: return l->inPoint;
-    case OutPoint: return l->outPoint;
     case Locked: return l->locked;
-    case EffectsEnabled: return l->effectsEnabled;
-    case ColorAdd: return QColor::fromRgbF(l->color.add[0], l->color.add[1], l->color.add[2]);
-    case ColorRemove: return QColor::fromRgbF(l->color.remove[0], l->color.remove[1], l->color.remove[2]);
-    case Roi: return l->roi;
-    case ColorOn: return l->color.enabled;
-    case TempOn: return l->color.tempOn;
-    case TintOn: return l->color.tintOn;
-    case AddOn: return l->color.addOn;
-    case RemoveOn: return l->color.removeOn;
-    case Temp: return double(l->color.temp);
-    case Tint: return double(l->color.tint);
     case Transition: return l->transition;
     case ColorMask: return QVariant(qulonglong(l->color.maskLayer));
-    case ColorMaskInvert: return l->color.maskInvert;
     }
     return {};
 }
 
 void SetLayerProp::apply(const QVariant &v)
 {
-    if (m_prop == InPoint || m_prop == OutPoint) {
-        double in, out;
-        {
-            Engine::Lock lk(&m_e->mutex());
-            Layer *l = m_e->layer(m_layer);
-            if (!l) return;
-            in = l->inPoint;
-            out = l->outPoint;
-        }
-        (m_prop == InPoint ? in : out) = v.toDouble();
-        m_e->setLayerInOut(m_layer, in, out);
-        return;
-    }
-    if (m_prop == Speed) {
-        m_e->setLayerSpeed(m_layer, v.toDouble());
-        return;
-    }
-    if (m_prop == Mode) {
-        m_e->setLayerPlayMode(m_layer, PlayMode(v.toInt()));
-        return;
-    }
     if (m_prop == ColorMask) { // checked against feedback by the engine
         bool invert;
+        int index;
         {
             Engine::Lock lk(&m_e->mutex());
-            Layer *l = m_e->layer(m_layer);
+            index = m_e->indexOfId(m_layer);
+            const Layer *l = m_e->layer(index);
             if (!l) return;
             invert = l->color.maskInvert;
         }
-        m_e->setColorMask(m_layer, v.toULongLong(), invert);
+        m_e->setColorMask(index, v.toULongLong(), invert);
         return;
     }
     Engine::Lock lk(&m_e->mutex());
-    Layer *l = m_e->layer(m_layer);
+    Layer *l = m_e->layer(m_e->indexOfId(m_layer));
     if (!l) return;
     switch (m_prop) {
     case Name: l->name = v.toString(); break;
     case Enabled: l->enabled = v.toBool(); break;
-    case Opacity: l->opacity = float(v.toDouble()); break;
-    case Blend: l->blend = BlendMode(v.toInt()); break;
-    case Volume: l->volume = float(std::clamp(v.toDouble(), 0.0, 2.0)); break;
-    case Muted: l->muted = v.toBool(); break;
     case Locked: l->locked = v.toBool(); break;
-    case EffectsEnabled: l->effectsEnabled = v.toBool(); break;
-    case ColorAdd:
-    case ColorRemove: {
-        const QColor c = v.value<QColor>();
-        float *dst = m_prop == ColorAdd ? l->color.add : l->color.remove;
-        dst[0] = float(c.redF());
-        dst[1] = float(c.greenF());
-        dst[2] = float(c.blueF());
-        break;
-    }
-    case ColorOn: l->color.enabled = v.toBool(); break;
-    case TempOn: l->color.tempOn = v.toBool(); break;
-    case TintOn: l->color.tintOn = v.toBool(); break;
-    case AddOn: l->color.addOn = v.toBool(); break;
-    case RemoveOn: l->color.removeOn = v.toBool(); break;
-    case Temp: l->color.temp = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange))); break;
-    case Tint: l->color.tint = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange))); break;
     case Transition: l->transition = v.toString(); break;
-    case ColorMaskInvert: l->color.maskInvert = v.toBool(); break;
-    case Roi: {
-        const QRectF r = v.toRectF().normalized() & Layer::fullRoi();
-        l->roi = r.isEmpty() ? Layer::fullRoi() : r;
-        break;
-    }
-    default: break;
+    case ColorMask: break;
     }
 }
 
 bool SetLayerProp::mergeWith(const QUndoCommand *other)
 {
     auto *o = static_cast<const SetLayerProp *>(other);
-    if (o->m_layer != m_layer || o->m_prop != m_prop) return false;
-    if (m_prop != Name && m_prop != Opacity && m_prop != Speed && m_prop != Volume && m_prop != InPoint &&
-        m_prop != OutPoint && m_prop != ColorAdd && m_prop != ColorRemove && m_prop != Roi &&
-        m_prop != Temp && m_prop != Tint)
-        return false;
+    if (o->m_layer != m_layer || o->m_prop != m_prop || m_prop != Name) return false;
     if (o->m_time - m_time > kMergeWindowMs) return false;
     m_after = o->m_after;
     m_time = o->m_time;

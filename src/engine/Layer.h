@@ -293,7 +293,7 @@ struct Layer {
     std::vector<std::unique_ptr<Parameter>> paramStore;
     std::vector<Parameter *> paramList;
     QHash<QString, Parameter *> paramIndex; // by address
-    std::vector<quint64> paramKey; // what they were made from
+    quint64 paramKey = 0; // a hash of what they were made from (LayerParams.cpp)
     // Values read from a file for parameters it does not have now (a media file missing: its speed, its in and out
     // points…): written back as they were when it is saved
     QJsonObject extraParams;

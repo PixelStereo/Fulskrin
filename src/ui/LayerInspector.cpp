@@ -353,9 +353,23 @@ void LayerInspector::setProp(int prop, const QVariant &value)
 {
     const auto p = cmd::SetLayerProp::Prop(prop);
     if (p != cmd::SetLayerProp::Enabled && p != cmd::SetLayerProp::Locked && m_engine->isLocked(m_layer)) return;
-    const QVariant before = cmd::SetLayerProp::read(m_engine, m_layer, p);
+    const QVariant before = cmd::SetLayerProp::read(m_engine, m_layerId, p);
     if (!before.isValid() || before == value) return;
-    m_undo->push(new cmd::SetLayerProp(m_engine, m_layer, p, before, value));
+    m_undo->push(new cmd::SetLayerProp(m_engine, m_layerId, p, before, value));
+}
+
+void LayerInspector::setValues(const QJsonObject &values, const QString &text)
+{
+    if (m_engine->isLocked(m_layer)) return;
+    cmd::setValues(m_undo, m_engine, m_layerId, values, text);
+}
+
+void LayerInspector::setRoi(const QRectF &r)
+{
+    const QRectF n = r.normalized() & Layer::fullRoi();
+    const QRectF roi = n.isEmpty() ? Layer::fullRoi() : n;
+    setValues({{"roi/left", roi.left()}, {"roi/top", roi.top()}, {"roi/right", roi.right()}, {"roi/bottom", roi.bottom()}},
+              QStringLiteral("Change ROI"));
 }
 
 void LayerInspector::editMapping(const QString &text, const std::function<void(Mapping &)> &fn, bool merge)
@@ -726,7 +740,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         m_speed->setValue(s.speed * 100);
         m_speed->setToolTip(QStringLiteral("Playback speed — below 0 the media plays backwards, 100 % is its own rate"));
         auto *label = new ResetLabel(QStringLiteral("Speed"), [this] {
-            setProp(cmd::SetLayerProp::Speed, 1.0);
+            setValue(QStringLiteral("speed"), 1.0, QStringLiteral("Change Speed"));
             m_speed->setValue(100);
         });
         m_animate->attach({label, m_speed}, {QStringLiteral("speed")});
@@ -734,7 +748,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         row->addWidget(m_speed, 1);
         v->addLayout(row);
         connect(m_speed, &SliderField::valueEdited, this, [this](double pct) {
-            setProp(cmd::SetLayerProp::Speed, pct / 100.0);
+            setValue(QStringLiteral("speed"), pct / 100.0, QStringLiteral("Change Speed"));
             emit layerChanged();
         });
     } else if (s.type == SourceType::Isf && s.hasGenerator) {
@@ -747,16 +761,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         m_genSpeed->setSnaps({1});
         m_genSpeed->setValue(s.genSpeed);
         m_genSpeed->setToolTip(QStringLiteral("Speed of the shader's time (1 = normal, 0 = stopped)"));
-        auto setSpeed = [this](double v) {
-            double before = 1.0;
-            {
-                Engine::Lock lk(&m_engine->mutex());
-                IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, -1);
-                if (!inst) return;
-                before = inst->speed;
-            }
-            if (std::abs(before - v) > 1e-9) m_undo->push(new cmd::SetIsfSpeed(m_engine, m_layer, -1, before, v));
-        };
+        auto setSpeed = [this](double v) { setValue(QStringLiteral("speed"), v, QStringLiteral("Change Speed")); };
         auto *label = new ResetLabel(QStringLiteral("Speed"), [this, setSpeed] {
             m_genSpeed->setValue(1);
             setSpeed(1);
@@ -1146,7 +1151,7 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
         rowLabel(1, QStringLiteral("Mode"), [this, modes] { // the one new media get (Settings)
             const int def = int(m_engine->defaultPlayMode());
             if (QAbstractButton *b = modes->button(def)) b->setChecked(true);
-            setProp(cmd::SetLayerProp::Mode, def);
+            setValue(QStringLiteral("play_mode"), playModeKey(PlayMode(def)), QStringLiteral("Change Play Mode"));
             emit layerChanged();
         });
         auto *modeRow = new QHBoxLayout;
@@ -1174,7 +1179,7 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
         modeRow->addStretch();
         grid->addLayout(modeRow, 1, 1);
         connect(modes, &QButtonGroup::idClicked, this, [this](int id) {
-            setProp(cmd::SetLayerProp::Mode, id);
+            setValue(QStringLiteral("play_mode"), playModeKey(PlayMode(id)), QStringLiteral("Change Play Mode"));
             emit layerChanged();
         });
         connect(markIn, &QToolButton::clicked, this, [this] { emit setInOutRequested(true); });
@@ -1214,10 +1219,7 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
         m_loop->setToolTip(QStringLiteral("Played range: playback, loops and ping-pong stay between these two points"));
         const double duration0 = s.duration;
         barLabel(1, QStringLiteral("Loop"), [this] {
-            m_undo->beginMacro(QStringLiteral("Clear In / Out Points"));
-            setProp(cmd::SetLayerProp::InPoint, 0.0);
-            setProp(cmd::SetLayerProp::OutPoint, -1.0);
-            m_undo->endMacro();
+            setValues({{"in", 0.0}, {"out", -1.0}}, QStringLiteral("Clear In / Out Points"));
             rebuild();
         });
         bars->addWidget(m_loop, 1, 1);
@@ -1243,8 +1245,8 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
         });
         connect(m_position, &SliderField::valueEdited, this, [this](double t) { m_engine->seekLayer(m_layer, t); });
         connect(m_loop, &RangeField::edited, this, [this, duration0](bool low, double t) {
-            setProp(low ? cmd::SetLayerProp::InPoint : cmd::SetLayerProp::OutPoint,
-                    low ? t : (t >= duration0 - 1e-6 ? -1.0 : t));
+            if (low) setValue(QStringLiteral("in"), t, QStringLiteral("Set In Point"));
+            else setValue(QStringLiteral("out"), t >= duration0 - 1e-6 ? -1.0 : t, QStringLiteral("Set Out Point"));
         });
     }
 
@@ -1279,11 +1281,11 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
         m_meter->setStyleSheet("QProgressBar { background:#1b1b1d; border:none; } QProgressBar::chunk { background:#3fae5a; }");
         v->addWidget(m_meter);
         connect(vol, &SliderField::valueEdited, this, [this](double pct) {
-            setProp(cmd::SetLayerProp::Volume, pct / 100.0);
+            setValue(QStringLiteral("volume"), pct / 100.0, QStringLiteral("Change Volume"));
             emit layerChanged();
         });
         connect(mute, &QCheckBox::toggled, this, [this](bool on) {
-            setProp(cmd::SetLayerProp::Muted, on);
+            setValue(QStringLiteral("mute"), on, QStringLiteral("Toggle Mute"));
             emit layerChanged();
         });
     }
@@ -1353,7 +1355,7 @@ QWidget *LayerInspector::buildRoi(const LayerValues &s)
     auto *v = new QVBoxLayout(box);
     auto *head = new QHBoxLayout;
     auto *title = new ResetLabel(QStringLiteral("<b>ROI</b>"), [this] {
-        setProp(cmd::SetLayerProp::Roi, Layer::fullRoi());
+        setRoi(Layer::fullRoi());
         rebuild();
     });
     title->setToolTip(QStringLiteral("Part of the source picture used by the layer — click to use the whole picture"));
@@ -1392,7 +1394,7 @@ QWidget *LayerInspector::buildRoi(const LayerValues &s)
     }
     v->addLayout(grid);
     auto apply = [this](const QRectF &r) {
-        setProp(cmd::SetLayerProp::Roi, r);
+        setRoi(r);
         emit layerChanged();
     };
     QPointer<RoiEditor> editor = m_roi;
@@ -1434,7 +1436,7 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
     outer->addWidget(body);
     connect(colorOn, &QCheckBox::toggled, this, [this, body](bool on) {
         body->setEnabled(on);
-        setProp(cmd::SetLayerProp::ColorOn, on);
+        setValue(QStringLiteral("color/enable"), on, QStringLiteral("Switch Color"));
     });
 
     // Mask: where the whole section applies, from another layer's picture stretched over this one
@@ -1476,15 +1478,15 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
         connect(pick, &QComboBox::activated, this, [this, pick, inv](int i) {
             const quint64 id = pick->itemData(i).toULongLong();
             QString err;
-            const QVariant before = cmd::SetLayerProp::read(m_engine, m_layer, cmd::SetLayerProp::ColorMask);
+            const QVariant before = cmd::SetLayerProp::read(m_engine, m_layerId, cmd::SetLayerProp::ColorMask);
             if (!m_engine->setColorMask(m_layer, id, inv->isChecked(), &err)) { // refused: feedback
                 if (!err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Mask"), err);
             } else if (before.toULongLong() != id) {
-                m_undo->push(new cmd::SetLayerProp(m_engine, m_layer, cmd::SetLayerProp::ColorMask, before, QVariant(qulonglong(id))));
+                m_undo->push(new cmd::SetLayerProp(m_engine, m_layerId, cmd::SetLayerProp::ColorMask, before, QVariant(qulonglong(id))));
             }
             QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
         });
-        connect(inv, &QCheckBox::toggled, this, [this](bool on) { setProp(cmd::SetLayerProp::ColorMaskInvert, on); });
+        connect(inv, &QCheckBox::toggled, this, [this](bool on) { setValue(QStringLiteral("mask/invert"), on, QStringLiteral("Invert Color Mask")); });
     }
 
     // Balance first, as in DaVinci Resolve: temperature (blue / yellow) and tint (green / magenta)
@@ -1496,16 +1498,14 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
             const char *name, *path;
             double range, value;
             QGradientStops gradient;
-            int prop;
             QPointer<SliderField> *field;
             bool on;
-            int onProp;
         } defs[] = {{"Temp", "temp", ColorAdjust::kTempRange, s.color.temp,
                      {{0.0, QColor("#3a7bff")}, {0.5, QColor("#888888")}, {1.0, QColor("#ffd23a")}},
-                     cmd::SetLayerProp::Temp, &m_temp, s.color.tempOn, cmd::SetLayerProp::TempOn},
+                     &m_temp, s.color.tempOn},
                     {"Tint", "tint", ColorAdjust::kTintRange, s.color.tint,
                      {{0.0, QColor("#2fd04a")}, {0.5, QColor("#888888")}, {1.0, QColor("#e03ce0")}},
-                     cmd::SetLayerProp::Tint, &m_tint, s.color.tintOn, cmd::SetLayerProp::TintOn}};
+                     &m_tint, s.color.tintOn}};
         int row = 1;
         for (const Def &d : defs) {
             auto *bar = new SliderField;
@@ -1516,12 +1516,12 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
             bar->setGradient(d.gradient);
             bar->setValue(d.value);
             *d.field = bar;
-            const int prop = d.prop;
+            const QString path = QString::fromLatin1(d.path), title = QString::fromUtf8(d.name);
             auto *on = new FlagBox;
             on->setChecked(d.on);
             on->setToolTip(QStringLiteral("Apply %1 (the value is kept either way)").arg(QString::fromUtf8(d.name)));
-            const int onProp = d.onProp;
-            connect(on, &QCheckBox::toggled, this, [this, onProp](bool v) { setProp(onProp, v); });
+            connect(on, &QCheckBox::toggled, this,
+                    [this, path, title](bool v) { setValue(path + "/enable", v, QStringLiteral("Switch ") + title); });
             grid->addWidget(on, row, 0);
             auto *name = new ResetLabel(QString::fromUtf8(d.name), [bar] {
                 bar->setValue(0);
@@ -1530,7 +1530,8 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
             grid->addWidget(name, row, 1);
             grid->addWidget(bar, row, 2, 1, 2);
             m_animate->attach({name, bar}, {QString::fromLatin1(d.path)});
-            connect(bar, &SliderField::valueEdited, this, [this, prop](double x) { setProp(prop, x); });
+            connect(bar, &SliderField::valueEdited, this,
+                    [this, path, title](double x) { setValue(path, x, QStringLiteral("Change ") + title); });
             ++row;
         }
         grid->setColumnStretch(2, 1);
@@ -1579,11 +1580,17 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
     m_animate->attach(m_colorRemove, {"remove/r", "remove/g", "remove/b"});
     m_colorAdd->setSwitch(true, s.color.addOn, QStringLiteral("Apply the added color (it is kept either way)"));
     m_colorRemove->setSwitch(true, s.color.removeOn, QStringLiteral("Apply the removed color (it is kept either way)"));
-    connect(m_colorAdd, &ColorEditor::colorEdited, this, [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorAdd, c); });
+    auto rgb = [](const QString &key, const QColor &c) {
+        return QJsonObject{{key + "/r", c.redF()}, {key + "/g", c.greenF()}, {key + "/b", c.blueF()}};
+    };
+    connect(m_colorAdd, &ColorEditor::colorEdited, this,
+            [this, rgb](const QColor &c) { setValues(rgb("add", c), QStringLiteral("Change Added Color")); });
     connect(m_colorRemove, &ColorEditor::colorEdited, this,
-            [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorRemove, c); });
-    connect(m_colorAdd, &ColorEditor::switchToggled, this, [this](bool on) { setProp(cmd::SetLayerProp::AddOn, on); });
-    connect(m_colorRemove, &ColorEditor::switchToggled, this, [this](bool on) { setProp(cmd::SetLayerProp::RemoveOn, on); });
+            [this, rgb](const QColor &c) { setValues(rgb("remove", c), QStringLiteral("Change Removed Color")); });
+    connect(m_colorAdd, &ColorEditor::switchToggled, this,
+            [this](bool on) { setValue(QStringLiteral("add/enable"), on, QStringLiteral("Switch Added Color")); });
+    connect(m_colorRemove, &ColorEditor::switchToggled, this,
+            [this](bool on) { setValue(QStringLiteral("remove/enable"), on, QStringLiteral("Switch Removed Color")); });
     return g;
 }
 
@@ -1603,11 +1610,11 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
     m_opacity = opacity;
     auto *opacityLabel = new ResetLabel(QStringLiteral("Opacity"), [this, opacity] {
         opacity->setValue(100);
-        setProp(cmd::SetLayerProp::Opacity, 1.0);
+        setValue(QStringLiteral("opacity"), 1.0, QStringLiteral("Change Opacity"));
     });
     form->addRow(opacityLabel, opacity);
     m_animate->attach({opacityLabel, opacity}, {QStringLiteral("opacity")});
-    connect(opacity, &SliderField::valueEdited, this, [this](double v) { setProp(cmd::SetLayerProp::Opacity, v / 100.0); });
+    connect(opacity, &SliderField::valueEdited, this, [this](double v) { setValue(QStringLiteral("opacity"), v / 100.0, QStringLiteral("Change Opacity")); });
     if (s.isViewport) return g; // drawn onto nothing: no blend, no routing
 
     auto *blend = new QComboBox;
@@ -1615,7 +1622,10 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
     blend->setCurrentIndex(blend->findData(int(s.blend)));
     form->addRow(new ResetLabel(QStringLiteral("Blend Mode"), [blend] { blend->setCurrentIndex(0); }), blend);
     connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
-            [this, blend](int i) { setProp(cmd::SetLayerProp::Blend, blend->itemData(i).toInt()); });
+            [this, blend](int i) {
+                setValue(QStringLiteral("blend_mode"), blendModeKey(BlendMode(blend->itemData(i).toInt())),
+                         QStringLiteral("Change Blend Mode"));
+            });
 
     return g;
 }
@@ -2036,7 +2046,7 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
     all->setStyleSheet("QCheckBox { font-weight:bold; }");
     v->addWidget(all);
     connect(all, &QCheckBox::toggled, this, [this](bool on) {
-        setProp(cmd::SetLayerProp::EffectsEnabled, on);
+        setValue(QStringLiteral("fx/enable"), on, QStringLiteral("Enable / Disable FX"));
         emit layerChanged();
     });
 

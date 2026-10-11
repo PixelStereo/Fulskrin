@@ -1,6 +1,7 @@
 #pragma once
 #include <QPointer>
 #include <QVariant>
+#include <QJsonObject>
 #include <QWidget>
 #include <functional>
 #include <memory>
@@ -71,7 +72,11 @@ private:
     void refreshSpatial(); // position / scale fields follow the mapping (handles dragged in the preview)
     void editEffects(const QString &text, const std::function<void()> &op);
     void editSource(const QString &text, const std::function<void()> &op);
-    void setProp(int prop, const QVariant &value);
+    void setProp(int prop, const QVariant &value); // cmd::SetLayerProp::Prop
+    // Values by address (Parameter.h): one undo step; nothing on a locked layer
+    void setValues(const QJsonObject &values, const QString &text);
+    void setValue(const QString &path, const QJsonValue &v, const QString &text) { setValues({{path, v}}, text); }
+    void setRoi(const QRectF &r);
     void showAnimation(const QString &param); // the Anim tab, that number's card unfolded
     // The limits of the layer's number at `path`, as declared (Parameter.h); `lo`, `hi` if it has none
     std::pair<double, double> limitsOf(const QString &path, double lo, double hi) const;
