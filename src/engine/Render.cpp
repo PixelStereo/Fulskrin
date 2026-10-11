@@ -480,19 +480,6 @@ void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const I
     processLayer(v, v.groupTarget.tex, v.groupTarget.w, v.groupTarget.h, true, rc);
 }
 
-// The soft edge of the layer about to be drawn, for the composite shaders
-void Engine::setSoftEdge(const SoftEdge &se, GLint widthLoc, GLint powerLoc)
-{
-    auto f = gl();
-    if (se.active()) {
-        f->glUniform4f(widthLoc, float(se.width[0]), float(se.width[1]), float(se.width[2]), float(se.width[3]));
-        f->glUniform4f(powerLoc, float(se.power[0]), float(se.power[1]), float(se.power[2]), float(se.power[3]));
-    } else {
-        f->glUniform4f(widthLoc, 0, 0, 0, 0);
-        f->glUniform4f(powerLoc, 1, 1, 1, 1);
-    }
-}
-
 // Draws the layers into the target; `view` is the part of the composition the target shows
 // (normalized, origin top left: the whole composition by default)
 void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer *> &layers, const QRectF &view,
@@ -556,7 +543,6 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
             f->glUniform4f(m_diffRotLoc, rotCos, rotSin, rotCx, rotCy);
             f->glUniform1f(m_diffAspLoc, asp);
             f->glUniform1f(m_diffOpacityLoc, opacity);
-            setSoftEdge(l.mapping.soft, m_diffSoftLoc, m_diffSoftPowLoc);
             f->glActiveTexture(GL_TEXTURE1);
             f->glBindTexture(GL_TEXTURE_2D, m_dstCopy.tex);
             f->glActiveTexture(GL_TEXTURE0);
@@ -579,7 +565,6 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
             default: f->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
             }
             f->glUniform1f(m_compOpacityLoc, opacity);
-            setSoftEdge(l.mapping.soft, m_compSoftLoc, m_compSoftPowLoc);
         }
         bindMesh(l);
         f->glBindTexture(GL_TEXTURE_2D, l.finalTex);
@@ -678,7 +663,6 @@ void Engine::composite()
             f->glUniform1i(m_compTexLoc, 0);
             f->glUniform4f(m_compViewLoc, 1, 1, 0, 0);
             f->glUniform1f(m_compOpacityLoc, v.opacity);
-            setSoftEdge(SoftEdge(), m_compSoftLoc, m_compSoftPowLoc); // none
             f->glActiveTexture(GL_TEXTURE0);
             f->glBindVertexArray(m_meshVao);
             bindMeshBuffer(m_meshVbo); // the whole frame, built once

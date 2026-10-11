@@ -87,6 +87,8 @@ private:
     int m_selectedEffect = 0;
     QString m_subTab = QStringLiteral("Source"); // the tab shown, by its name: kept from one layer to the next
     quint64 m_layerId = 0;
+    QPointer<SliderField> m_fxSpeed; // the selected FX's speed
+    QString m_fxSpeedPath;
     bool m_locked = false;
     QVBoxLayout *m_layout = nullptr;
     QWidget *m_content = nullptr;
@@ -101,8 +103,6 @@ private:
     // Followed while a snapshot fades them (as temp / tint)
     QPointer<SliderField> m_opacity, m_volume;
     QPointer<ParamPanel> m_generatorParams, m_effectParams;
-    QPointer<QGroupBox> m_softBox;
-    QPointer<SliderField> m_softWidth[4], m_softPower[4];
     struct RouteField {
         quint64 viewport;
         QPointer<SliderField> field;

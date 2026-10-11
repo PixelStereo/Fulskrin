@@ -1076,7 +1076,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     if (isGroup) add(P + "/layer", QString(), 0, "Layers");
     // Readable names of the containers
     static const std::pair<const char *, const char *> kNames[] = {
-        {"/roi", "ROI"},        {"/param", "Parameters"}, {"/corner", "Corners"}, {"/soft_edge", "Soft Edge"},
+        {"/roi", "ROI"},        {"/param", "Parameters"}, {"/corner", "Corners"},
         {"/text", "Text"},      {"/fx", "FX"},            {"/output", "Output"},  {"/position", "Position"},
         {"/pivot", "Pivot"},    {"/scale", "Scale"},      {"/add", "Add"},        {"/remove", "Remove"}};
     for (const auto &[suffix, name] : kNames) {

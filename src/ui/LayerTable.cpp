@@ -212,9 +212,15 @@ protected:
     void mouseReleaseEvent(QMouseEvent *e) override
     {
         m_pressRow = -1;
-        if (m_pendingPress) { // a click, not a drag: it selects now
-            std::unique_ptr<QMouseEvent> press = std::move(m_pendingPress);
-            QTableWidget::mousePressEvent(press.get());
+        if (m_pendingPress) { // a plain click, not a drag: that row alone, selected now
+            const QPoint p = m_pendingPress->position().toPoint();
+            m_pendingPress.reset();
+            const int row = rowAt(p.y()), col = columnAt(p.x());
+            if (row >= 0) {
+                setCurrentCell(row, std::max(0, col), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+                emit clicked(model()->index(row, std::max(0, col)));
+            }
+            return;
         }
         QTableWidget::mouseReleaseEvent(e);
     }
@@ -326,7 +332,7 @@ private:
     Target m_target;
     int m_pressRow = -1;
     QPoint m_pressPos;
-    std::unique_ptr<QMouseEvent> m_pendingPress; // a plain click, applied on release unless it became a drag
+    std::unique_ptr<QMouseEvent> m_pendingPress; // a plain click, selecting on release unless it became a drag
 };
 } // namespace
 
