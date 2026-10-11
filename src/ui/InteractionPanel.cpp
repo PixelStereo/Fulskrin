@@ -19,6 +19,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QTabBar>
 #include <QTimer>
@@ -174,6 +175,7 @@ InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *pa
     m_settingsLayout = new QVBoxLayout(m_settings);
     m_settingsLayout->setContentsMargins(0, 0, 4, 0);
     scroll->setWidget(m_settings);
+    m_scroll = scroll;
     sv->addWidget(scroll, 1);
 
     auto *split = new QSplitter(Qt::Vertical);
@@ -424,8 +426,9 @@ void InteractionPanel::refreshLevels()
         const QString text = has ? QStringLiteral("%1 %").arg(std::lround(out * 100)) : QStringLiteral("—");
         if (item->text(2) != text) item->setText(2, text);
     }
-    double level = 0, out = 0;
-    const bool has = m_shown && m_engine->interactionLevels(m_shown, &level, &out);
+    double level = 0, out = 0, curveIn = 0;
+    const bool has = m_shown && m_engine->interactionLevels(m_shown, &level, &out, &curveIn);
+    if (m_lane) m_lane->setPlayhead(curveIn, has);
     if (m_inMeter) m_inMeter->setValue(has ? int(level * 1000) : 0);
     if (m_outMeter) m_outMeter->setValue(has ? int(out * 1000) : 0);
     if (m_copy) m_copy->setEnabled(m_shown != 0);
@@ -486,6 +489,7 @@ void InteractionPanel::rebuildSettings()
     const std::optional<Interaction> cur = selected();
     m_shown = cur ? cur->id : 0;
     m_inMeter = m_outMeter = nullptr;
+    m_lane = nullptr;
     while (QLayoutItem *item = m_settingsLayout->takeAt(0)) {
         if (QWidget *w = item->widget()) w->deleteLater();
         delete item;
@@ -885,6 +889,7 @@ void InteractionPanel::rebuildSettings()
     curveRow->addWidget(resetCurve);
     form->addRow(QString(), curveRow);
     connect(curveOn, &QCheckBox::toggled, this, [this, edit](bool on) {
+        m_revealCurve = on;
         edit(QStringLiteral("Change Curve"), [on](Interaction &x) { x.curveOn = on; });
         rebuildSettings();
     });
@@ -893,11 +898,24 @@ void InteractionPanel::rebuildSettings()
         rebuildSettings();
     });
     if (it.curveOn) {
+        // The animations' curve editor, its whole square shown (0..1 in, 0..1 out, a margin around), the playhead where
+        // the source is now
         auto *lane = new CurveLane;
         lane->setTrack(it.curve, 1.0, 0.0, 1.0);
-        lane->setView(0, 1, 0, 1);
-        lane->setMinimumHeight(160);
+        lane->setView(-0.03, 1.03, -0.08, 1.08);
+        lane->setFixedHeight(220);
+        lane->setToolTip(QStringLiteral("Across: what comes in (after the filter) · up: what goes out. Click to add a key, drag "
+                                        "it, double-click to remove it; right-click: its curve (easing, Bézier, hold)"));
+        m_lane = lane;
         m_settingsLayout->addWidget(lane);
+        if (m_revealCurve) { // just turned on: shown
+            m_revealCurve = false;
+            QTimer::singleShot(60, this, [this] { // once laid out
+                if (!m_lane || !m_scroll) return;
+                m_settings->adjustSize();
+                m_scroll->verticalScrollBar()->setValue(m_scroll->verticalScrollBar()->maximum()); // it is last
+            });
+        }
         connect(lane, &CurveLane::edited, this, [edit](const AnimTrack &t, int gesture) {
             edit(QStringLiteral("Edit Curve"), [t](Interaction &x) {
                 x.curve.keys = t.keys;

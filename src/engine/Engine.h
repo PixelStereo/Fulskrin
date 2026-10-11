@@ -240,7 +240,8 @@ public:
     bool setInteraction(const Interaction &it);                 // by its id
     void removeInteraction(quint64 id);
     // What it does now (shown): its source after the range and the toggle, and its result (0..1); false: nothing yet
-    bool interactionLevels(quint64 id, double *level, double *output) const;
+    // curveIn: what enters its curve (after the filter)
+    bool interactionLevels(quint64 id, double *level, double *output, double *curveIn = nullptr) const;
     void feedInteraction(const InteractionEvent &e); // a source's value (any thread)
     // Learn: the next event from a source is kept, for the interface to take (the interactions go on meanwhile)
     void setInteractionLearn(bool on);

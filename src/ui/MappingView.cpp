@@ -73,7 +73,21 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
         QSignalBlocker b(m_magnetButton);
         m_magnetButton->setChecked(magnet::enabled());
     });
-    connect(theme::notifier(), &theme::Notifier::changed, this, [this] { m_magnetButton->setIcon(magnet::icon()); });
+    connect(theme::notifier(), &theme::Notifier::changed, this, [this] {
+        m_magnetButton->setIcon(magnet::icon());
+        m_autoSelectButton->setIcon(autoselect::icon());
+    });
+    m_autoSelectButton = button(QString(), QStringLiteral("Auto-select: a click in the preview selects the layer or the "
+                                                          "viewport under it.\nOff: they are chosen in the list; a click "
+                                                          "only moves the one selected."));
+    m_autoSelectButton->setIcon(autoselect::icon());
+    m_autoSelectButton->setCheckable(true);
+    m_autoSelectButton->setChecked(autoselect::enabled());
+    connect(m_autoSelectButton, &QToolButton::toggled, this, [](bool on) { autoselect::setEnabled(on); });
+    connect(autoselect::notifier(), &autoselect::Notifier::changed, this, [this] {
+        QSignalBlocker b(m_autoSelectButton);
+        m_autoSelectButton->setChecked(autoselect::enabled());
+    });
     connect(out, &QToolButton::clicked, this, [this] { zoomBy(1 / 1.25); });
     connect(in, &QToolButton::clicked, this, [this] { zoomBy(1.25); });
     connect(fit, &QToolButton::clicked, this, &MappingView::zoomToFit);
@@ -891,7 +905,8 @@ void MappingView::mousePressEvent(QMouseEvent *e)
     } else if (additive && mapping()) { // Ctrl/⌘+drag: selection rectangle
         m_rubber = true;
         m_rubberStart = m_rubberEnd = p;
-    } else if (const int vp = hitViewportFrame(p); vp >= 0) { // a viewport's frame: select it and drag it
+    } else if (const int vp = hitViewportFrame(p); vp >= 0 && (vp == m_layer || autoselect::enabled())) {
+        // a viewport's frame: select it (auto-select) and drag it
         m_selection.clear();
         if (vp != m_layer) {
             lk.unlock();
@@ -902,7 +917,7 @@ void MappingView::mousePressEvent(QMouseEvent *e)
     } else if (m_layer >= 0 && !isViewport(m_layer) && insideLayer(m_layer, p)) {
         m_selection.clear();
         m_dragLayer = !locked;
-    } else {
+    } else if (autoselect::enabled()) {
         // Select the topmost visible layer under the cursor (in a group: its layers before the group itself,
         // at any depth). Viewports are picked by their frame.
         m_selection.clear();

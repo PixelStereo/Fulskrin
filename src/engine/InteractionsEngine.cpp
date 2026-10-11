@@ -74,13 +74,14 @@ void Engine::removeInteraction(quint64 id)
     emit interactionsChanged();
 }
 
-bool Engine::interactionLevels(quint64 id, double *level, double *output) const
+bool Engine::interactionLevels(quint64 id, double *level, double *output, double *curveIn) const
 {
     Lock lk(&m_mutex);
     const auto r = m_interactionRun.find(id);
     if (r == m_interactionRun.end() || !r->second.proc.level()) return false;
     if (level) *level = *r->second.proc.level();
     if (output) *output = r->second.proc.output().value_or(*r->second.proc.level());
+    if (curveIn) *curveIn = r->second.proc.curveInput().value_or(*r->second.proc.level());
     return true;
 }
 

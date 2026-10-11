@@ -289,6 +289,7 @@ std::optional<double> InteractionProcessor::step(const Interaction &it, double d
         y = std::clamp(m_y, 0.0, 1.0);
     }
     m_fresh = false;
+    m_curveIn = y;
     if (it.curveOn && !it.curve.keys.empty()) {
         const double c = it.curve.valueAt(y, y);
         if (std::isfinite(c)) y = std::clamp(c, 0.0, 1.0);

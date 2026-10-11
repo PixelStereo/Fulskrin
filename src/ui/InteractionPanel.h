@@ -8,6 +8,7 @@
 #include "Interactions.h"
 
 #include <QHash>
+#include <QPointer>
 #include <QWidget>
 #include <optional>
 
@@ -65,6 +66,9 @@ private:
     QLabel *m_settingsTitle = nullptr;
     QPushButton *m_copy = nullptr, *m_paste = nullptr;
     QProgressBar *m_inMeter = nullptr, *m_outMeter = nullptr;
+    QPointer<class CurveLane> m_lane;
+    bool m_revealCurve = false;
+    class QScrollArea *m_scroll = nullptr;
     QTimer *m_timer;
     quint64 m_shown = 0;        // the interaction whose settings are shown
     bool m_committing = false;  // its own edit going to the engine: the settings are not made again

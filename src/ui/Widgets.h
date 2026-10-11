@@ -60,6 +60,22 @@ void setDistance(int px);
 QIcon icon();          // a horseshoe magnet
 } // namespace magnet
 
+// Auto-select: a click in the composition's preview selects the layer or the viewport under it (on), or only acts on the
+// one selected in the list (off: they are chosen in the list). Kept for this machine (the button next to the magnet).
+namespace autoselect {
+class Notifier : public QObject
+{
+    Q_OBJECT
+public:
+signals:
+    void changed();
+};
+Notifier *notifier();
+bool enabled();
+void setEnabled(bool on);
+QIcon icon(); // a pointer arrow
+} // namespace autoselect
+
 // Parameter name: a click puts the parameter back to its default value.
 class ResetLabel : public QLabel
 {

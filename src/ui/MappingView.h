@@ -136,6 +136,7 @@ private:
     bool m_guidePoint = false;
     QPointF m_guideAt;
     QToolButton *m_magnetButton = nullptr;
+    QToolButton *m_autoSelectButton = nullptr;
 
     // Masks
     int m_maskIndex = -1;
