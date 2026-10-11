@@ -1098,6 +1098,7 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
             l->setStyleSheet("color:#8a8a8e;");
             l->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
             grid->addWidget(l, row, 0);
+            return l;
         };
         auto iconButton = [&](const QIcon &icon, const QString &tip, bool checkable) {
             auto *b = new QToolButton;
@@ -1159,12 +1160,13 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
 
         // Mode: what happens at the end, then the in / out points at the playhead
         auto *modes = new QButtonGroup(g);
-        rowLabel(1, QStringLiteral("Mode"), [this, modes] { // the one new media get (Settings)
+        QLabel *modeLabel = rowLabel(1, QStringLiteral("Mode"), [this, modes] { // the one new media get (Settings)
             const int def = int(m_engine->defaultPlayMode());
             if (QAbstractButton *b = modes->button(def)) b->setChecked(true);
             setValue(QStringLiteral("play_mode"), playModeKey(PlayMode(def)), QStringLiteral("Change Play Mode"));
             emit layerChanged();
         });
+        m_animate->attach(modeLabel, {QStringLiteral("play_mode")});
         auto *modeRow = new QHBoxLayout;
         modeRow->setSpacing(2);
         modes->setExclusive(true);
@@ -1279,6 +1281,7 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
         icon->setStyleSheet("color:#8a8a8e;");
         icon->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         auto *mute = new FlagBox(QStringLiteral("Mute"));
+        m_animate->attach(mute, {QStringLiteral("mute")});
         mute->setChecked(s.muted);
         row->addWidget(icon);
         row->addWidget(vol, 1);
@@ -1436,6 +1439,7 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
     outer->setContentsMargins(0, 0, 0, 0);
     // Switch of the whole section: the values are kept, they are simply not applied
     auto *colorOn = new FlagBox(QStringLiteral("Color"));
+    m_animate->attach(colorOn, {QStringLiteral("color/enable")});
     colorOn->setChecked(s.color.enabled);
     colorOn->setStyleSheet("font-weight:bold;");
     colorOn->setToolTip(QStringLiteral("Apply the color of this layer.\nOff: every value is kept, the picture is left alone."));
@@ -1480,6 +1484,7 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
                                         "all where it is black or transparent, in proportion in between. That picture is "
                                         "stretched over this layer's, after its ROI. The layer can stay hidden."));
         auto *inv = new FlagBox(QStringLiteral("Invert"));
+        m_animate->attach(inv, {QStringLiteral("mask/invert")});
         inv->setChecked(s.color.maskInvert);
         inv->setEnabled(s.color.maskLayer != 0);
         row->addWidget(label);
@@ -1530,6 +1535,7 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
             const QString path = QString::fromLatin1(d.path), title = QString::fromUtf8(d.name);
             auto *on = new FlagBox;
             on->setChecked(d.on);
+            m_animate->attach(on, {QString::fromLatin1(d.path) + QStringLiteral("/enable")});
             on->setToolTip(QStringLiteral("Apply %1 (the value is kept either way)").arg(QString::fromUtf8(d.name)));
             connect(on, &QCheckBox::toggled, this,
                     [this, path, title](bool v) { setValue(path + "/enable", v, QStringLiteral("Switch ") + title); });
@@ -1631,7 +1637,9 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
     auto *blend = new QComboBox;
     for (BlendMode m : kBlendModes) blend->addItem(blendModeName(m), int(m));
     blend->setCurrentIndex(blend->findData(int(s.blend)));
-    form->addRow(new ResetLabel(QStringLiteral("Blend Mode"), [blend] { blend->setCurrentIndex(0); }), blend);
+    auto *blendLabel = new ResetLabel(QStringLiteral("Blend Mode"), [blend] { blend->setCurrentIndex(0); });
+    form->addRow(blendLabel, blend);
+    m_animate->attach({blendLabel, blend}, {QStringLiteral("blend_mode")});
     connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this, blend](int i) {
                 setValue(QStringLiteral("blend_mode"), blendModeKey(BlendMode(blend->itemData(i).toInt())),
@@ -1990,6 +1998,7 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
 
     // General switch of the chain
     auto *all = new FlagBox(QStringLiteral("FX Enable"));
+    m_animate->attach(all, {QStringLiteral("fx/enable")});
     all->setChecked(s.effectsEnabled);
     all->setToolTip(QStringLiteral("Turns the whole FX chain on or off (each FX keeps its own switch)"));
     all->setStyleSheet("QCheckBox { font-weight:bold; }");

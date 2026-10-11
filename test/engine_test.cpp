@@ -2063,6 +2063,96 @@ int main(int argc, char **argv)
         e.newProject();
         CHECK(e.snapshotCount() == 0);
     }
+    // Snapshots arranged in groups (nested): their order is the tree's; saved and loaded
+    {
+        e.newProject();
+        e.setFadesManual(true);
+        Engine::Snapshot m;
+        m.fade = 0;
+        quint64 ids[3];
+        for (int k = 0; k < 3; ++k) {
+            m.name = QStringLiteral("S%1").arg(k);
+            ids[k] = e.snapshot(e.addSnapshot(m)).id;
+        }
+        CHECK(e.snapshotTree().size() == 3 && e.snapshotTree()[2].snapshot == ids[2]);
+        using N = Engine::SnapshotNode;
+        auto leaf = [](quint64 id) {
+            N n;
+            n.snapshot = id;
+            return n;
+        };
+        auto near = [](double a, double b) { return std::abs(a - b) < 1e-3; };
+        N inner; // a group in a group
+        inner.name = "Inner";
+        inner.children = {leaf(ids[0])};
+        N outer;
+        outer.name = "Outer";
+        outer.children = {leaf(ids[2]), inner};
+        e.setSnapshotTree({outer, leaf(ids[1]), leaf(999)}); // 999: unknown, dropped
+        const auto t = e.snapshotTree();
+        CHECK(t.size() == 2 && t[0].group && t[0].children.size() == 2 && t[0].children[1].group &&
+              t[0].children[1].group != t[0].group);
+        CHECK(e.snapshot(0).id == ids[2] && e.snapshot(1).id == ids[0] && e.snapshot(2).id == ids[1]); // depth first
+        // A snapshot stored after one in a group goes in that group, right after it
+        m.name = "S3";
+        const int at = e.addSnapshot(m, 2); // after S0 (index 1, in Inner)
+        CHECK(at == 2 && e.snapshotTree()[0].children[1].children.size() == 2);
+        e.removeSnapshot(e.indexOfSnapshot(ids[0]));
+        CHECK(e.snapshotTree()[0].children[1].children.size() == 1 && e.snapshotCount() == 3);
+        CHECK(e.saveProject(tmp + "/tree.fulskrin", {}, &err));
+        const auto saved = e.snapshotTree();
+        e.newProject();
+        CHECK(e.snapshotTree().empty());
+        CHECK(e.loadProject(tmp + "/tree.fulskrin", nullptr, &err));
+        CHECK(e.snapshotTree() == saved);
+
+        // Presets: a few values, recalled with their fade (each its own time), the others left alone
+        const int l = e.addLayer("P");
+        e.setLayerImage(l, tmp + "/redblue.png", &err);
+        const quint64 lid = e.layerId(l);
+        Engine::Preset p;
+        p.name = "Half";
+        p.fade = 1.0;
+        e.layer(l)->opacity = 0.5f;
+        e.layer(l)->mapping.rotation = 90;
+        p.values.push_back(e.presetValue(lid, "opacity"));
+        Engine::PresetValue rot = e.presetValue(lid, "rotation");
+        rot.time = 0; // a cut
+        p.values.push_back(rot);
+        p.values.push_back(e.presetValue(lid, "blend_mode"));
+        CHECK(p.values[0].value.toDouble() == 0.5 && p.indexOf(lid, "rotation") == 1 && p.indexOf(lid, "scale/x") < 0);
+        const int pi = e.addPreset(p);
+        CHECK(pi == 0 && e.presetCount() == 1 && e.preset(0).id);
+        e.layer(l)->opacity = 1.0f;
+        e.layer(l)->mapping.rotation = 0;
+        e.layer(l)->mapping.position = QPointF(0.2, 0.2);
+        e.recallPreset(0);
+        CHECK(near(e.layer(l)->mapping.rotation, 90) && near(e.layer(l)->opacity, 1.0));
+        e.advanceFades(0.5);
+        CHECK(e.layer(l)->opacity < 0.95f && e.layer(l)->opacity > 0.55f);
+        e.advanceFades(0.6);
+        CHECK(near(e.layer(l)->opacity, 0.5) && near(e.layer(l)->mapping.position.x(), 0.2)); // not in it: left alone
+        // The composition's values too
+        Engine::Preset c;
+        c.fade = 0;
+        Engine::PresetValue level = e.presetValue(0, "opacity");
+        level.value = 0.3;
+        c.values.push_back(level);
+        e.addPreset(c);
+        e.recallPreset(1);
+        e.renderFrame(); // the level is set at the frame
+        CHECK(near(e.compositionOpacity(), 0.3));
+        e.fadeCompositionOpacity(1.0, 0);
+        // Saved and loaded
+        CHECK(e.saveProject(tmp + "/presets.fulskrin", {}, &err));
+        e.newProject();
+        CHECK(e.presetCount() == 0);
+        CHECK(e.loadProject(tmp + "/presets.fulskrin", nullptr, &err));
+        CHECK(e.presetCount() == 2 && e.preset(0).name == "Half" && e.preset(0).values.size() == 3 &&
+              e.preset(0).values[1].time == 0 && e.preset(0).values[0].layer == lid);
+        e.setFadesManual(false);
+        e.newProject();
+    }
     } // snapshots
 
     if (area("masks")) {

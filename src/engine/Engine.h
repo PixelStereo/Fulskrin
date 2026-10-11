@@ -32,6 +32,7 @@
 #include <QObject>
 #include <QRecursiveMutex>
 #include <limits>
+#include <QSet>
 #include <QSize>
 #include <atomic>
 #include <condition_variable>
@@ -223,6 +224,50 @@ public:
     // the layers the state holds but leaves out ("included": false), not the locked ones.
     void applyLayers(const QJsonArray &layers, double fade, bool hideOthers = false);
     int indexOfSnapshot(quint64 id) const; // -1: none
+    // How the snapshots are arranged: groups (nested) and snapshots, in order. The snapshots' own order (their indexes,
+    // their numbers) is this tree's, depth first. A snapshot node has `snapshot` (its id); a group, `group` (its id)
+    struct SnapshotNode {
+        quint64 snapshot = 0;
+        quint64 group = 0;
+        QString name; // a group's
+        bool open = true;
+        std::vector<SnapshotNode> children;
+        bool operator==(const SnapshotNode &o) const;
+    };
+    std::vector<SnapshotNode> snapshotTree() const;
+    // Rearranged (dragged, grouped): a group without an id gets one; a snapshot missing from it goes at the end, one
+    // it does not have is dropped; the snapshots' order follows
+    void setSnapshotTree(const std::vector<SnapshotNode> &tree);
+    quint64 newSnapshotGroupId(); // for a group about to be put in the tree
+
+    // --- Presets: a few values of the layers (and of the composition), chosen one by one, recalled with a fade as a
+    // snapshot's values are. By layer id (0: the composition) and address; each with its own time (< 0: the preset's
+    // fade, 0: a cut) and easing (empty: the default)
+    struct PresetValue {
+        quint64 layer = 0;
+        QString path;
+        QJsonValue value;
+        double time = -1;
+        QString easing;
+    };
+    struct Preset {
+        quint64 id = 0;
+        QString name;
+        double fade = 1.0;
+        std::vector<PresetValue> values;
+        int indexOf(quint64 layer, const QString &path) const; // -1: not in it
+    };
+    int presetCount() const;
+    std::vector<Preset> presets() const;
+    void setPresets(const std::vector<Preset> &all); // as they are (an undo)
+    Preset preset(int i) const;
+    void setPreset(int i, const Preset &p);
+    int addPreset(const Preset &p, int at = -1); // returns where it went
+    void removePreset(int i);
+    int indexOfPreset(quint64 id) const;
+    void recallPreset(int i);
+    // A value as it is now, to put in a preset (an undefined value: it has none at that address)
+    PresetValue presetValue(quint64 layer, const QString &path) const;
 
     // --- Timelines: values of the layers (and of the composition) drawn over time, played on their own clock,
     // outside the sequences — the sequences only drive their transport (play, pause, stop, rewind, seek, loop).
@@ -436,6 +481,7 @@ signals:
     void layersChanged();
     void compositionSizeChanged(QSize size);
     void snapshotsChanged();
+    void presetsChanged();
     void animationsChanged();       // the timelines' contents (not their transport)
     void layerAnimsChanged(quint64 layer); // the animations of a layer's numbers (their contents, not their transport)
     void snapshotRecalled(int index);
@@ -445,6 +491,9 @@ public:
     void acknowledgeFrame() { m_framePending = false; } // the UI has handled frameRendered
 
 private:
+    void takeOverFades(quint64 id, const QSet<QString> &paths, bool all = false);
+    void applyParams(Layer &l, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing, double fade,
+                     FadeJob &job, bool showing, bool hiding, bool chain);
     friend class RenderThread;
     friend struct ScopedCurrent;
 
@@ -586,6 +635,11 @@ private:
     PlayMode m_defaultPlayMode = PlayMode::Loop;
     int m_defaultColorModels = 1;
     std::vector<Snapshot> m_snapshots;
+    std::vector<SnapshotNode> m_snapshotTree;
+    quint64 m_nextSnapshotGroupId = 1;
+    void normalizeSnapshotTree(); // lock held: every snapshot once, their order the tree's
+    std::vector<Preset> m_presets;
+    quint64 m_nextPresetId = 1;
     std::vector<std::shared_ptr<FadeJob>> m_fades;
     QString m_glRenderer;
     // A snapshot gives a layer another source: the outgoing one keeps playing, invisible, and the two pictures

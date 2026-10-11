@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QUndoCommand>
 #include <QVariant>
+#include <functional>
 #include <optional>
 
 namespace cmd {
@@ -290,5 +291,60 @@ private:
     int m_index; // its place when it was there
     QString m_mergeKey;
 };
+
+// A preset recalled (with its fade); undone: its values back as they were, at once
+class RecallPreset : public QUndoCommand
+{
+public:
+    RecallPreset(Engine *e, quint64 preset);
+    void undo() override;
+    void redo() override;
+
+private:
+    Engine *m_e;
+    quint64 m_preset;
+    std::vector<Engine::PresetValue> m_before;
+    bool m_first = true;
+};
+
+// The snapshots rearranged (dragged, grouped, a group renamed or removed)
+class SetSnapshotTree : public QUndoCommand
+{
+public:
+    SetSnapshotTree(Engine *e, std::vector<Engine::SnapshotNode> before, std::vector<Engine::SnapshotNode> after,
+                    const QString &text)
+        : m_e(e), m_before(std::move(before)), m_after(std::move(after))
+    {
+        setText(text);
+    }
+    void undo() override { m_e->setSnapshotTree(m_before); }
+    void redo() override { m_e->setSnapshotTree(m_after); }
+
+private:
+    Engine *m_e;
+    std::vector<Engine::SnapshotNode> m_before, m_after;
+};
+
+// The presets edited (one made, removed, a value added or taken out, a name, a fade, a time). Edits with the same
+// non-empty merge key that follow one another are one step
+class SetPresets : public QUndoCommand
+{
+public:
+    SetPresets(Engine *e, std::vector<Engine::Preset> before, std::vector<Engine::Preset> after, const QString &text,
+               const QString &mergeKey = QString());
+    void undo() override { m_e->setPresets(m_before); }
+    void redo() override { m_e->setPresets(m_after); }
+    int id() const override { return m_mergeKey.isEmpty() ? -1 : 9501; }
+    bool mergeWith(const QUndoCommand *other) override;
+
+private:
+    Engine *m_e;
+    std::vector<Engine::Preset> m_before, m_after;
+    QString m_mergeKey;
+    qint64 m_time;
+};
+// Pushes `fn`'s change of the presets as one step (nothing when it changes nothing)
+void editPresets(QUndoStack *undo, Engine *e, const QString &text, const std::function<void(std::vector<Engine::Preset> &)> &fn,
+                 const QString &mergeKey = QString());
 
 } // namespace cmd

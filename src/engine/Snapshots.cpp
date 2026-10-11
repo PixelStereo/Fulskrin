@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QJsonArray>
 #include <QSet>
+#include <functional>
 
 // Easing curve types for parameter interpolation
 enum class EasingCurve { Linear, EaseIn, EaseOut, EaseInOut, EaseInCubic, EaseOutCubic };
@@ -197,6 +198,122 @@ static QStringList effectPaths(const QJsonArray &a)
     return p;
 }
 
+
+// The snapshots (or presets) still running go on: a recall stops their fades only for the values it sets itself (from
+// where they are now), and leaves them the others; `all`: every one of that layer's
+void Engine::takeOverFades(quint64 id, const QSet<QString> &paths, bool all)
+{
+    Lock lk(&m_mutex);
+    for (auto it = m_fades.begin(); it != m_fades.end();) {
+        FadeJob &j = **it;
+        if (j.id == id) {
+            if (all) j = FadeJob{};
+            else j.drop(paths);
+        }
+        it = j.done() ? m_fades.erase(it) : it + 1;
+    }
+}
+
+// Values of a layer on their way to a recall's (lock held): its parameters, in their order — the numbers fade (their
+// ramp), a text is typed in, the rest is set at once. showing / hiding: its opacity from 0, or to 0 then hidden
+void Engine::applyParams(Layer &layer, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,
+                         double fade, FadeJob &job, bool showing, bool hiding, bool chain)
+{
+    Layer *l = &layer;
+    auto fadeTo = [&](Parameter &p, double from, double to) {
+        const ParamInfo info = p.info();
+        const double t = timeOf(timing, info.path, fade);
+        if (t > 0 && std::abs(to - from) > 1e-12) {
+            job.tracks.push_back({info.path, info.ramp, from, to, t, easingOf(easing, info.path)});
+            p.setNumber(from);
+        } else {
+            p.setNumber(to);
+        }
+    };
+        for (Parameter *p : l->parameters()) {
+            const auto it = params.constFind(p->path());
+            if (it == params.constEnd() || !p->isStored()) continue;
+            const ParamInfo info = p->info();
+            const QString &path = info.path;
+            if (info.ramp == ParamInfo::Ramp::Typed) { // a text typed in over its time
+                TextSource &t = l->text;
+                const QString target = it.value().toString();
+                if (path != "text/content" || target == t.content) {
+                    p->setJson(it.value());
+                    continue;
+                }
+                const double dur = timeOf(timing, path, fade);
+                const QString from = t.shown(); // what is on screen now (a recall may interrupt another typing)
+                t.content = target;
+                t.stopTyping();
+                if (dur > 0) {
+                    t.typedFrom = from;
+                    t.typeDur = dur;
+                    t.typeProgress = 0;
+                    t.typeCurve = int(easingOf(easing, path));
+                }
+                continue;
+            }
+            const bool cut = !p->isNumber() || info.ramp == ParamInfo::Ramp::Cut || (chain && path.startsWith("fx/"));
+            if (path == "opacity") {
+                const double target = it.value().toDouble(p->number());
+                if (hiding) {
+                    job.hideAtEnd = true;
+                    job.finalOpacity = float(target);
+                    job.hideTime = timeOf(timing, path, fade);
+                }
+                fadeTo(*p, showing ? 0.0 : p->number(), hiding ? 0.0 : target);
+                continue;
+            }
+            if (cut) p->setJson(it.value());
+            else fadeTo(*p, p->number(), it.value().toDouble(p->number()));
+        }
+}
+
+// A preset's recall
+// Each layer's values on their way, as a snapshot's are (only these: the other values, the source, the visibility
+// are left alone); the composition's level and volume with its own fade, its other values at once
+void Engine::recallPreset(int i)
+{
+    const Preset p = preset(i);
+    if (!p.id) return;
+    const double fade = std::max(0.0, p.fade);
+    std::map<quint64, std::vector<const PresetValue *>> byLayer;
+    for (const PresetValue &v : p.values)
+        if (!v.value.isUndefined() && !v.value.isNull()) byLayer[v.layer].push_back(&v);
+    for (const auto &[layerId, values] : byLayer) {
+        QJsonObject params, timing, easing;
+        for (const PresetValue *v : values) {
+            params.insert(v->path, v->value);
+            if (v->time >= 0) timing.insert(v->path, v->time);
+            if (!v->easing.isEmpty()) easing.insert(v->path, v->easing);
+        }
+        if (!layerId) { // the composition
+            QJsonObject c{{"timing", timing}, {"easing", easing}};
+            for (const char *k : {"opacity", "volume"})
+                if (params.contains(k)) c.insert(k, params.value(k));
+            applyComposition(c, fade);
+            for (auto it = params.begin(); it != params.end(); ++it)
+                if (it.key() != "opacity" && it.key() != "volume") setParameter(0, it.key(), it.value());
+            continue;
+        }
+        const int idx = indexOfId(layerId);
+        if (idx < 0 || isLocked(idx)) continue; // gone, or locked: left alone
+        QSet<QString> owned;
+        for (auto it = params.constBegin(); it != params.constEnd(); ++it) owned.insert(it.key());
+        takeOverFades(layerId, owned);
+        Lock lk(&m_mutex);
+        Layer *l = layer(idx);
+        if (!l) continue;
+        auto job = std::make_shared<FadeJob>();
+        job->id = layerId;
+        applyParams(*l, params, timing, easing, fade, *job, false, false, false);
+        if (!job->done()) m_fades.push_back(std::move(job));
+    }
+    Lock lk(&m_mutex);
+    m_fadeElapsed = 0;
+}
+
 // ---------------------------------------------------------------------------
 
 int Engine::snapshotCount() const
@@ -241,7 +358,24 @@ int Engine::addSnapshot(const Snapshot &m, int at)
         for (const Snapshot &o : m_snapshots) taken = taken || o.id == copy.id;
         if (taken) copy.id = m_nextSnapshotId++;
         m_nextSnapshotId = std::max(m_nextSnapshotId, copy.id + 1);
+        // In the tree: after the one before it (in its group), first otherwise
+        SnapshotNode node;
+        node.snapshot = copy.id;
+        const quint64 before = at > 0 ? m_snapshots[size_t(at - 1)].id : 0;
         m_snapshots.insert(m_snapshots.begin() + at, copy);
+        std::function<bool(std::vector<SnapshotNode> &)> place = [&](std::vector<SnapshotNode> &nodes) {
+            for (size_t k = 0; k < nodes.size(); ++k) {
+                if (nodes[k].snapshot && nodes[k].snapshot == before) {
+                    nodes.insert(nodes.begin() + long(k) + 1, node);
+                    return true;
+                }
+                if (!nodes[k].snapshot && place(nodes[k].children)) return true;
+            }
+            return false;
+        };
+        if (!before || !place(m_snapshotTree)) m_snapshotTree.insert(m_snapshotTree.begin(), node);
+        normalizeSnapshotTree();
+        at = indexOfSnapshot(copy.id);
     }
     emit snapshotsChanged();
     return at;
@@ -253,6 +387,7 @@ void Engine::removeSnapshot(int i)
         Lock lk(&m_mutex);
         if (i < 0 || i >= int(m_snapshots.size())) return;
         m_snapshots.erase(m_snapshots.begin() + i);
+        normalizeSnapshotTree();
     }
     emit snapshotsChanged();
 }
@@ -417,17 +552,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
     for (const QJsonValue &v : layers) named.insert(v.toObject().value("id").toString().toULongLong());
     // The snapshots still running go on: this recall stops their fades only for the values it sets itself
     // (from where they are now), and leaves them the others
-    auto takeOver = [this](quint64 id, const QSet<QString> &paths, bool all = false) {
-        Lock lk(&m_mutex);
-        for (auto it = m_fades.begin(); it != m_fades.end();) {
-            FadeJob &j = **it;
-            if (j.id == id) {
-                if (all) j = FadeJob{};
-                else j.drop(paths);
-            }
-            it = j.done() ? m_fades.erase(it) : it + 1;
-        }
-    };
+    auto takeOver = [this](quint64 id, const QSet<QString> &paths, bool all = false) { takeOverFades(id, paths, all); };
     std::vector<std::shared_ptr<FadeJob>> jobs;
     for (const QJsonValue &value : layers) {
         QJsonObject o = value.toObject();
@@ -545,45 +670,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         const bool visible = o.value("enable").toBool(true);
         const bool showing = visible && !l->enabled, hiding = !visible && l->enabled;
         if (showing) l->enabled = true;
-        // Its parameters, in their order: the numbers fade (their ramp), the rest is set at once
-        for (Parameter *p : l->parameters()) {
-            const auto it = params.constFind(p->path());
-            if (it == params.constEnd() || !p->isStored()) continue;
-            const ParamInfo info = p->info();
-            const QString &path = info.path;
-            if (info.ramp == ParamInfo::Ramp::Typed) { // a text typed in over its time
-                TextSource &t = l->text;
-                const QString target = it.value().toString();
-                if (path != "text/content" || target == t.content) {
-                    p->setJson(it.value());
-                    continue;
-                }
-                const double dur = timeOf(timing, path, fade);
-                const QString from = t.shown(); // what is on screen now (a recall may interrupt another typing)
-                t.content = target;
-                t.stopTyping();
-                if (dur > 0) {
-                    t.typedFrom = from;
-                    t.typeDur = dur;
-                    t.typeProgress = 0;
-                    t.typeCurve = int(easingOf(easing, path));
-                }
-                continue;
-            }
-            const bool cut = !p->isNumber() || info.ramp == ParamInfo::Ramp::Cut || (chain && path.startsWith("fx/"));
-            if (path == "opacity") {
-                const double target = it.value().toDouble(p->number());
-                if (hiding) {
-                    job->hideAtEnd = true;
-                    job->finalOpacity = float(target);
-                    job->hideTime = timeOf(timing, path, fade);
-                }
-                fadeTo(*p, showing ? 0.0 : p->number(), hiding ? 0.0 : target);
-                continue;
-            }
-            if (cut) p->setJson(it.value());
-            else fadeTo(*p, p->number(), it.value().toDouble(p->number()));
-        }
+        applyParams(*l, params, timing, easing, fade, *job, showing, hiding, chain);
         if (hiding && !params.contains("opacity")) { // no level of its own: faded out from where it is
             job->hideAtEnd = true;
             job->finalOpacity = l->opacity;

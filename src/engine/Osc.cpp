@@ -332,6 +332,7 @@ QString OscNamespace::signature() const
         s += '\n';
     }
     for (int i = 0; i < m_e->snapshotCount(); ++i) s += QStringLiteral("snapshot:") + m_e->snapshot(i).name + '\n';
+    for (int i = 0; i < m_e->presetCount(); ++i) s += QStringLiteral("preset:") + m_e->preset(i).name + '\n';
     for (int i = 0; i < m_e->animationCount(); ++i) s += QStringLiteral("timeline:") + m_e->animation(i).name + '\n';
     return s;
 }
@@ -505,6 +506,33 @@ void OscNamespace::build()
             OscNode &nm = add(base + "/name", "s", 1, "Name");
             nm.get = [e, i] { return QVariantList{e->snapshot(i).name}; };
             m_nodes[base].description = e->snapshot(i).name.isEmpty() ? QString::number(i + 1) : e->snapshot(i).name;
+        }
+    }
+
+    // --- Presets: recalled by number (1 = first) or from their own node
+    {
+        OscNode &n = add("/preset/recall", "i", 2, "Recall");
+        n.range = {minMax(1, std::max(1, e->presetCount()))};
+        n.set = [e](const QVariantList &a) {
+            const int i = int(std::lround(num(a.value(0)))) - 1;
+            if (i < 0 || i >= e->presetCount()) return false;
+            e->recallPreset(i);
+            return true;
+        };
+        OscNode &c = add("/preset/count", "i", 1, "Count");
+        c.get = [e] { return QVariantList{e->presetCount()}; };
+        m_nodes["/preset"].description = "Presets";
+        for (int i = 0; i < e->presetCount(); ++i) {
+            const QString base = QStringLiteral("/preset/%1").arg(i + 1);
+            OscNode &r = add(base + "/recall", "N", 2, "Recall");
+            r.set = [e, i](const QVariantList &) {
+                if (i >= e->presetCount()) return false;
+                e->recallPreset(i);
+                return true;
+            };
+            OscNode &nm = add(base + "/name", "s", 1, "Name");
+            nm.get = [e, i] { return QVariantList{e->preset(i).name}; };
+            m_nodes[base].description = e->preset(i).name.isEmpty() ? QString::number(i + 1) : e->preset(i).name;
         }
     }
 

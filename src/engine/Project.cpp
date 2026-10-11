@@ -41,6 +41,7 @@ void Engine::newProject()
     ensureViewport(); // a new project shows its composition through one viewport
     emit layersChanged();
     emit snapshotsChanged();
+    emit presetsChanged();
     emit animationsChanged();
     emit m_sequencer->changed();
     emit m_sequencer->positionChanged();
@@ -57,6 +58,10 @@ void Engine::clearProject()
         m_binItems.clear();
         m_snapshots.clear();
         m_nextSnapshotId = 1;
+        m_snapshotTree.clear();
+        m_nextSnapshotGroupId = 1;
+        m_presets.clear();
+        m_nextPresetId = 1;
         m_render = RenderSettings(); // the machine's defaults
         m_paused = false;
         m_compositionSpeed = 1.0;
@@ -81,6 +86,7 @@ void Engine::clearProject()
     setCompositionSize(QSize(1920, 1080));
     emit layersChanged();
     emit snapshotsChanged();
+    emit presetsChanged();
     emit animationsChanged();
 }
 
@@ -319,6 +325,10 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         QJsonArray mems;
         for (const Snapshot &m : m_snapshots) mems.append(snapshotToJson(m, dir));
         root["snapshots"] = mems;
+        root["snapshot_tree"] = snapshotTreeToJson(m_snapshotTree);
+        QJsonArray presets;
+        for (const Preset &p : m_presets) presets.append(presetToJson(p));
+        root["presets"] = presets;
         root["timelines"] = animationsToJson();
         root["sequences"] = m_sequencer->toJson();
         root["current_sequence"] = m_sequencer->current();
@@ -408,10 +418,23 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         for (const Snapshot &m : m_snapshots) m_nextSnapshotId = std::max(m_nextSnapshotId, m.id + 1);
         for (Snapshot &m : m_snapshots)
             if (!m.id) m.id = m_nextSnapshotId++;
+        m_snapshotTree = snapshotTreeFromJson(root.value("snapshot_tree").toArray());
+        normalizeSnapshotTree();
+        for (const QJsonValue &v : root.value("presets").toArray()) {
+            Preset p = presetFromJson(v.toObject());
+            bool taken = !p.id;
+            for (const Preset &o : m_presets) taken = taken || o.id == p.id;
+            if (taken) p.id = 0;
+            m_presets.push_back(p);
+        }
+        for (const Preset &p : m_presets) m_nextPresetId = std::max(m_nextPresetId, p.id + 1);
+        for (Preset &p : m_presets)
+            if (!p.id) p.id = m_nextPresetId++;
         animationsFromJson(root.value("timelines").toArray());
         m_sequencer->fromJson(root.value("sequences").toArray(), root.value("current_sequence").toInt(0));
     }
     emit snapshotsChanged();
+    emit presetsChanged();
     emit animationsChanged();
     emit m_sequencer->changed();
     emit m_sequencer->positionChanged();
