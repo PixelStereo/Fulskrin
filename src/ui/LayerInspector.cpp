@@ -99,6 +99,7 @@ struct LayerValues {
     bool meshMode = false;
     int cols = 4, rows = 4;
     TextSource text; // Text generator
+    std::optional<TimecodeSettings> timecode; // a Timecode generator
 
     static LayerValues take(Engine *e, int index)
     {
@@ -172,6 +173,7 @@ struct LayerValues {
         s.cols = l->mapping.cols;
         s.rows = l->mapping.rows;
         s.text = l->text;
+        s.timecode = l->timecode;
         if (!l->isViewport) {
             const Layer *top = l;
             while (top->parent) {
@@ -703,8 +705,8 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         else d << QStringLiteral("waiting for its first picture");
         break;
     case SourceType::Text:
-        kind = QStringLiteral("Text");
-        name = s.text.content.section('\n', 0, 0).left(40);
+        kind = s.timecode ? QStringLiteral("Timecode") : QStringLiteral("Text");
+        name = s.timecode ? TimecodeSettings::sourceName(s.timecode->source) : s.text.content.section('\n', 0, 0).left(40);
         d << QStringLiteral("%1 × %2").arg(s.text.width).arg(s.text.height);
         break;
     case SourceType::Layer: {
@@ -930,16 +932,102 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
             return x;
         };
 
-        auto *editor = new QPlainTextEdit;
-        editor->setPlainText(s.text.content);
-        editor->setMinimumHeight(90);
-        editor->setPlaceholderText(QStringLiteral("Type the text here"));
-        editor->setToolTip(QStringLiteral("The text of this layer. A snapshot that holds another text types it (typewriter) over its fade."));
-        editor->setReadOnly(m_locked);
-        v->addWidget(editor);
-        connect(editor, &QPlainTextEdit::textChanged, this, [this, editor, live] {
-            live(QStringLiteral("Edit Text"), [this, editor] { m_engine->setLayerTextContent(m_layer, editor->toPlainText()); });
-        });
+        if (s.timecode) { // a Timecode generator: its clock instead of a text typed
+            const TimecodeSettings ts = *s.timecode;
+            auto *box = new QGroupBox(QStringLiteral("Timecode"));
+            auto *tf = new QFormLayout(box);
+            tf->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            auto apply = [this, live](const QString &label, const std::function<void(TimecodeSettings &)> &fn) {
+                live(label, [this, fn] {
+                    std::optional<TimecodeSettings> cur = m_engine->layerTimecode(m_layer);
+                    if (!cur) return;
+                    fn(*cur);
+                    m_engine->setLayerTimecode(m_layer, *cur);
+                });
+            };
+            auto *source = new QComboBox;
+            for (int k = 0; k < 5; ++k) source->addItem(TimecodeSettings::sourceName(TimecodeSettings::Source(k)));
+            source->setCurrentIndex(int(ts.source));
+            source->setToolTip(QStringLiteral("Internal: its own clock · LTC: from an audio input · MTC: from a MIDI input · "
+                                              "ATC: carried by the video (an NDI source, a DeckLink SDI input)"));
+            tf->addRow(QStringLiteral("Source"), source);
+            auto *clockRow = new QHBoxLayout;
+            auto *clock = new QComboBox;
+            clock->addItems({QStringLiteral("Time of day"), QStringLiteral("Free run")});
+            clock->setCurrentIndex(int(ts.internal));
+            clock->setToolTip(QStringLiteral("Time of day: the computer's clock · Free run: counts from its start (Restart)"));
+            auto *restart = new QPushButton(QStringLiteral("Restart"));
+            restart->setToolTip(QStringLiteral("The free run from zero again (plus the offset)"));
+            restart->setVisible(ts.internal == TimecodeSettings::Internal::FreeRun);
+            clockRow->addWidget(clock, 1);
+            clockRow->addWidget(restart);
+            auto *clockLabel = new QLabel(QStringLiteral("Clock"));
+            tf->addRow(clockLabel, clockRow);
+            const bool internal = ts.source == TimecodeSettings::Source::Internal;
+            clockLabel->setVisible(internal);
+            clock->setVisible(internal);
+            restart->setVisible(internal && ts.internal == TimecodeSettings::Internal::FreeRun);
+            auto *rate = new QComboBox;
+            for (int k = 0; k < 4; ++k) rate->addItem(Timecode::rateName(TcRate(k)));
+            rate->setCurrentIndex(int(ts.rate));
+            rate->setToolTip(QStringLiteral("Its rate (a timecode received keeps its own)"));
+            tf->addRow(QStringLiteral("Rate"), rate);
+            auto *offset = new QLineEdit;
+            {
+                const Timecode o = Timecode::fromFrames(std::llabs(ts.offset), ts.rate);
+                offset->setText((ts.offset < 0 ? QStringLiteral("-") : QString()) + o.toString());
+            }
+            offset->setToolTip(QStringLiteral("Added to what is shown and sent: HH:MM:SS:FF, a minus before it to take away"));
+            tf->addRow(QStringLiteral("Offset"), offset);
+            auto *status = new QLabel;
+            status->setWordWrap(true);
+            status->setStyleSheet("color:#9ad;");
+            status->setText(m_engine->layerTimecodeStatus(m_layer));
+            tf->addRow(QString(), status);
+            m_timecodeStatus = status;
+            for (QWidget *w : {static_cast<QWidget *>(source), static_cast<QWidget *>(clock), static_cast<QWidget *>(restart),
+                               static_cast<QWidget *>(rate), static_cast<QWidget *>(offset)})
+                w->setEnabled(!m_locked);
+            v->addWidget(box);
+            connect(source, qOverload<int>(&QComboBox::activated), this, [this, apply](int k) {
+                apply(QStringLiteral("Timecode Source"), [k](TimecodeSettings &t) { t.source = TimecodeSettings::Source(k); });
+                QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection); // its fields change
+            });
+            connect(clock, qOverload<int>(&QComboBox::activated), this, [this, apply, restart](int k) {
+                apply(QStringLiteral("Timecode Clock"), [k](TimecodeSettings &t) { t.internal = TimecodeSettings::Internal(k); });
+                restart->setVisible(k == int(TimecodeSettings::Internal::FreeRun));
+            });
+            connect(restart, &QPushButton::clicked, this, [this] { m_engine->restartLayerTimecode(m_layer); });
+            connect(rate, qOverload<int>(&QComboBox::activated), this, [apply](int k) {
+                apply(QStringLiteral("Timecode Rate"), [k](TimecodeSettings &t) { t.rate = TcRate(k); });
+            });
+            connect(offset, &QLineEdit::editingFinished, this, [this, apply, offset] {
+                QString text = offset->text().trimmed();
+                const bool minus = text.startsWith('-');
+                if (minus) text.remove(0, 1);
+                const std::optional<TimecodeSettings> cur = m_engine->layerTimecode(m_layer);
+                if (!cur) return;
+                const std::optional<Timecode> t = Timecode::parse(text, cur->rate);
+                if (!t) { // shown again as it is
+                    const Timecode o = Timecode::fromFrames(std::llabs(cur->offset), cur->rate);
+                    offset->setText((cur->offset < 0 ? QStringLiteral("-") : QString()) + o.toString());
+                    return;
+                }
+                const int64_t frames = minus ? -t->toFrames() : t->toFrames();
+                apply(QStringLiteral("Timecode Offset"), [frames](TimecodeSettings &s) { s.offset = frames; });
+            });
+        } else {
+            auto *editor = new QPlainTextEdit;
+            editor->setPlainText(s.text.content);
+            editor->setMinimumHeight(90);
+            editor->setPlaceholderText(QStringLiteral("Type the text here"));
+            editor->setToolTip(QStringLiteral("The text of this layer. A snapshot that holds another text types it (typewriter) over its fade."));
+            editor->setReadOnly(m_locked);
+            v->addWidget(editor);
+            connect(editor, &QPlainTextEdit::textChanged, this, [this, editor, live] {
+                live(QStringLiteral("Edit Text"), [this, editor] { m_engine->setLayerTextContent(m_layer, editor->toPlainText()); });
+            });
+        }
 
         auto *fmt = new QFormLayout;
         fmt->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -2344,6 +2432,7 @@ void LayerInspector::refreshDynamic()
     const bool follow = SettingsPanel::followFades() || !m_engine->isFading();
     if (follow) refreshSpatial();
     if (m_output) m_output->refreshStatus(); // mode set by ⌘F or a closed window, publishing states
+    if (m_timecodeStatus) m_timecodeStatus->setText(m_engine->layerTimecodeStatus(m_layer));
     // ROI preview: the source picture, read back by the render thread while the editor is shown
     const bool wantPreview = m_roi && m_roi->isVisible();
     if (wantPreview) {

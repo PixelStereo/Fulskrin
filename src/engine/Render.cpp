@@ -334,7 +334,7 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
         break;
     case SourceType::Text: {
         // Redrawn only when what is shown changes (typed characters, edits, style)
-        const QString shown = l.text.shown();
+        const QString shown = l.tcClock ? l.tcClock->display() : l.text.shown(); // a Timecode generator: its clock
         const QString key = QStringLiteral("%1\n%2|%3|%4|%5|%6|%7|%8x%9|%10").arg(shown, l.text.font).arg(l.text.size)
                                 .arg(l.text.color.name(QColor::HexArgb)).arg(int(l.text.align))
                                 .arg(l.text.lineHeight).arg(l.text.letterSpacing).arg(l.text.width).arg(l.text.height)

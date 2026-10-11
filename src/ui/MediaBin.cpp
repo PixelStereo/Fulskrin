@@ -132,25 +132,27 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     m_videos = new QTreeWidgetItem(m_tree, {QStringLiteral("Videos")});
     m_images = new QTreeWidgetItem(m_tree, {QStringLiteral("Images")});
     m_audios = new QTreeWidgetItem(m_tree, {QStringLiteral("Audio")});
-    // The Text generator, built in: an entry of its own, always there
-    m_text = new QTreeWidgetItem(m_tree, m_audios);
-    m_text->setData(0, PathRole, kTextGeneratorPath);
-    m_text->setData(0, IsfRole, true); // no file: not relinked
-    m_text->setData(0, MissingRole, false);
-    m_text->setData(0, UsedRole, true); // not removable
-    m_text->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
-    m_text->setText(0, QStringLiteral("Text"));
-    {
-        QFont f = m_text->font(0);
-        f.setBold(true);
-        m_text->setFont(0, f);
-    }
-    m_text->setTextAlignment(2, Qt::AlignCenter);
-    m_inputs = new QTreeWidgetItem(m_tree, m_text);
+    // The generators, built in, always there: Text, Timecode
+    m_generators = new QTreeWidgetItem(m_tree, m_audios);
+    m_generators->setText(0, QStringLiteral("Generators"));
+    auto generator = [this](const QString &name, const QString &path) {
+        auto *it = new QTreeWidgetItem(m_generators);
+        it->setData(0, PathRole, path);
+        it->setData(0, IsfRole, true); // no file: not relinked
+        it->setData(0, MissingRole, false);
+        it->setData(0, UsedRole, true); // not removable
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
+        it->setText(0, name);
+        it->setTextAlignment(2, Qt::AlignCenter);
+        return it;
+    };
+    m_text = generator(QStringLiteral("Text"), kTextGeneratorPath);
+    m_timecode = generator(QStringLiteral("Timecode"), kTimecodeGeneratorPath);
+    m_inputs = new QTreeWidgetItem(m_tree, m_generators);
     m_inputs->setText(0, QStringLiteral("Inputs"));
     m_isf = new QTreeWidgetItem(m_tree, {QStringLiteral("ISF")});
     m_isfGenerators = new QTreeWidgetItem(m_isf, {QStringLiteral("Generators")});
-    for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios, m_inputs, m_isf, m_isfGenerators}) {
+    for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios, m_generators, m_inputs, m_isf, m_isfGenerators}) {
         QFont f = cat->font(0);
         f.setBold(true);
         cat->setFont(0, f);
@@ -451,19 +453,27 @@ void MediaBin::refreshInputs()
     applyFilter();
 }
 
-// Text: the layers that use it
+// The generators: the layers that use each
 void MediaBin::refreshText()
 {
-    QStringList users;
+    QStringList texts, timecodes;
     {
         Engine::Lock lk(&m_engine->mutex());
-        for (int i = 0; i < m_engine->layerCount(); ++i)
-            if (m_engine->layer(i)->type == SourceType::Text) users << m_engine->layer(i)->name;
+        for (int i = 0; i < m_engine->layerCount(); ++i) {
+            const Layer *l = m_engine->layer(i);
+            if (l->type == SourceType::Text) (l->timecode ? timecodes : texts) << l->name;
+        }
     }
-    m_text->setText(2, users.isEmpty() ? QStringLiteral("—") : QString::number(users.size()));
-    const QString usedBy = users.isEmpty() ? QStringLiteral("Not used by any layer") : QStringLiteral("Used by:\n") + users.join('\n');
-    m_text->setToolTip(0, QStringLiteral("Text generator: type a text; a snapshot that holds another text types it (typewriter)\n\n") + usedBy);
-    m_text->setToolTip(2, usedBy);
+    auto show = [](QTreeWidgetItem *it, const QStringList &users, const QString &what) {
+        it->setText(2, users.isEmpty() ? QStringLiteral("—") : QString::number(users.size()));
+        const QString usedBy = users.isEmpty() ? QStringLiteral("Not used by any layer") : QStringLiteral("Used by:\n") + users.join('\n');
+        it->setToolTip(0, what + QStringLiteral("\n\n") + usedBy);
+        it->setToolTip(2, usedBy);
+    };
+    show(m_text, texts, QStringLiteral("Text generator: type a text; a snapshot that holds another text types it (typewriter)"));
+    show(m_timecode, timecodes,
+         QStringLiteral("Timecode generator: shows a timecode, from its own clock (time of day, free run) or received "
+                        "(LTC, MTC, ATC), and can send it (LTC, MTC)"));
     m_inputs->setText(0, QStringLiteral("Inputs (%1)").arg(m_inputs->childCount()));
 }
 

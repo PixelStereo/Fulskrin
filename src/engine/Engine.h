@@ -196,6 +196,12 @@ public:
 
     // Text layer properties
     bool setLayerText(int i); // the layer's source becomes the Text generator
+    // The Timecode generator: a text source that shows its clock (TimecodeClock.h). Setting it again with other
+    // settings keeps its text style; its clock (and its devices) start again.
+    bool setLayerTimecode(int i, const TimecodeSettings &s);
+    std::optional<TimecodeSettings> layerTimecode(int i) const; // none: not a Timecode generator
+    QString layerTimecodeStatus(int i) const;
+    void restartLayerTimecode(int i); // free run: from zero again
     // A live input (LiveInput.h) as the layer's source: a camera, an NDI or OMT source, a Syphon server
     bool setLayerInput(int i, const QString &uri, QString *err = nullptr);
     static std::vector<LiveInputInfo> liveInputs(const QString &libraryFolder = QString()) { return listLiveInputs(libraryFolder); }

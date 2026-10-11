@@ -67,6 +67,9 @@ add_library(fulskrin_engine STATIC
   src/engine/Publishing.cpp
   src/engine/TestCard.cpp
   src/engine/Masks.cpp
+  src/engine/Timecode.cpp
+  src/engine/TimecodeClock.cpp
+  src/engine/TimecodeIo.cpp
   src/engine/Presets.cpp
   src/engine/Animations.cpp
   src/engine/Parameter.cpp
@@ -290,7 +293,7 @@ if(FULSKRIN_TESTS)
   # Test media first: sh test/make_media.sh
   enable_testing()
   foreach(area video project playback undo structure compositing osc snapshots masks rendering thread publishing
-          media sound layersource)
+          media sound layersource timecode)
     add_test(NAME ${area} COMMAND fulskrin_tests --area ${area})
   endforeach()
   add_test(NAME isf COMMAND fulskrin_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
