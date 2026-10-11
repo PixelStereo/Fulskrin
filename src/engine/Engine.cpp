@@ -430,6 +430,7 @@ void Engine::releaseAll()
         m_frameFence = nullptr;
     }
     m_videoConv.release();
+    m_testCard.release();
     for (GLuint p : {m_blitProgram, m_compProgram, m_diffProgram, m_presentProgram, m_prepProgram, m_maskProgram,
                      m_fadeProgram})
         if (p) f->glDeleteProgram(p);

@@ -188,6 +188,7 @@ struct Layer {
     int vpWidth = 1920, vpHeight = 1080; // size of its picture, in pixels
     QString vpScreen;                    // screen it is shown on (empty: the main one)
     int vpMode = 0;                      // 0 hidden, 1 windowed, 2 fullscreen
+    bool testCard = false;               // a viewport shows its test card instead (a setup aid: not saved)
     PublishSettings vpPublish;           // NDI, OMT, Syphon, Spout of this viewport
     // How much of this item each viewport shows (an item at the top of the list; inside a group, the group decides).
     // A viewport that is not in the map shows it fully, so a viewport created later shows everything.

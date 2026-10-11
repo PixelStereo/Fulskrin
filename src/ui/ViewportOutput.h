@@ -8,6 +8,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QSpinBox;
 
 // Output tab of a viewport: its size in pixels, the screen it goes to and how it is shown there (hidden,
@@ -35,6 +36,7 @@ private:
     QCheckBox *m_pubEnabled[kPublishKindCount] = {};
     QLineEdit *m_pubName[kPublishKindCount] = {};
     QLabel *m_pubState[kPublishKindCount] = {};
+    QPushButton *m_testCard = nullptr;
     QLineEdit *m_libFolder = nullptr;
     QLabel *m_libInfo = nullptr;
     bool m_syncing = false;
