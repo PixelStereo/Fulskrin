@@ -390,9 +390,23 @@ const std::vector<Parameter *> &Engine::compositionParameters()
     return m_compParamList;
 }
 
+const std::vector<std::unique_ptr<Parameter>> &Engine::interactionParams()
+{
+    if (m_interactionParamsDirty) {
+        makeInteractionParams();
+        m_interactionParamsDirty = false;
+    }
+    return m_interactionParams;
+}
+
 Parameter *Engine::findParameter(quint64 layer, const QString &path)
 {
     if (!layer) {
+        if (path.startsWith(QLatin1String("interaction/"))) { // an interaction's (apart from the composition's own)
+            for (const auto &p : interactionParams())
+                if (p->path() == path) return p.get();
+            return nullptr;
+        }
         for (Parameter *p : compositionParameters())
             if (p->path() == path) return p;
         return nullptr;

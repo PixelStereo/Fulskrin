@@ -95,6 +95,42 @@ bool Interaction::matches(const InteractionEvent &e) const
     return false;
 }
 
+QString Interaction::label() const
+{
+    if (!name.isEmpty()) return name;
+    switch (source) {
+    case InteractionSource::Keyboard: return key.isEmpty() ? QStringLiteral("Key") : QStringLiteral("Key %1").arg(key);
+    case InteractionSource::Midi:
+        return QStringLiteral("MIDI %1 %2%3")
+            .arg(midiChannel ? QStringLiteral("ch %1").arg(midiChannel) : QStringLiteral("any ch"), midiMessageName(midiMessage),
+                 midiMessage == MidiMessageKind::PitchBend ? QString() : QStringLiteral(" %1").arg(midiNumber));
+    case InteractionSource::Osc: return oscAddress.isEmpty() ? QStringLiteral("OSC") : QStringLiteral("OSC %1").arg(oscAddress);
+    case InteractionSource::Internal: return QStringLiteral("Internal %1").arg(id);
+    }
+    return QString();
+}
+
+static const char *const kNotState[] = {"id", "name", "source", "key", "port", "channel", "message", "number", "address",
+                                        "argument", "source_layer", "source_param", "layer", "param"};
+
+QJsonObject Interaction::stateJson() const
+{
+    QJsonObject o = toJson();
+    for (const char *k : kNotState) o.remove(QLatin1String(k));
+    return o;
+}
+
+void Interaction::applyState(const QJsonObject &state)
+{
+    QJsonObject o = toJson();
+    for (auto it = state.begin(); it != state.end(); ++it) {
+        bool kept = true;
+        for (const char *k : kNotState) kept = kept && it.key() != QLatin1String(k);
+        if (kept) o[it.key()] = it.value();
+    }
+    *this = fromJson(o);
+}
+
 AnimTrack Interaction::straightCurve()
 {
     AnimTrack t;
@@ -289,6 +325,7 @@ std::optional<double> InteractionProcessor::step(const Interaction &it, double d
         y = std::clamp(m_y, 0.0, 1.0);
     }
     m_fresh = false;
+    m_curveIn = y;
     if (it.curveOn && !it.curve.keys.empty()) {
         const double c = it.curve.valueAt(y, y);
         if (std::isfinite(c)) y = std::clamp(c, 0.0, 1.0);

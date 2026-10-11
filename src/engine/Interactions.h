@@ -91,6 +91,10 @@ struct Interaction {
     Takeover takeover = Takeover::Jump;
 
     bool matches(const InteractionEvent &e) const; // the event is from its source
+    QString label() const; // its name, else its source ("Key Space", "MIDI ch 1 CC 7"…)
+    // What a snapshot keeps of it: on / off and its chain (not its source, not its target, not its name)
+    QJsonObject stateJson() const;
+    void applyState(const QJsonObject &state);
     QJsonObject toJson() const;
     static Interaction fromJson(const QJsonObject &o);
     static AnimTrack straightCurve(); // 0 → 0, 1 → 1
@@ -109,6 +113,7 @@ public:
     std::optional<double> step(const Interaction &it, double dt);
     std::optional<double> level() const { return m_level; } // after range and toggle (shown)
     std::optional<double> output() const { return m_out; }  // the last result of step
+    std::optional<double> curveInput() const { return m_curveIn; } // what entered the curve (after the filter)
     void reset() { *this = InteractionProcessor(); }
 
 private:
@@ -120,7 +125,7 @@ private:
     std::deque<std::pair<double, double>> m_window; // Average: (time, value)
     double m_time = 0;
     double m_slow = 0;               // Pulse: the slow average it is compared with
-    std::optional<double> m_out;
+    std::optional<double> m_out, m_curveIn;
 };
 
 // Where a target stands for an interaction: what it wrote last, and whether it holds it (pick-up)

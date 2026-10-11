@@ -2,6 +2,9 @@
 #include "SettingsPanel.h"
 #include "Widgets.h"
 #include "Engine.h"
+#include "InteractionPanel.h"
+#include "PresetEditor.h"
+#include <QContextMenuEvent>
 
 #include <QCheckBox>
 #include <algorithm>
@@ -27,6 +30,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <cmath>
+#include <memory>
 
 static QLabel *note(const QString &t)
 {
@@ -47,6 +51,14 @@ CompositionPanel::CompositionPanel(Engine *engine, QWidget *parent) : QWidget(pa
     v->addWidget(buildTimecodePatch());
     v->addStretch();
     syncFromEngine();
+    // Its values as any value: presets (Edit mode, right-click), the OSC address, Learn Interaction
+    for (auto [w, path] : {std::pair<QWidget *, const char *>{m_composition, "opacity"}, {m_audioVolume, "volume"}, {m_speed, "speed"}}) {
+        if (!w) continue;
+        if (PresetEditor *pe = PresetEditor::instance()) pe->track(w, 0, {QString::fromLatin1(path)});
+        w->setProperty("valuePaths", QStringList{QString::fromLatin1(path)});
+        w->installEventFilter(this);
+        for (QWidget *c : w->findChildren<QWidget *>()) c->installEventFilter(this);
+    }
     // Long screen or sound card names must not widen the panel beyond its column (they are elided).
     for (QComboBox *c : findChildren<QComboBox *>()) {
         c->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -401,12 +413,19 @@ QWidget *CompositionPanel::buildTimecodePatch()
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(10);
     // Made again when the patch, a layer's name or the viewports change (not while a field of it is being typed in)
+    // (not while a field of it is being dragged: once the mouse is let go)
     auto later = [this] {
-        QTimer::singleShot(0, this, [this] {
+        auto attempt = std::make_shared<std::function<void()>>();
+        *attempt = [this, attempt] {
             if (timecodePatchKey() == m_tcPatchKey) return;
             if (QWidget *f = QApplication::focusWidget(); f && m_tcPatch->isAncestorOf(f) && qobject_cast<QLineEdit *>(f)) return;
+            if (QApplication::mouseButtons() != Qt::NoButton) {
+                QTimer::singleShot(150, this, *attempt);
+                return;
+            }
             rebuildTimecodePatch();
-        });
+        };
+        QTimer::singleShot(0, this, *attempt);
     };
     connect(m_engine, &Engine::timecodeRoutingChanged, this, later);
     connect(m_engine, &Engine::layersChanged, this, later);
@@ -664,8 +683,8 @@ void CompositionPanel::rebuildTimecodePatch()
                 const QString d = device->currentData().toString();
                 change([d](AudioChannelOutput &x) { x.device = d; });
             });
-            connect(channel, &QSpinBox::editingFinished, this, [channel, change] {
-                const int c = channel->value() - 1;
+            connect(channel, qOverload<int>(&QSpinBox::valueChanged), this, [change](int v) {
+                const int c = v - 1;
                 change([c](AudioChannelOutput &x) { x.channel = c; });
             });
             connect(remove, &QToolButton::clicked, this, [this, id, edited] {
@@ -705,4 +724,23 @@ void CompositionPanel::refreshTimecodeStatus()
             if (label->text() != t) label->setText(t);
             label->setVisible(true);
         }
+}
+
+bool CompositionPanel::eventFilter(QObject *o, QEvent *e)
+{
+    if (e->type() != QEvent::ContextMenu) return QWidget::eventFilter(o, e);
+    auto *w = qobject_cast<QWidget *>(o);
+    while (w && !w->property("valuePaths").isValid()) w = w->parentWidget();
+    if (!w) return QWidget::eventFilter(o, e);
+    const QStringList paths = w->property("valuePaths").toStringList();
+    auto *menu = new QMenu(w);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    if (PresetEditor *pe = PresetEditor::instance()) pe->fillMenu(menu, 0, paths);
+    InteractionPanel::fillValueMenu(menu, m_engine, 0, paths);
+    if (menu->isEmpty()) {
+        delete menu;
+        return QWidget::eventFilter(o, e);
+    }
+    menu->popup(static_cast<QContextMenuEvent *>(e)->globalPos());
+    return true;
 }

@@ -2,8 +2,28 @@
 #include "EngineInternal.h"
 #include "Midi.h"
 
+#include <QSet>
 #include <QTimer>
 #include <cmath>
+
+// Each one has a name of its own (its address in OSC, its name in the presets and the snapshots): an empty one is
+// given "Interaction N", one taken gets a number after it
+static void nameInteractions(std::vector<Interaction> &list)
+{
+    QSet<QString> taken;
+    int next = 1;
+    for (Interaction &it : list) {
+        QString base = it.name.trimmed();
+        if (base.isEmpty()) {
+            while (taken.contains(QStringLiteral("Interaction %1").arg(next))) ++next;
+            base = QStringLiteral("Interaction %1").arg(next);
+        }
+        QString n = base;
+        for (int k = 2; taken.contains(n); ++k) n = QStringLiteral("%1 %2").arg(base).arg(k);
+        it.name = n;
+        taken.insert(n);
+    }
+}
 
 std::vector<Interaction> Engine::interactions() const
 {
@@ -16,9 +36,11 @@ void Engine::setInteractions(const std::vector<Interaction> &list)
     {
         Lock lk(&m_mutex);
         m_interactions = list;
+        nameInteractions(m_interactions);
         for (const Interaction &it : m_interactions) m_nextInteractionId = std::max(m_nextInteractionId, it.id + 1);
         for (Interaction &it : m_interactions)
             if (!it.id) it.id = m_nextInteractionId++;
+        m_interactionParamsDirty = true;
         // Those gone: their state goes; those that stay keep theirs (a fader held is not let go by an edit)
         for (auto r = m_interactionRun.begin(); r != m_interactionRun.end();) {
             const bool kept = std::any_of(m_interactions.begin(), m_interactions.end(), [&](const Interaction &it) { return it.id == r->first; });
@@ -37,6 +59,8 @@ quint64 Engine::addInteraction(const Interaction &it)
         Interaction n = it;
         n.id = id = m_nextInteractionId++;
         m_interactions.push_back(n);
+        nameInteractions(m_interactions);
+        m_interactionParamsDirty = true;
     }
     updateMidiInputs();
     emit interactionsChanged();
@@ -53,6 +77,8 @@ bool Engine::setInteraction(const Interaction &it)
                                    f->filter != it.filter || f->layer != it.layer || f->param != it.param ||
                                    f->sourceLayer != it.sourceLayer || f->sourceParam != it.sourceParam;
         *f = it;
+        nameInteractions(m_interactions);
+        m_interactionParamsDirty = true;
         if (sourceChanged) m_interactionRun.erase(it.id); // starts again from what comes next
     }
     updateMidiInputs();
@@ -69,18 +95,20 @@ void Engine::removeInteraction(quint64 id)
                              m_interactions.end());
         if (n == m_interactions.size()) return;
         m_interactionRun.erase(id);
+        m_interactionParamsDirty = true;
     }
     updateMidiInputs();
     emit interactionsChanged();
 }
 
-bool Engine::interactionLevels(quint64 id, double *level, double *output) const
+bool Engine::interactionLevels(quint64 id, double *level, double *output, double *curveIn) const
 {
     Lock lk(&m_mutex);
     const auto r = m_interactionRun.find(id);
     if (r == m_interactionRun.end() || !r->second.proc.level()) return false;
     if (level) *level = *r->second.proc.level();
     if (output) *output = r->second.proc.output().value_or(*r->second.proc.level());
+    if (curveIn) *curveIn = r->second.proc.curveInput().value_or(*r->second.proc.level());
     return true;
 }
 
@@ -88,25 +116,42 @@ void Engine::feedInteraction(const InteractionEvent &e)
 {
     std::lock_guard<std::mutex> lk(m_interactionEventsMutex);
     if (m_interactionEvents.size() < 8192) m_interactionEvents.push_back(e); // a flood is cut, not kept forever
-    if (m_interactionLearn && (e.source != InteractionSource::Keyboard || e.value > 0.5)) m_learned = e; // a key: pressed
+    if (!m_interactionLearn || (m_learnKind && e.source != *m_learnKind)) return;
+    if (e.source == InteractionSource::Keyboard && e.value < 0.5) return; // a key: when pressed
+    for (InteractionEvent &x : m_learned)
+        if (x.source == e.source && x.address == e.address && x.port == e.port && x.channel == e.channel &&
+            x.message == e.message && x.number == e.number && x.argument == e.argument) {
+            x.value = e.value; // the same source again
+            return;
+        }
+    if (m_learned.empty()) m_learnClock.start();
+    if (m_learned.size() < 32) m_learned.push_back(e);
 }
 
-void Engine::setInteractionLearn(bool on)
+void Engine::setInteractionLearn(bool on, std::optional<InteractionSource> kind)
 {
     {
         std::lock_guard<std::mutex> lk(m_interactionEventsMutex);
         m_interactionLearn = on;
-        m_learned.reset();
+        m_learnKind = kind;
+        m_learned.clear();
     }
     updateMidiInputs(); // a controller is listened to while learning
 }
 
-std::optional<InteractionEvent> Engine::takeLearnedInteraction()
+bool Engine::interactionLearning() const
+{
+    std::lock_guard<std::mutex> lk(const_cast<Engine *>(this)->m_interactionEventsMutex);
+    return m_interactionLearn;
+}
+
+std::vector<InteractionEvent> Engine::takeLearnedInteractions(int settleMs)
 {
     std::lock_guard<std::mutex> lk(m_interactionEventsMutex);
-    std::optional<InteractionEvent> e = m_learned;
-    m_learned.reset();
-    return e;
+    if (m_learned.empty() || m_learnClock.elapsed() < settleMs) return {};
+    std::vector<InteractionEvent> out;
+    out.swap(m_learned);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,5 +318,144 @@ void Engine::stepInteractions(double dt)
         case ParamInfo::Type::Text: break;
         }
         if (wrote && it.layer) releaseFromFades(it.layer, it.param); // a fade running on it lets go
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Their values as the composition's parameters, and in the snapshots
+// ---------------------------------------------------------------------------
+void Engine::interactionValuesTouched()
+{
+    if (m_interactionValuesPending.exchange(true)) return; // one is on its way
+    QMetaObject::invokeMethod(this, [this] {
+        m_interactionValuesPending = false;
+        emit interactionValuesChanged();
+    }, Qt::QueuedConnection);
+}
+
+void Engine::makeInteractionParams()
+{
+    m_interactionParams.clear();
+    using T = Parameter::Type;
+    for (const Interaction &it : m_interactions) {
+        const quint64 id = it.id;
+        const QString prefix = QStringLiteral("interaction/%1/").arg(id);
+        const QString cat = QStringLiteral("Interactions › %1 › ").arg(it.name);
+        // Read and written in the interaction of that id (the lock held by the caller); a write tells the interface
+        auto find = [this, id]() -> Interaction * {
+            for (Interaction &x : m_interactions)
+                if (x.id == id) return &x;
+            return nullptr;
+        };
+        auto add = [&](const QString &path, const QString &name, T type) -> Parameter & {
+            m_interactionParams.push_back(std::make_unique<Parameter>(prefix + path, cat + name, type));
+            return *m_interactionParams.back();
+        };
+        auto number = [&](const QString &path, const QString &name, double lo, double hi, double def,
+                          std::function<double &(Interaction &)> field) -> Parameter & {
+            return add(path, name, T::Float)
+                .range(lo, hi)
+                .limits(-1e9, 1e9)
+                .step((hi - lo) / 100.0)
+                .byDefault(def)
+                .bind([find, field] {
+                          Interaction *x = find();
+                          return x ? QVariant(field(*x)) : QVariant();
+                      },
+                      [this, find, field](const QVariant &v) {
+                          if (Interaction *x = find()) {
+                              field(*x) = v.toDouble();
+                              interactionValuesTouched();
+                          }
+                      });
+        };
+        auto flag = [&](const QString &path, const QString &name, bool def, std::function<bool &(Interaction &)> field) {
+            add(path, name, T::Bool).byDefault(def).ramp(Parameter::Ramp::Cut).bind(
+                [find, field] {
+                    Interaction *x = find();
+                    return x ? QVariant(field(*x)) : QVariant();
+                },
+                [this, find, field](const QVariant &v) {
+                    if (Interaction *x = find()) {
+                        field(*x) = v.toBool();
+                        interactionValuesTouched();
+                    }
+                });
+        };
+        // The source's values and the target's, as the interface shows them. The composition's own values are read
+        // in its own list (the whole one is being made)
+        auto lookup = [this](quint64 layer, const QString &path) -> const Parameter * {
+            if (layer) return findParameter(layer, path);
+            for (const auto &p : m_compParams)
+                if (p->path() == path) return p.get();
+            return nullptr;
+        };
+        double sLo = 0, sHi = 1, tLo = 0, tHi = 1;
+        if (it.source == InteractionSource::Osc) {
+            sLo = std::min(0.0, it.srcMin);
+            sHi = std::max(1.0, it.srcMax);
+        } else if (it.source == InteractionSource::Internal) {
+            if (const Parameter *p = lookup(it.sourceLayer, it.sourceParam); p && p->isNumber()) {
+                sLo = p->info().min;
+                sHi = p->info().max;
+            }
+        }
+        if (const Parameter *p = lookup(it.layer, it.param); p && p->isNumber()) {
+                tLo = p->info().min;
+                tHi = p->info().max;
+            }
+
+        flag(QStringLiteral("enable"), QStringLiteral("On"), true, [](Interaction &x) -> bool & { return x.enabled; });
+        number(QStringLiteral("master"), QStringLiteral("Master Level"), 0, 1, 1, [](Interaction &x) -> double & { return x.master; })
+            .limits(0, 1)
+            .animatable();
+        flag(QStringLiteral("toggle"), QStringLiteral("Toggle"), false, [](Interaction &x) -> bool & { return x.toggle; });
+        number(QStringLiteral("source/min"), QStringLiteral("Source Min"), sLo, sHi, sLo, [](Interaction &x) -> double & { return x.srcMin; });
+        number(QStringLiteral("source/max"), QStringLiteral("Source Max"), sLo, sHi, sHi, [](Interaction &x) -> double & { return x.srcMax; });
+        number(QStringLiteral("target/min"), QStringLiteral("Target Min"), tLo, tHi, tLo, [](Interaction &x) -> double & { return x.dstMin; })
+            .animatable();
+        number(QStringLiteral("target/max"), QStringLiteral("Target Max"), tLo, tHi, tHi, [](Interaction &x) -> double & { return x.dstMax; })
+            .animatable();
+        add(QStringLiteral("takeover"), QStringLiteral("Takeover"), T::Choice)
+            .choices({QStringLiteral("pickup"), QStringLiteral("jump")})
+            .byDefault(QStringLiteral("jump"))
+            .bind([find] {
+                      Interaction *x = find();
+                      return x ? QVariant(x->takeover == Takeover::PickUp ? QStringLiteral("pickup") : QStringLiteral("jump")) : QVariant();
+                  },
+                  [this, find](const QVariant &v) {
+                      if (Interaction *x = find()) {
+                          x->takeover = v.toString() == QLatin1String("pickup") ? Takeover::PickUp : Takeover::Jump;
+                          interactionValuesTouched();
+                      }
+                  });
+        flag(QStringLiteral("filter/enable"), QStringLiteral("Filter"), false, [](Interaction &x) -> bool & { return x.filterOn; });
+        {
+            QStringList keys;
+            for (int k = 0; k < kInteractionFilterCount; ++k)
+                keys << interactionFilterName(InteractionFilter(k)).toLower().replace(QLatin1Char(' '), QLatin1Char('_'));
+            add(QStringLiteral("filter/type"), QStringLiteral("Filter Type"), T::Choice)
+                .choices(keys)
+                .byDefault(keys.front())
+                .bind([find, keys] {
+                          Interaction *x = find();
+                          return x ? QVariant(keys[int(x->filter)]) : QVariant();
+                      },
+                      [this, find, keys](const QVariant &v) {
+                          const int k = int(keys.indexOf(v.toString()));
+                          if (Interaction *x = find(); x && k >= 0) {
+                              x->filter = InteractionFilter(k);
+                              interactionValuesTouched();
+                          }
+                      });
+        }
+        const FilterSetting fa = interactionFilterSetting(it.filter, 0), fb = interactionFilterSetting(it.filter, 1);
+        if (!fa.name.isEmpty())
+            number(QStringLiteral("filter/a"), QStringLiteral("Filter ") + fa.name, fa.min, fa.max, fa.def,
+                   [](Interaction &x) -> double & { return x.filterA; });
+        if (!fb.name.isEmpty())
+            number(QStringLiteral("filter/b"), QStringLiteral("Filter ") + fb.name, fb.min, fb.max, fb.def,
+                   [](Interaction &x) -> double & { return x.filterB; });
+        flag(QStringLiteral("curve/enable"), QStringLiteral("Curve"), false, [](Interaction &x) -> bool & { return x.curveOn; });
     }
 }

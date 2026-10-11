@@ -37,6 +37,9 @@ QColor defaultAccent();
 void setAccent(const QColor &c); // saved, then everything using it is restyled
 QColor onAccent();               // text and icons drawn on the accent: dark or light, whichever reads
 QString css(int alpha = 255);    // "#rrggbb", or "rgba(r, g, b, a)" when alpha < 255
+// Sub-tabs that read as tabs (the inspector's, the interactions', the settings'): the current one lighter, in bold,
+// underlined with the accent; the others darker, apart
+QString tabStyle();
 } // namespace theme
 
 // Magnetism: points and frames dragged in the preview are caught by the edges, centers and corners around
@@ -59,6 +62,22 @@ int distance();        // screen pixels within which something is caught (Settin
 void setDistance(int px);
 QIcon icon();          // a horseshoe magnet
 } // namespace magnet
+
+// Auto-select: a click in the composition's preview selects the layer or the viewport under it (on), or only acts on the
+// one selected in the list (off: they are chosen in the list). Kept for this machine (the button next to the magnet).
+namespace autoselect {
+class Notifier : public QObject
+{
+    Q_OBJECT
+public:
+signals:
+    void changed();
+};
+Notifier *notifier();
+bool enabled();
+void setEnabled(bool on);
+QIcon icon(); // a pointer arrow
+} // namespace autoselect
 
 // Parameter name: a click puts the parameter back to its default value.
 class ResetLabel : public QLabel

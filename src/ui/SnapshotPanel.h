@@ -26,7 +26,7 @@ inline constexpr const char *kSnapshotMime = "application/x-fulskrin-snapshot";
 struct MemField {
     enum Kind { Info, Bool, Number, Choice };
     Kind kind = Info;
-    int row = 0;          // index of the layer in the snapshot (-1: the snapshot's composition)
+    int row = 0;          // index of the layer in the snapshot (-1: the snapshot's composition; -2 - k: its interaction k)
     QStringList path;     // inside the layer object, e.g. {"enable"} or {"params", "position/x"} (a parameter's address)
     double min = 0, max = 1, step = 0.01, scale = 1; // scale: displayed value = stored × scale (percentages)
     int decimals = 2;
@@ -71,6 +71,8 @@ private:
     void setInclusion(int i, quint64 layerId, bool included);
     void setCompositionIncluded(int i, bool included);
     void fillComposition(const QJsonObject &composition);
+    void fillInteractions(const QJsonArray &interactions); // their part: each one, its values
+    void setInteractionIncluded(int i, quint64 id, bool included);
     void refreshRows(); // value and time texts of the tree, after an edit (no rebuild)
     int selected() const;
     int indexOf(QTreeWidgetItem *it) const;  // the snapshot a row shows (-1: a group, none)

@@ -4366,7 +4366,7 @@ int main(int argc, char **argv)
         fader.param = "opacity";
         fader.takeover = Takeover::Jump;
         const quint64 f = e.addInteraction(fader);
-        CHECK(e.interactions().size() == 1 && e.interactions()[0].id == f);
+        CHECK(e.interactions().size() == 1 && e.interactions()[0].id == f && e.interactions()[0].name == "Interaction 1");
         midiCc(1, 7, 0.25);
         e.renderFrame();
         CHECK(std::abs(opacity(a) - 0.25) < 1e-6);
@@ -4484,17 +4484,25 @@ int main(int argc, char **argv)
         e.renderFrame();
         CHECK(std::abs(opacity(b) - 0.1) < 1e-6);
 
-        // Learn: the next event is kept (a key: when pressed)
+        // Learn: the distinct sources heard, once settled (a key: when pressed); of one kind when asked
         e.setInteractionLearn(true);
         press("F5", 0);
-        CHECK(!e.takeLearnedInteraction());
+        CHECK(e.takeLearnedInteractions(0).empty());
         midiCc(4, 21, 0.5);
-        const std::optional<InteractionEvent> learned = e.takeLearnedInteraction();
-        CHECK(learned && learned->source == InteractionSource::Midi && learned->channel == 4 && learned->number == 21);
-        CHECK(!e.takeLearnedInteraction());
+        midiCc(4, 21, 0.6); // the same one again
+        midiCc(4, 22, 0.1); // another, at the same time
+        CHECK(e.takeLearnedInteractions(10000).empty()); // not settled yet
+        std::vector<InteractionEvent> heard = e.takeLearnedInteractions(0);
+        CHECK(heard.size() == 2 && heard[0].number == 21 && std::abs(heard[0].value - 0.6) < 1e-9 && heard[1].number == 22);
+        CHECK(e.takeLearnedInteractions(0).empty());
+        e.setInteractionLearn(true, InteractionSource::Keyboard); // keys only
+        midiCc(4, 23, 0.5);
+        press("F6", 1);
+        heard = e.takeLearnedInteractions(0);
+        CHECK(heard.size() == 1 && heard[0].source == InteractionSource::Keyboard && heard[0].address == "F6");
         e.setInteractionLearn(false);
-        midiCc(4, 22, 0.5);
-        CHECK(!e.takeLearnedInteraction());
+        midiCc(4, 24, 0.5);
+        CHECK(e.takeLearnedInteractions(0).empty() && !e.interactionLearning());
         e.renderFrame();
 
         // Saved with the project
@@ -4505,6 +4513,126 @@ int main(int argc, char **argv)
         CHECK(e.interactions().size() == 1 && e.interactions()[0].source == InteractionSource::Internal &&
               e.interactions()[0].sourceLayer == a && e.interactions()[0].layer == b && e.interactions()[0].dstMin == 1);
         CHECK(e.addInteraction(Interaction::made(InteractionSource::Keyboard)) > e.interactions()[0].id);
+    }
+    // In the snapshots and the presets: each interaction's values are the composition's ("interaction/<id>/…")
+    {
+        e.newProject();
+        const quint64 a = e.layerId(e.addLayer("A"));
+        Interaction fader = Interaction::made(InteractionSource::Midi);
+        fader.midiChannel = 1;
+        fader.midiNumber = 7;
+        fader.layer = a;
+        fader.param = "opacity";
+        fader.takeover = Takeover::Jump;
+        const quint64 f = e.addInteraction(fader);
+        const QString master = QStringLiteral("interaction/%1/master").arg(f), on = QStringLiteral("interaction/%1/enable").arg(f);
+        bool inComposition = false; // not among the composition's values: reached by their address
+        for (const ParamInfo &p : e.parameters(0)) inComposition = inComposition || p.path.startsWith("interaction/");
+        ParamInfo mi;
+        CHECK(!inComposition && e.parameterInfo(0, master, &mi) && mi.animatable && mi.label == "Interactions › Interaction 1 › Master Level");
+        CHECK(e.parameterValue(0, master).toDouble() == 1.0 && e.parameterValue(0, on).toBool());
+        auto value = [&](quint64 id) {
+            for (const Interaction &x : e.interactions())
+                if (x.id == id) return x;
+            return Interaction();
+        };
+        // A preset holding its master level
+        CHECK(e.setParameter(0, master, 0.4) && std::abs(value(f).master - 0.4) < 1e-9);
+        Engine::Preset pr;
+        pr.name = "Half";
+        pr.fade = 0;
+        pr.values.push_back(e.presetValue(0, master));
+        pr.values.push_back(e.presetValue(0, QStringLiteral("interaction/%1/target/max").arg(f)));
+        e.addPreset(pr);
+        CHECK(e.setParameter(0, master, 1.0));
+        e.recallPreset(e.presetCount() - 1);
+        CHECK(std::abs(value(f).master - 0.4) < 1e-9);
+        // The master level scales what it sends
+        InteractionEvent ev;
+        ev.source = InteractionSource::Midi;
+        ev.channel = 1;
+        ev.number = 7;
+        ev.value = 1.0;
+        e.feedInteraction(ev);
+        e.renderFrame();
+        CHECK(std::abs(e.parameterValue(a, "opacity").toDouble() - 0.4) < 1e-6);
+        // A snapshot holds them all: off, and another master
+        CHECK(e.setParameter(0, on, false) && e.setParameter(0, master, 0.7));
+        Engine::Snapshot snap;
+        snap.fade = 0;
+        snap.layers = e.captureLayers();
+        snap.composition = e.captureComposition();
+        snap.interactions = e.captureInteractions();
+        CHECK(!snap.composition.contains("interactions") && snap.interactions.size() == 1); // a part of their own
+        CHECK(snap.interactions[0].toObject().value("name").toString() == "Interaction 1");
+        e.addSnapshot(snap);
+        CHECK(e.setParameter(0, on, true) && e.setParameter(0, master, 0.1));
+        Interaction later = Interaction::made(InteractionSource::Keyboard); // made after the snapshot: left alone
+        const quint64 k = e.addInteraction(later);
+        e.recallSnapshot(e.snapshotCount() - 1);
+        CHECK(!value(f).enabled && std::abs(value(f).master - 0.7) < 1e-9 && value(k).enabled);
+        CHECK(value(f).midiNumber == 7 && value(f).param == "opacity"); // its source and target stay
+        // Off: the controller moves nothing
+        ev.value = 0.2;
+        e.feedInteraction(ev);
+        e.renderFrame();
+        CHECK(std::abs(e.parameterValue(a, "opacity").toDouble() - 0.4) < 1e-6);
+        // An interaction can drive another's master level (Internal)
+        Interaction link = Interaction::made(InteractionSource::Internal);
+        link.sourceLayer = a;
+        link.sourceParam = "opacity";
+        link.layer = 0;
+        link.param = master;
+        e.addInteraction(link);
+        CHECK(e.setParameter(a, "opacity", 0.25));
+        e.renderFrame();
+        CHECK(std::abs(value(f).master - 0.25) < 1e-6);
+        e.removeInteraction(e.interactions().back().id);
+
+        // Names: their own, unique, editable; their address in OSC
+        Interaction renamed = value(f);
+        renamed.name = "Fader 1";
+        CHECK(e.setInteraction(renamed) && value(f).name == "Fader 1");
+        Interaction twin = value(k);
+        twin.name = "Fader 1";
+        CHECK(e.setInteraction(twin) && value(k).name == "Fader 1 2"); // taken: another
+        CHECK(OscNamespace::addressOf(&e, 0, master) == "/interaction/Fader_1/master");
+        CHECK(OscNamespace::addressOf(&e, a, "opacity").endsWith("/A/opacity"));
+        {
+            OscServer server(&e);
+            osc::Message m;
+            m.address = "/interaction/Fader_1/master";
+            m.args = {QVariant(0.6)};
+            CHECK(server.handleMessage(m) && std::abs(value(f).master - 0.6) < 1e-9);
+        }
+
+        // Faded as any value: a snapshot's master level, then a preset's, in their time
+        e.setFadesManual(true);
+        CHECK(e.setParameter(0, master, 0.0));
+        Engine::Snapshot slow;
+        slow.fade = 2;
+        slow.interactions = e.captureInteractions();
+        QJsonObject state = slow.interactions[0].toObject();
+        QJsonObject params = state.value("params").toObject();
+        params["master"] = 1.0;
+        state["params"] = params;
+        slow.interactions[0] = state;
+        e.addSnapshot(slow);
+        e.recallSnapshot(e.snapshotCount() - 1);
+        e.advanceFades(1.0);
+        const double half = value(f).master;
+        e.advanceFades(1.5);
+        CHECK(half > 0.2 && half < 0.8 && std::abs(value(f).master - 1.0) < 1e-9);
+        Engine::Preset down;
+        down.fade = 1;
+        down.values.push_back({0, master, QJsonValue(0.0), -1, QString()});
+        e.addPreset(down);
+        e.recallPreset(e.presetCount() - 1);
+        e.advanceFades(0.5);
+        CHECK(value(f).master > 0.1 && value(f).master < 0.9);
+        e.advanceFades(1.0);
+        CHECK(std::abs(value(f).master) < 1e-9);
+        e.setFadesManual(false);
     }
     }
 

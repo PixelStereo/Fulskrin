@@ -252,6 +252,7 @@ RecallSnapshot::RecallSnapshot(Engine *e, int snapshot) : m_e(e), m_snapshot(sna
 {
     m_before = e->captureLayers(true);
     m_beforeComposition = e->captureComposition();
+    m_beforeInteractions = e->captureInteractions();
     setText(QStringLiteral("Recall \"%1\"").arg(e->snapshot(snapshot).name));
 }
 
@@ -264,6 +265,7 @@ void RecallSnapshot::redo()
         const Engine::Snapshot m = m_e->snapshot(m_snapshot);
         if (!m.layers.isEmpty()) m_e->applyLayers(m.layers, 0, true);
         m_e->applyComposition(m.composition, 0);
+        m_e->applyInteractions(m.interactions, 0);
     }
 }
 

@@ -82,6 +82,10 @@ public:
     const OscNode *node(const QString &path) const;
     QStringList paths() const;              // every method (node with a type)
     QJsonObject toJson(const QString &path) const; // node and its contents (OSCQuery)
+    // The OSC address of a value (a layer's id, 0: the composition — "interaction/<id>/…": an interaction's), as
+    // built now ("": it has none)
+    QString addressOf(quint64 layer, const QString &path) const;
+    static QString addressOf(Engine *e, quint64 layer, const QString &path); // with a namespace made for it
     static QJsonValue jsonValue(const OscNode &n, const QVariant &v, int k);
 
 private:
@@ -92,6 +96,8 @@ private:
     Engine *m_e;
     QString m_signature;
     std::map<QString, OscNode> m_nodes;
+    QHash<quint64, QString> m_prefixOf; // a layer's address
+    QHash<quint64, QString> m_interactionPrefix; // an interaction's ("/interaction/<name>")
 };
 
 class OscServer : public QObject

@@ -548,14 +548,7 @@ void LayerInspector::rebuild()
     auto *tabs = new QTabWidget;
     tabs->setDocumentMode(true);
     // Tabs that read as tabs (as the ones above): the current one lighter, underlined with the accent
-    tabs->setStyleSheet(QStringLiteral("QTabBar::tab { background:#26262a; color:#a8a8ae; padding:5px 7px; margin-right:1px;"
-                                       " border:1px solid #3a3a40; border-bottom:none;"
-                                       " border-top-left-radius:4px; border-top-right-radius:4px; }"
-                                       "QTabBar::tab:selected { background:#45454c; color:#f4f4f6; border-color:#55555c;"
-                                       " border-bottom:2px solid %1; }"
-                                       "QTabBar::tab:hover:!selected { background:#313136; color:#d8d8dc; }"
-                                       "QTabBar::tab:disabled { color:#55555a; }")
-                            .arg(theme::css()));
+    tabs->setStyleSheet(theme::tabStyle());
     const bool hasSource = !s.isGroup && !s.isViewport;
     if (hasSource) tabs->addTab(page(buildSourceTab(s)), QStringLiteral("Source"));
     tabs->addTab(page(buildRoi(s)), QStringLiteral("ROI"));

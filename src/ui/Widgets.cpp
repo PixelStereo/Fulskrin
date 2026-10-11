@@ -88,6 +88,62 @@ Notifier *notifier()
 
 } // namespace theme
 
+QString theme::tabStyle()
+{
+    return QStringLiteral("QTabBar::tab { background:#1f1f23; color:#9a9aa1; padding:5px 9px; margin-right:2px;"
+                          " border:1px solid #34343a; border-bottom:none;"
+                          " border-top-left-radius:4px; border-top-right-radius:4px; }"
+                          "QTabBar::tab:selected { background:#505058; color:#ffffff; font-weight:bold; border-color:#62626a;"
+                          " border-bottom:3px solid %1; }"
+                          "QTabBar::tab:hover:!selected { background:#2e2e34; color:#e2e2e6; }"
+                          "QTabBar::tab:disabled { color:#55555a; }")
+        .arg(css());
+}
+
+namespace autoselect {
+Notifier *notifier()
+{
+    static Notifier n;
+    return &n;
+}
+bool enabled() { return QSettings().value(QStringLiteral("ui/autoSelect"), true).toBool(); }
+void setEnabled(bool on)
+{
+    if (enabled() == on) return;
+    QSettings().setValue(QStringLiteral("ui/autoSelect"), on);
+    emit notifier()->changed();
+}
+QIcon icon()
+{
+    QIcon icon;
+    for (int on = 0; on < 2; ++on) {
+        QPixmap pm(32, 32);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        // A pointer arrow over a small frame: the accent when on, grey when off
+        const QColor c = on ? theme::accent() : QColor(118, 118, 124);
+        p.setPen(QPen(c, 2.0, Qt::DashLine));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(QRectF(4, 4, 17, 13));
+        QPainterPath arrow;
+        arrow.moveTo(13, 10);
+        arrow.lineTo(13, 29);
+        arrow.lineTo(17.5, 24.5);
+        arrow.lineTo(21, 31);
+        arrow.lineTo(24, 29.5);
+        arrow.lineTo(20.5, 23);
+        arrow.lineTo(27, 23);
+        arrow.closeSubpath();
+        p.setPen(QPen(QColor(20, 20, 22), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(on ? QColor(235, 235, 238) : QColor(150, 150, 156));
+        p.drawPath(arrow);
+        icon.addPixmap(pm, QIcon::Normal, on ? QIcon::On : QIcon::Off);
+    }
+    return icon;
+}
+} // namespace autoselect
+
 namespace magnet {
 static bool g_enabled = true, g_enabledLoaded = false;
 static int g_distance = -1;

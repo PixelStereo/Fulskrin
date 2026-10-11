@@ -72,14 +72,20 @@ static QString valueText(const MemField &f, const QJsonValue &value)
     }
 }
 
-// The object a field's row refers to: a layer of the snapshot, or (-1) its composition
+// The object a field's row refers to: a layer of the snapshot, (-1) its composition, or (-2 - k) its interaction k
 static QJsonObject rowObject(const Engine::Snapshot &m, int row)
 {
+    if (row <= -2) return -2 - row < m.interactions.size() ? m.interactions.at(-2 - row).toObject() : QJsonObject();
     if (row < 0) return m.composition;
     return row < m.layers.size() ? m.layers.at(row).toObject() : QJsonObject();
 }
 static bool setRowObject(Engine::Snapshot &m, int row, const QJsonObject &o)
 {
+    if (row <= -2) {
+        if (-2 - row >= m.interactions.size()) return false;
+        m.interactions[-2 - row] = o;
+        return true;
+    }
     if (row < 0) {
         m.composition = o;
         return true;
@@ -583,6 +589,10 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
             setCompositionIncluded(selected(), it->checkState(0) == Qt::Checked);
             return;
         }
+        if (it->data(0, KeyRole).toString().startsWith(QLatin1String("I")) && it->data(0, IdRole).isValid()) {
+            setInteractionIncluded(selected(), it->data(0, IdRole).toULongLong(), it->checkState(0) == Qt::Checked);
+            return;
+        }
         if (!it->data(0, IdRole).isValid()) return;
         setInclusion(selected(), it->data(0, IdRole).toULongLong(), it->checkState(0) == Qt::Checked);
     });
@@ -776,6 +786,7 @@ void SnapshotPanel::showInspector(int i)
     m_fade->setValue(m.fade);
     QTreeWidgetItem *current = nullptr;
     fillComposition(m.composition);
+    fillInteractions(m.interactions);
     for (int row = 0; row < m.layers.size(); ++row) {
         const QJsonObject o = m.layers[row].toObject();
         auto *it = new QTreeWidgetItem(m_layers, {(o.contains("parent") ? QStringLiteral("    ") : QString()) + o.value("name").toString(),
@@ -1328,6 +1339,7 @@ void SnapshotPanel::store()
     m.name = QStringLiteral("Snapshot %1").arg(m_engine->snapshotCount() + 1);
     m.layers = m_engine->captureLayers();
     m.composition = m_engine->captureComposition();
+    m.interactions = m_engine->captureInteractions();
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     const int sel = selected();
     const int i = m_engine->addSnapshot(m, sel >= 0 ? sel + 1 : -1); // after the selected one, in its group
@@ -1374,6 +1386,23 @@ void SnapshotPanel::updateSnapshot(int i)
         if (m.composition.contains("easing")) comp["easing"] = m.composition.value("easing");
     }
     m.composition = comp;
+    // The interactions: those left out stay out, the times given to their values are kept
+    {
+        QHash<QString, QJsonObject> before;
+        for (const QJsonValue &v : m.interactions) before.insert(v.toObject().value("id").toString(), v.toObject());
+        QJsonArray now = m_engine->captureInteractions();
+        for (int k = 0; k < now.size(); ++k) {
+            QJsonObject o = now[k].toObject();
+            const auto b = before.constFind(o.value("id").toString());
+            if (b != before.constEnd()) {
+                o["included"] = b->value("included").toBool(true);
+                if (b->contains("timing")) o["timing"] = b->value("timing");
+                if (b->contains("easing")) o["easing"] = b->value("easing");
+            }
+            now[k] = o;
+        }
+        m.interactions = now;
+    }
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     m_engine->setSnapshot(i, m);
     emit edited();
@@ -1436,6 +1465,127 @@ void SnapshotPanel::fillComposition(const QJsonObject &c)
     num(QStringLiteral("Opacity"), QStringLiteral("opacity"), 1, QStringLiteral("The composition fader (the blackout stays apart)"));
     num(QStringLiteral("Volume"), QStringLiteral("volume"), 2, QStringLiteral("Volume of the composition sound"));
     top->setExpanded(m_expanded.contains(QStringLiteral("composition")));
+}
+
+// The interactions in the snapshot: each one (by its name now), included or not, and its values — the numbers with their
+// times as a layer's
+void SnapshotPanel::fillInteractions(const QJsonArray &interactions)
+{
+    if (interactions.isEmpty()) return;
+    auto *top = new QTreeWidgetItem(m_layers, {QStringLiteral("Interactions"), QStringLiteral("%1").arg(interactions.size())});
+    top->setData(0, KeyRole, QStringLiteral("interactions"));
+    QFont bold = top->font(0);
+    bold.setBold(true);
+    top->setFont(0, bold);
+    top->setFlags(Qt::ItemIsEnabled);
+    QHash<quint64, QString> names; // their names now (renamed since: the new one)
+    for (const Interaction &x : m_engine->interactions()) names.insert(x.id, x.name);
+    for (int k = 0; k < interactions.size(); ++k) {
+        const QJsonObject o = interactions[k].toObject();
+        const quint64 id = o.value("id").toString().toULongLong();
+        const QJsonObject params = o.value("params").toObject();
+        const bool gone = !names.contains(id);
+        auto *it = new QTreeWidgetItem(top, {gone ? o.value("name").toString() : names.value(id),
+                                             (params.value("enable").toBool(true) ? QStringLiteral("✓ ") : QStringLiteral("— ")) +
+                                                 QStringLiteral("%1%").arg(std::lround(params.value("master").toDouble(1) * 100))});
+        it->setData(0, IdRole, id);
+        it->setData(0, KeyRole, QStringLiteral("I%1").arg(id));
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+        it->setCheckState(0, o.value("included").toBool(true) ? Qt::Checked : Qt::Unchecked);
+        if (gone) {
+            it->setForeground(0, QColor(150, 150, 156));
+            it->setToolTip(0, QStringLiteral("Removed since: left alone by the recall"));
+        }
+        const int row = -2 - k;
+        auto field = [&](MemField::Kind kind, const QString &key, const QString &label) -> MemField {
+            MemField f;
+            f.kind = kind;
+            f.row = row;
+            f.path = {QStringLiteral("params"), key};
+            f.label = label;
+            return f;
+        };
+        auto number = [&](const QString &key, const QString &label, double lo, double hi, double scale, const QString &suffix) {
+            if (!params.contains(key)) return;
+            MemField f = field(MemField::Number, key, label);
+            f.min = lo;
+            f.max = hi;
+            f.scale = scale;
+            f.decimals = scale > 1 ? 0 : 2;
+            f.suffix = suffix;
+            f.step = (hi - lo) / 100.0;
+            f.timeKey = key; // fades in its time
+            addField(it, f, params.value(key));
+        };
+        auto flag = [&](const QString &key, const QString &label) {
+            if (params.contains(key)) addField(it, field(MemField::Bool, key, label), params.value(key));
+        };
+        auto choice = [&](const QString &key, const QString &label, const QStringList &keys, const QStringList &labels) {
+            if (!params.contains(key)) return;
+            MemField f = field(MemField::Choice, key, label);
+            f.keys = keys;
+            f.labels = labels;
+            addField(it, f, params.value(key));
+        };
+        // The ranges as the interaction's own values (its parameters say them)
+        auto rangeOf = [&](const QString &key, double *lo, double *hi) {
+            ParamInfo info;
+            if (m_engine->parameterInfo(0, QStringLiteral("interaction/%1/%2").arg(id).arg(key), &info)) {
+                *lo = std::min(info.min, params.value(key).toDouble());
+                *hi = std::max(info.max, params.value(key).toDouble());
+            } else {
+                *lo = std::min(0.0, params.value(key).toDouble());
+                *hi = std::max(1.0, params.value(key).toDouble());
+            }
+        };
+        flag(QStringLiteral("enable"), QStringLiteral("On"));
+        number(QStringLiteral("master"), QStringLiteral("Master Level"), 0, 1, 100, QStringLiteral(" %"));
+        flag(QStringLiteral("toggle"), QStringLiteral("Toggle"));
+        for (const char *key : {"source/min", "source/max", "target/min", "target/max"}) {
+            double lo = 0, hi = 1;
+            rangeOf(QString::fromLatin1(key), &lo, &hi);
+            const QString k = QString::fromLatin1(key);
+            number(k, (k.startsWith("source") ? QStringLiteral("Source ") : QStringLiteral("Target ")) +
+                          (k.endsWith("min") ? QStringLiteral("Min") : QStringLiteral("Max")), lo, hi, 1, QString());
+        }
+        choice(QStringLiteral("takeover"), QStringLiteral("Takeover"), {QStringLiteral("pickup"), QStringLiteral("jump")},
+               {QStringLiteral("Pick-up"), QStringLiteral("Jump")});
+        flag(QStringLiteral("filter/enable"), QStringLiteral("Filter"));
+        {
+            QStringList keys, labels;
+            for (int f = 0; f < kInteractionFilterCount; ++f) {
+                labels << interactionFilterName(InteractionFilter(f));
+                keys << labels.back().toLower().replace(QLatin1Char(' '), QLatin1Char('_'));
+            }
+            choice(QStringLiteral("filter/type"), QStringLiteral("Filter Type"), keys, labels);
+        }
+        for (const char *key : {"filter/a", "filter/b"}) {
+            double lo = 0, hi = 1;
+            rangeOf(QString::fromLatin1(key), &lo, &hi);
+            number(QString::fromLatin1(key), QString::fromLatin1(key) == QLatin1String("filter/a") ? QStringLiteral("Filter A")
+                                                                                              : QStringLiteral("Filter B"),
+                   lo, hi, 1, QString());
+        }
+        flag(QStringLiteral("curve/enable"), QStringLiteral("Curve"));
+        it->setExpanded(m_expanded.contains(it->data(0, KeyRole).toString()));
+    }
+    top->setExpanded(!m_expanded.contains(QStringLiteral("!interactions"))); // shown unless folded
+}
+
+void SnapshotPanel::setInteractionIncluded(int i, quint64 id, bool included)
+{
+    if (i < 0) return;
+    Engine::Snapshot m = m_engine->snapshot(i);
+    for (int k = 0; k < m.interactions.size(); ++k) {
+        QJsonObject o = m.interactions[k].toObject();
+        if (o.value("id").toString().toULongLong() != id) continue;
+        o["included"] = included;
+        m.interactions[k] = o;
+    }
+    m_applying = true;
+    m_engine->setSnapshot(i, m);
+    m_applying = false;
+    emit edited();
 }
 
 void SnapshotPanel::setInclusion(int i, quint64 id, bool included)
@@ -1721,13 +1871,20 @@ void SnapshotPanel::showPreset()
                                .arg(p.values.size()));
     m_presetName->setText(p.name);
     m_presetFade->setValue(p.fade);
-    // By layer, in the order of the list; the composition first
-    std::map<quint64, QTreeWidgetItem *> layers;
-    auto layerItem = [&](quint64 id) {
-        auto found = layers.find(id);
+    // By layer, in the order of the list; the composition first; an interaction's values under its name
+    std::map<QString, QTreeWidgetItem *> layers;
+    QHash<quint64, QString> interactionNames;
+    for (const Interaction &x : m_engine->interactions()) interactionNames.insert(x.id, x.name);
+    auto layerItem = [&](quint64 id, const QString &path) {
+        const bool interaction = !id && path.startsWith(QLatin1String("interaction/"));
+        const quint64 iid = interaction ? path.section('/', 1, 1).toULongLong() : 0;
+        const QString key = interaction ? QStringLiteral("I%1").arg(iid) : QStringLiteral("L%1").arg(id);
+        auto found = layers.find(key);
         if (found != layers.end()) return found->second;
         QString name;
-        if (!id) {
+        if (interaction) {
+            name = QStringLiteral("Interaction › ") + interactionNames.value(iid, QStringLiteral("(gone)"));
+        } else if (!id) {
             name = QStringLiteral("Composition");
         } else {
             Engine::Lock lk(&m_engine->mutex());
@@ -1740,14 +1897,15 @@ void SnapshotPanel::showPreset()
         it->setFont(0, f);
         it->setData(0, IdRole, id);
         it->setExpanded(true);
-        layers[id] = it;
+        layers[key] = it;
         return it;
     };
     for (const Engine::PresetValue &v : p.values) {
         ParamInfo info;
         const bool known = m_engine->parameterInfo(v.layer, v.path, &info);
-        const QString label = known ? info.label : v.path;
-        auto *it = new QTreeWidgetItem(layerItem(v.layer), {label, presetValueText(v.value)});
+        const bool interaction = !v.layer && v.path.startsWith(QLatin1String("interaction/"));
+        const QString label = known ? (interaction ? info.name() : info.label) : v.path;
+        auto *it = new QTreeWidgetItem(layerItem(v.layer, v.path), {label, presetValueText(v.value)});
         it->setData(0, IdRole, v.layer);
         it->setData(0, KeyRole, v.path);
         it->setData(1, KeyRole, v.easing);

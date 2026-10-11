@@ -8,6 +8,7 @@
 #include "Interactions.h"
 
 #include <QHash>
+#include <QPointer>
 #include <QWidget>
 #include <optional>
 
@@ -23,6 +24,7 @@ class QVBoxLayout;
 class QLabel;
 class QProgressBar;
 class QTimer;
+class QMenu;
 
 class InteractionPanel : public QWidget
 {
@@ -32,16 +34,33 @@ public:
     // A key of the keyboard, pressed or let go, while no text is typed (the main window passes them all)
     void keyEvent(int key, Qt::KeyboardModifiers mods, bool pressed);
     static QString keyName(int key, Qt::KeyboardModifiers mods); // "Space", "Shift+A" (portable)
+    static InteractionPanel *instance() { return s_instance; } // the application's (none in the tests)
+    // A new interaction driving this value (a layer's id, 0: the composition), its source learnt of that kind (Internal:
+    // chosen in its settings); the tab is shown
+    void learnFor(quint64 layer, const QString &path, InteractionSource kind);
+    // The end of any value's right-click menu: its OSC address (copied when chosen), and Learn Interaction ▸ a kind of
+    // source. `paths`: the values the widget shows (x and y: one sub-menu each)
+    static void fillValueMenu(QMenu *menu, Engine *e, quint64 layer, const QStringList &paths);
 
 signals:
     void edited(); // the list changed: the project is modified
+    void showRequested(); // to be shown (a Learn from a value elsewhere)
+
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override; // right-click on a value: the preset actions
 
 private:
+    // The widgets of a value of the one shown ("master", "source/min"…): presets can take it (Edit mode, right-click)
+    void attachPreset(std::initializer_list<QWidget *> ws, const QStringList &paths);
     std::optional<InteractionSource> shownKind() const; // the sub-tab's (none: All)
     void rebuildList();
     void rebuildSettings();
     void refreshLevels();
     void pollLearn();
+    void applyLearned(const InteractionEvent &e);
+    void select(quint64 id);
+    static InteractionPanel *s_instance;
+    std::optional<InteractionSource> m_learnKind;
     quint64 selectedId() const;
     std::optional<Interaction> selected() const;
     // The list with `it` replacing the one of its id, as an undo step (edits with the same key that follow one another
@@ -65,7 +84,11 @@ private:
     QLabel *m_settingsTitle = nullptr;
     QPushButton *m_copy = nullptr, *m_paste = nullptr;
     QProgressBar *m_inMeter = nullptr, *m_outMeter = nullptr;
+    QPointer<class CurveLane> m_lane;
+    bool m_revealCurve = false;
+    class QScrollArea *m_scroll = nullptr;
     QTimer *m_timer;
+    QTimer *m_valuesTimer = nullptr;
     quint64 m_shown = 0;        // the interaction whose settings are shown
     bool m_committing = false;  // its own edit going to the engine: the settings are not made again
     bool m_filling = false;

@@ -19,7 +19,10 @@ macOS). macOS, Windows, Linux.
 - **Interactions** (left tab): any value of the show driven by a key, a MIDI controller (CC, note, pitch bend, program),
   an OSC message, or by another value of the show (Internal, no protocol in between), with Learn. Each through a chain:
   source range, toggle, filter (average, weighted average, pulse detection, attack / release, damper), a drawn curve,
-  master level, target range, and pick-up (a fader waits to meet the value a snapshot left) or jump.
+  master level, target range, and pick-up (a fader waits to meet the value a snapshot left) or jump. Each one is named
+  (its OSC address: `/interaction/<name>/master`…); snapshots keep them in a part of their own, presets hold any of
+  their values, both faded in their time. Any value's right-click: its OSC address, and Learn Interaction (a new one
+  driving it, its source learnt; several sources at once: you choose).
 - **Control**: OSC and OSCQuery (UDP 1234, TCP 5678, Zeroconf). One address per value everywhere: OSC, project file, snapshots, timelines (`/layer/<name>/position/x`, `…/fx/<fx>/param/<input>`, `…/<param>/anim/play`).
 
 ## Build
