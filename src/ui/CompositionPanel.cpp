@@ -508,6 +508,7 @@ void CompositionPanel::rebuildTimecodePatch()
             row->addWidget(remove);
             gv->addLayout(row);
             auto *status = statusLabel();
+            status->hide(); // shown once known
             gv->addWidget(status);
             const quint64 id = o.id;
             m_tcStatus.push_back({status, [this, id] { return m_engine->timecodeOutputStatus(id); }});
@@ -565,6 +566,7 @@ void CompositionPanel::rebuildTimecodePatch()
             row->addWidget(remove);
             gv->addLayout(row);
             auto *status = statusLabel();
+            status->hide(); // shown once known
             gv->addWidget(status);
             const quint64 id = m.id;
             m_tcStatus.push_back({status, [this, id] { return m_engine->midiOutputStatus(id); }});
@@ -641,6 +643,7 @@ void CompositionPanel::rebuildTimecodePatch()
             row->addWidget(remove);
             gv->addLayout(row);
             auto *status = statusLabel();
+            status->hide(); // shown once known
             gv->addWidget(status);
             const quint64 id = a.id;
             m_tcStatus.push_back({status, [this, id] { return m_engine->audioChannelOutputStatus(id); }});
@@ -698,7 +701,8 @@ void CompositionPanel::refreshTimecodeStatus()
     for (auto &[label, text] : m_tcStatus)
         if (label) {
             const QString t = text();
+            if (t.isEmpty()) continue; // not known yet (the patch just changed): the last one stays meanwhile
             if (label->text() != t) label->setText(t);
-            label->setVisible(!t.isEmpty());
+            label->setVisible(true);
         }
 }

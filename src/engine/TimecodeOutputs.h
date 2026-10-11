@@ -7,8 +7,8 @@
 //  - MIDI outputs and audio channels (the patch): named by the user too, each one given a port or a channel of a device
 //    of this machine. A project opened on another machine is patched again there: its routes name the patch, not the
 //    hardware.
-// TimecodeRouter sends MTC and LTC: a thread of its own reads the clocks and writes the MIDI messages, the audio devices'
-// callbacks write the LTC; none takes the engine's lock. ATC goes with the frames (Engine::frame).
+// TimecodeRouter sends MTC and LTC: a thread of its own reads the clocks and writes the MIDI messages; another opens the
+// audio devices, whose callbacks write the LTC; none takes the engine's lock. ATC goes with the frames (Engine::frame).
 
 #include "Timecode.h"
 #include "TimecodeClock.h"
@@ -150,28 +150,31 @@ private:
         QString error;
         qint64 triedAt = -1;
     };
-    void run();
-    void reconfigure(std::vector<Stream> &streams, const std::vector<MidiOutput> &midi,
-                     const std::vector<AudioChannelOutput> &audio, bool testSink);
+    void runMidi();
+    void runAudio();
+    void reconfigureMidi(const std::vector<Stream> &streams, const std::vector<MidiOutput> &midi, bool testSink);
+    void reconfigureAudio(const std::vector<Stream> &streams, const std::vector<AudioChannelOutput> &audio);
     void openPorts(qint64 nowMs, bool testSink, std::map<quint64, QString> &status);
     void openAudio(qint64 nowMs, std::map<quint64, QString> &status);
     static QString portKey(const MidiOutput &m);
 
     mutable std::mutex m_mutex;
     std::condition_variable m_wake;
-    bool m_stop = false, m_dirty = false;
+    bool m_stop = false, m_dirtyMidi = false, m_dirtyAudio = false;
     std::vector<Stream> m_streams; // configured (main thread)
     std::vector<MidiOutput> m_midi;
     std::vector<AudioChannelOutput> m_audio;
     Sink m_sink;
     std::map<quint64, QString> m_midiStatus, m_audioStatus; // written by the thread
 
-    // The thread's own
+    // The MIDI thread's own
     std::vector<Running> m_running;
     std::map<quint64, MidiOutput> m_midiNow;
-    std::map<quint64, AudioChannelOutput> m_audioNow;
-    std::map<QString, Port> m_ports;      // by port key
-    std::map<QString, AudioDev> m_devices; // by device name
+    std::map<QString, Port> m_ports; // by port key
     bool m_testSink = false;
     std::thread m_thread;
+    // The audio thread's own
+    std::map<quint64, AudioChannelOutput> m_audioNow;
+    std::map<QString, AudioDev> m_devices; // by device name
+    std::thread m_audioThread;
 };

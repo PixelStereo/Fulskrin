@@ -148,7 +148,11 @@ void MtcSender::step(const std::optional<TcReading> &r, std::vector<Message> &ou
 // ---------------------------------------------------------------------------
 static constexpr qint64 kRetryMs = 2000; // a port or a device missing or refused: tried again (plugged in later)
 
-TimecodeRouter::TimecodeRouter() { m_thread = std::thread([this] { run(); }); }
+TimecodeRouter::TimecodeRouter()
+{
+    m_thread = std::thread([this] { runMidi(); });
+    m_audioThread = std::thread([this] { runAudio(); });
+}
 
 TimecodeRouter::~TimecodeRouter()
 {
@@ -158,6 +162,7 @@ TimecodeRouter::~TimecodeRouter()
     }
     m_wake.notify_all();
     m_thread.join();
+    m_audioThread.join();
 }
 
 void TimecodeRouter::configure(std::vector<Stream> streams, std::vector<MidiOutput> midi, std::vector<AudioChannelOutput> audio)
@@ -167,7 +172,9 @@ void TimecodeRouter::configure(std::vector<Stream> streams, std::vector<MidiOutp
         m_streams = std::move(streams);
         m_midi = std::move(midi);
         m_audio = std::move(audio);
-        m_dirty = true;
+        m_dirtyMidi = m_dirtyAudio = true;
+        m_midiStatus.clear(); // unknown until the threads have taken the new patch (not the old one's)
+        m_audioStatus.clear();
     }
     m_wake.notify_all();
 }
@@ -191,7 +198,7 @@ void TimecodeRouter::setTestSink(Sink sink)
     {
         std::lock_guard<std::mutex> lk(m_mutex);
         m_sink = std::move(sink);
-        m_dirty = true; // the ports are closed while it is set
+        m_dirtyMidi = true; // the ports are closed while it is set
     }
     m_wake.notify_all();
 }
@@ -203,13 +210,10 @@ QString TimecodeRouter::portKey(const MidiOutput &m)
     return QStringLiteral("port:") + m.port;
 }
 
-void TimecodeRouter::reconfigure(std::vector<Stream> &streams, const std::vector<MidiOutput> &midi,
-                                 const std::vector<AudioChannelOutput> &audio, bool testSink)
+void TimecodeRouter::reconfigureMidi(const std::vector<Stream> &streams, const std::vector<MidiOutput> &midi, bool testSink)
 {
     m_midiNow.clear();
     for (const MidiOutput &m : midi) m_midiNow[m.id] = m;
-    m_audioNow.clear();
-    for (const AudioChannelOutput &a : audio) m_audioNow[a.id] = a;
 
     // MTC: the senders kept for the destinations that stay (no full frame sent again), made for the new ones
     std::vector<Running> next;
@@ -242,6 +246,12 @@ void TimecodeRouter::reconfigure(std::vector<Stream> &streams, const std::vector
         for (const auto &[id, m] : m_midiNow) used = used || (!testSink && portKey(m) == it->first);
         it = used ? std::next(it) : m_ports.erase(it);
     }
+}
+
+void TimecodeRouter::reconfigureAudio(const std::vector<Stream> &streams, const std::vector<AudioChannelOutput> &audio)
+{
+    m_audioNow.clear();
+    for (const AudioChannelOutput &a : audio) m_audioNow[a.id] = a;
 
     // LTC: the lanes of each device (one per channel patched to a timecode), generators kept for those that stay
     std::map<QString, std::vector<Lane>> lanes;
@@ -366,7 +376,8 @@ void TimecodeRouter::openAudio(qint64 now, std::map<quint64, QString> &status)
     }
 }
 
-void TimecodeRouter::run()
+// MTC: a thread of its own, stepping each millisecond while a timecode goes to a MIDI output (nothing else may hold it up)
+void TimecodeRouter::runMidi()
 {
 #ifdef _WIN32
     timeBeginPeriod(1); // sleeps of a millisecond (quarter frames come every 8 to 10 ms)
@@ -375,33 +386,30 @@ void TimecodeRouter::run()
     clock.start();
     Sink sink;
     std::vector<MtcSender::Message> msgs;
-    std::map<quint64, QString> midiStatus, audioStatus;
+    std::map<quint64, QString> midiStatus;
     for (;;) {
         std::vector<Stream> streams;
         std::vector<MidiOutput> midi;
-        std::vector<AudioChannelOutput> audio;
         bool changed = false;
         {
             std::unique_lock<std::mutex> lk(m_mutex);
-            const auto wakeUp = [this] { return m_stop || m_dirty; };
-            // MTC: each millisecond. Otherwise now and then, to open a port or a device plugged in since
+            const auto wakeUp = [this] { return m_stop || m_dirtyMidi; };
+            // Each millisecond while sending; otherwise now and then, to open a port plugged in since
             m_wake.wait_for(lk, m_running.empty() ? std::chrono::milliseconds(500) : std::chrono::milliseconds(1), wakeUp);
             if (m_stop) break;
-            if (m_dirty) {
+            if (m_dirtyMidi) {
                 streams = m_streams;
                 midi = m_midi;
-                audio = m_audio;
-                m_dirty = false;
+                m_dirtyMidi = false;
                 changed = true;
             }
             sink = m_sink;
         }
         const qint64 now = clock.elapsed();
-        if (changed) reconfigure(streams, midi, audio, bool(sink));
+        if (changed) reconfigureMidi(streams, midi, bool(sink));
 
-        std::map<quint64, QString> ms, as;
+        std::map<quint64, QString> ms;
         openPorts(now, bool(sink), ms);
-        openAudio(now, as);
 
         for (Running &r : m_running) {
             const std::optional<TcReading> reading = r.stream.clock->reading();
@@ -419,18 +427,54 @@ void TimecodeRouter::run()
                 for (const auto &msg : msgs) p->second.out->send(msg);
             }
         }
-        if (ms != midiStatus || as != audioStatus) {
-            midiStatus = ms;
-            audioStatus = as;
+        if (changed || ms != midiStatus) {
             std::lock_guard<std::mutex> lk(m_mutex);
-            m_midiStatus = ms;
-            m_audioStatus = as;
+            if (!m_dirtyMidi) { // not when a newer patch came meanwhile: its own is told next time
+                midiStatus = ms;
+                m_midiStatus = ms;
+            }
         }
     }
     m_ports.clear(); // closed on this thread, as they were opened
-    m_devices.clear();
     m_running.clear();
 #ifdef _WIN32
     timeEndPeriod(1);
 #endif
+}
+
+// LTC: the audio devices opened, closed and given their lanes on a thread of their own (opening one can take seconds:
+// the audio system looks for its devices); their callbacks write the LTC
+void TimecodeRouter::runAudio()
+{
+    QElapsedTimer clock;
+    clock.start();
+    std::map<quint64, QString> audioStatus;
+    for (;;) {
+        std::vector<Stream> streams;
+        std::vector<AudioChannelOutput> audio;
+        bool changed = false;
+        {
+            std::unique_lock<std::mutex> lk(m_mutex);
+            const auto wakeUp = [this] { return m_stop || m_dirtyAudio; };
+            m_wake.wait_for(lk, std::chrono::milliseconds(500), wakeUp); // now and then: a device plugged in since
+            if (m_stop) break;
+            if (m_dirtyAudio) {
+                streams = m_streams;
+                audio = m_audio;
+                m_dirtyAudio = false;
+                changed = true;
+            }
+        }
+        if (changed) reconfigureAudio(streams, audio);
+        std::map<quint64, QString> as;
+        openAudio(clock.elapsed(), as);
+        if (changed || as != audioStatus) {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            if (!m_dirtyAudio) { // not when a newer patch came meanwhile: its own is told next time
+                audioStatus = as;
+                m_audioStatus = as;
+            }
+        }
+    }
+    m_devices.clear(); // stopped: their callbacks have returned
 }

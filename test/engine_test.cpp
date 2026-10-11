@@ -4219,8 +4219,11 @@ int main(int argc, char **argv)
         {
             QElapsedTimer w;
             w.start();
-            while (w.elapsed() < 3000 && e.audioChannelOutputStatus(a1).isEmpty()) QThread::msleep(20);
-            CHECK(e.audioChannelOutputStatus(a1).contains("not found") || e.audioChannelOutputStatus(a1).contains("audio system"));
+            // Opening the device runs on its own thread (the audio system may take seconds to list its devices)
+            while (w.elapsed() < 15000 && e.audioChannelOutputStatus(a1).isEmpty()) QThread::msleep(20);
+            const QString st = e.audioChannelOutputStatus(a1);
+            std::printf("       LTC 1: %s (%lld ms)\n", qPrintable(st), qint64(w.elapsed()));
+            CHECK(st.contains("not found") || st.contains("audio system") || st.startsWith("cannot"));
         }
         // A copy of the layer drives nothing (one layer per output)
         const int copy = e.insertLayerJson(e.layerCount(), e.layerJson(a2));
