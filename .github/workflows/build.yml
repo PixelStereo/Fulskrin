@@ -48,8 +48,7 @@ jobs:
           cmake --build build --target fulskrin_tests -j4
       - name: Engine tests
         run: |
-          xvfb-run -a ./build/fulskrin_tests
-          xvfb-run -a ./build/fulskrin_tests --check-isf isf
+          xvfb-run -a ctest --test-dir build --output-on-failure
 
   macos:
     name: macOS (Apple Silicon) + tests
@@ -70,8 +69,7 @@ jobs:
           cmake --build build --target fulskrin_tests -j4
       - name: Engine tests
         run: |
-          ./build/fulskrin_tests
-          ./build/fulskrin_tests --check-isf isf
+          ctest --test-dir build --output-on-failure
       - name: Package .app
         run: |
           "$(brew --prefix qt)/bin/macdeployqt" build/Fulskrin.app
@@ -118,9 +116,7 @@ jobs:
           LP_NUM_THREADS: '1' # the software GPU on one core: the sound's threads keep their time
         run: |
           $env:PATH = "C:\ffmpeg\$env:FFMPEG_ZIP\bin;$env:PATH"
-          .\build\fulskrin_tests.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\build\fulskrin_tests.exe --check-isf isf
+          ctest --test-dir build --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package
         shell: pwsh

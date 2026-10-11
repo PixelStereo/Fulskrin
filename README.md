@@ -31,8 +31,8 @@ Windows: Qt 6 (MSVC 2022), shared FFmpeg, then
 
 Requires Qt 6.2+, FFmpeg 4+, CMake 3.21+, C++17, OpenGL 3.3 core.
 
-Tests: `sh test/make_media.sh && cmake --build build --target fulskrin_tests && ./build/fulskrin_tests`
-(CI runs them on the three platforms).
+Tests: `sh test/make_media.sh && cmake --build build --target fulskrin_tests && ctest --test-dir build`
+(one process per area; `fulskrin_tests --area snapshots` runs one; CI runs them on the three platforms).
 
 ## Limits
 

@@ -9,7 +9,14 @@
 
 #define BCDEC_IMPLEMENTATION
 #define BCDEC_STATIC
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function" // a single-header library: the decoders not used here
+#endif
 #include "bcdec.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace hap {
 

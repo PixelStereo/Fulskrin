@@ -68,8 +68,8 @@ int main(int argc, char **argv)
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
     QGuiApplication app(argc, argv);
     const QString root = QString(TEST_DIR);
-    const QString tmp = QDir::tempPath() + "/fulskrin_test";
-    QDir().mkpath(tmp);
+    const QString isf = root + "/../isf";
+
 
     Engine e;
     QString err;
@@ -77,6 +77,32 @@ int main(int argc, char **argv)
         std::printf("FAIL OpenGL: %s\n", qPrintable(err));
         return 1;
     }
+    // Areas: each one starts from a new project and can run alone (fulskrin_tests --area <name>: CTest runs them so,
+    // one process each); without --area, all of them in turn
+    QStringList only;
+    for (int k = 1; k + 1 < argc; ++k)
+        if (QString(argv[k]) == "--area") only << QString(argv[k + 1]);
+    // Its own folder: areas run side by side (ctest -j)
+    const QString tmp = QDir::tempPath() + "/fulskrin_test" + (only.isEmpty() ? QString() : "_" + only.join('_'));
+    QDir().mkpath(tmp);
+    { // Pictures several areas use: left half red, right half blue; top half red, bottom half blue
+        QImage rb(64, 32, QImage::Format_RGB32);
+        for (int y = 0; y < 32; ++y)
+            for (int x = 0; x < 64; ++x) rb.setPixel(x, y, x < 32 ? qRgb(255, 0, 0) : qRgb(0, 0, 255));
+        rb.save(tmp + "/redblue.png");
+        QImage tr(64, 32, QImage::Format_RGBA8888);
+        tr.fill(QColor(255, 0, 0));
+        for (int y = 16; y < 32; ++y)
+            for (int x = 0; x < 64; ++x) tr.setPixelColor(x, y, QColor(0, 0, 255));
+        tr.save(tmp + "/topred.png");
+    }
+    auto area = [&](const char *name) {
+        if (!only.isEmpty() && !only.contains(QLatin1String(name))) return false;
+        std::printf("\n== %s\n", name);
+        e.newProject();
+        return true;
+    };
+
     // A composition is always shown through a viewport, and viewports come first in the list:
     // the layers of these tests start at row V.
     const int V = 1;
@@ -113,11 +139,13 @@ int main(int argc, char **argv)
         return ok == total ? 0 : 1;
     }
 
+    if (area("video")) {
     // 0. Video pipeline: pixel formats, HAP, upload buffers (video_test.cpp). Leaves a new project.
     failures += runVideoTests(e, root, tmp);
+    } // video
 
+    if (area("project")) {
     // 1. JSON round trip (project built here: generator + warped mesh, video + effects)
-    const QString isf = root + "/../isf";
     int gen = e.addLayer("Test Pattern");
     CHECK(e.setLayerIsf(gen, isf + "/generators/TestPattern.fs", &err));
     e.layer(gen)->mapping.meshMode = true;
@@ -174,7 +202,9 @@ int main(int argc, char **argv)
               why.contains("format 99"));
         CHECK(e.layerCount() == before);
     }
+    } // project
 
+    if (area("playback")) {
     // 2. Video: seeking and end of playback without loop
     e.newProject();
     int v = e.addLayer("v");
@@ -211,7 +241,9 @@ int main(int argc, char **argv)
     for (int i = 0; i < 5; ++i) e.renderFrame(); // the broken shader passes the image through
     QImage out = e.grabOutput();
     CHECK(!out.isNull());
+    } // playback
 
+    if (area("undo")) {
     // 4. Undo / redo (manual mode)
     {
         QUndoStack undo;
@@ -299,7 +331,9 @@ int main(int argc, char **argv)
         while (undo.canUndo()) undo.undo();
         CHECK(e.layerCount() == V + 0);
     }
+    } // undo
 
+    if (area("structure")) {
     // 4b. Structure helpers (viewports, groups inside groups)
     {
         auto item = [](quint64 id, quint64 parent) { return TreeNode{id, parent, TreeNode::Item}; };
@@ -336,7 +370,9 @@ int main(int argc, char **argv)
         LayerTree up = tree::ungrouped(two, 2);
         CHECK(up[size_t(tree::indexOf(up, 3))].parent == 10);
     }
+    } // structure
 
+    if (area("compositing")) {
     // 4c. Groups, roi, color, effects switch, lock, blackout (manual rendering)
     {
         e.newProject();
@@ -567,7 +603,9 @@ int main(int argc, char **argv)
         }
         e.newProject();
     }
+    } // compositing
 
+    if (area("osc")) {
     // 4d. OSC and OSCQuery
     {
         osc::Message m{"/a/b", "ifsTFNd", {7, 0.5, QStringLiteral("hey"), true, false, QVariant(), 2.25}};
@@ -809,7 +847,9 @@ int main(int argc, char **argv)
         }
         e.newProject();
     }
+    } // osc
 
+    if (area("snapshots")) {
     // 4e. Snapshots: capture, recall (instant and with a fade), recreation, lock, save / load
     {
         e.newProject();
@@ -2003,7 +2043,9 @@ int main(int argc, char **argv)
         e.newProject();
         CHECK(e.snapshotCount() == 0);
     }
+    } // snapshots
 
+    if (area("masks")) {
     // 4f. Effect masks: an effect applies where another layer's picture is white
     {
         QFile inv(tmp + "/Invert.fs");
@@ -2120,7 +2162,9 @@ int main(int argc, char **argv)
         CHECK(e.layer(e.indexOfId(lid))->color.maskLayer == 0);
         e.removeLayer(e.indexOfId(lid));
     }
+    } // masks
 
+    if (area("rendering")) {
     // 4d''. Soft edge: the picture fades out towards the sides it is set on
     {
         e.newProject();
@@ -2538,6 +2582,7 @@ int main(int argc, char **argv)
         CHECK(e.renderSettings().frameRate == 30 && e.renderSettings().samples < 0 && e.renderSettings().mipmaps < 0);
         e.setRenderSettings({});
     }
+    } // rendering
 
     // 5. Render thread
     auto waitFrames = [&](quint64 n) {
@@ -2556,6 +2601,7 @@ int main(int argc, char **argv)
     CHECK(e.start());
     CHECK(e.isThreaded());
     CHECK(waitFrames(5));
+    if (area("thread")) {
     { // A window gets the viewport's picture from the render thread: through Metal on macOS, OpenGL elsewhere
         QWindow w;
         w.setSurfaceType(Engine::metalOutput() ? QSurface::MetalSurface : QSurface::OpenGLSurface);
@@ -2721,6 +2767,8 @@ int main(int argc, char **argv)
             CHECK(e.layer(V + 0)->color.enabled && e.layer(V + 0)->color.removeOn);
         }
     }
+    } // thread
+    if (area("publishing")) {
     // 6. Publishing: GPU readback -> send thread (BGRA, rows top to bottom)
     {
         e.newProject();
@@ -2784,7 +2832,9 @@ int main(int argc, char **argv)
         CHECK(waitFrames(3));
         CHECK(e.publishState(vp, PublishKind::Ndi).level == PublishState::Off);
     }
+    } // publishing
 
+    if (area("media")) {
     // 7. Media: usage, missing file kept, relink, media bin
     {
         e.newProject();
@@ -2847,7 +2897,9 @@ int main(int argc, char **argv)
         VideoDecoder::Info info;
         CHECK(VideoDecoder::probe(root + "/media/prores.mov", &info) && info.width == 1920 && info.codec == "prores");
     }
+    } // media
 
+    if (area("sound")) {
     // --- Sound: audio layer, sound of a video layer, synchronized with the playhead. Not with Apple's software
     // renderer (CI's macOS): one core for everything, its timings mean nothing there
     if (e.glRenderer().contains(QLatin1String("Apple Software Renderer"))) {
@@ -3327,6 +3379,7 @@ int main(int argc, char **argv)
         e.audioOutput().setTap(nullptr);
         e.stopAudio();
     }
+    } // sound
 
     e.stop();
     CHECK(!e.isThreaded());
@@ -3334,6 +3387,7 @@ int main(int argc, char **argv)
     e.renderFrame(); // back to manual mode
     CHECK(!e.grabOutput().isNull());
 
+    if (area("layersource")) {
     // 12. Copy / paste of layer parameters, and a layer used as the source of another (pre-FX / post-FX)
     {
         e.newProject();
@@ -3476,6 +3530,7 @@ int main(int argc, char **argv)
         }
         e.newProject();
     }
+    } // layersource
 
     std::printf("\n%s (%d failure(s))\n", failures ? "FAILED" : "ALL OK", failures);
     e.shutdown();

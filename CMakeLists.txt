@@ -8,6 +8,8 @@ if(MSVC)
   add_compile_options(/utf-8 /W3)   # UTF-8 sources (UI strings contain non-ASCII characters)
   add_compile_definitions(NOMINMAX _USE_MATH_DEFINES)
 endif()
+# Warnings on Fulskrin's own code (the libraries fetched below keep theirs)
+set(FULSKRIN_WARNINGS $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wno-unused-parameter>)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -234,6 +236,9 @@ if(WIN32 AND FFMPEG_ROOT)
   endif()
 endif()
 
+target_compile_options(fulskrin_engine PRIVATE ${FULSKRIN_WARNINGS})
+target_compile_options(Fulskrin PRIVATE ${FULSKRIN_WARNINGS})
+
 install(TARGETS Fulskrin BUNDLE DESTINATION . RUNTIME DESTINATION bin)
 
 # ---------------------------------------------------------------------------
@@ -244,7 +249,16 @@ if(FULSKRIN_TESTS)
   add_executable(fulskrin_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp src/ui/Commands.cpp)
   target_include_directories(fulskrin_tests PRIVATE src/ui)
   target_link_libraries(fulskrin_tests PRIVATE fulskrin_engine)
+  target_compile_options(fulskrin_tests PRIVATE ${FULSKRIN_WARNINGS})
   target_compile_definitions(fulskrin_tests PRIVATE TEST_DIR="${CMAKE_SOURCE_DIR}/test")
+  # CTest: each area in a process of its own (a new engine), then every bundled shader compiled and rendered.
+  # Test media first: sh test/make_media.sh
+  enable_testing()
+  foreach(area video project playback undo structure compositing osc snapshots masks rendering thread publishing
+          media sound layersource)
+    add_test(NAME ${area} COMMAND fulskrin_tests --area ${area})
+  endforeach()
+  add_test(NAME isf COMMAND fulskrin_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
   # Several videos played together: cmake --build build --target fulskrin_bench
   add_executable(fulskrin_bench EXCLUDE_FROM_ALL test/bench.cpp)
   target_link_libraries(fulskrin_bench PRIVATE fulskrin_engine)
