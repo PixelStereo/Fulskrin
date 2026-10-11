@@ -426,6 +426,10 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         VCHECK(d.sameSize && std::any_of(layouts.begin(), layouts.end(), [&](const QString &l) { return desc.startsWith(l); }));
         VCHECK(d.max <= 8 && d.mean <= 1.5);
         VCHECK(staged >= 1); // frames came through upload buffers, or were sampled in place
+#ifdef __APPLE__
+        // VideoToolbox's ProRes (P210, planar): sampled in its surface, not copied
+        if (desc.startsWith(QLatin1String("p210le")) && VideoDecoder::zeroCopy()) VCHECK(desc.contains(QLatin1String("zero copy")));
+#endif
     }
 
     // --- Every layout swscale writes: the GPU's conversion of the same frame against swscale's own, through the
