@@ -1,10 +1,12 @@
 // Playback benchmark: several videos at once, as the show plays them.
 //
-//   fulskrin_bench [--seconds S] [--fps F] [--comp WxH] [--decode] file...
+//   fulskrin_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] file...
 //
 // Default: every file in a layer of one composition (a grid), played by the render thread for S seconds;
 // for each layer, the frames it showed per second against the file's own rate, and the rate of the render.
 // --decode: the decoders alone (no GPU), each file's frames fetched as fast as they come.
+// --copy: hardware frames copied to upload buffers, as before zero copy (macOS), to compare.
+// --software: no hardware decoding.
 #include "Engine.h"
 
 #include <QCoreApplication>
@@ -67,7 +69,7 @@ int main(int argc, char **argv)
 
     double seconds = 10, fps = 60;
     QSize comp(3840, 2160);
-    bool decode = false;
+    bool decode = false, copy = false, software = false;
     QStringList files;
     const QStringList args = app.arguments();
     for (int i = 1; i < args.size(); ++i) {
@@ -78,12 +80,15 @@ int main(int argc, char **argv)
             const QStringList wh = args[++i].split('x');
             if (wh.size() == 2) comp = QSize(wh[0].toInt(), wh[1].toInt());
         } else if (a == "--decode") decode = true;
+        else if (a == "--copy") copy = true;
+        else if (a == "--software") software = true;
         else files << a;
     }
     if (files.isEmpty()) {
-        std::printf("usage: fulskrin_bench [--seconds S] [--fps F] [--comp WxH] [--decode] file...\n");
+        std::printf("usage: fulskrin_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] file...\n");
         return 1;
     }
+    if (software) VideoDecoder::setHardwareDecoding(false);
     if (decode) return decodeOnly(files, seconds);
 
     Engine e;
@@ -92,6 +97,9 @@ int main(int argc, char **argv)
         std::printf("Engine: %s\n", qPrintable(err));
         return 1;
     }
+    if (copy) VideoDecoder::setZeroCopy(false); // after the engine set it
+    std::printf("Hardware decoding: %s, zero copy: %s\n", VideoDecoder::hardwareDecoding() ? "on" : "off",
+                VideoDecoder::zeroCopy() ? "on" : "off");
     e.setCompositionSize(comp);
     Engine::RenderSettings rs;
     rs.frameRate = fps;

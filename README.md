@@ -33,10 +33,15 @@ Requires Qt 6.2+, FFmpeg 4+, CMake 3.21+, C++17, OpenGL 3.3 core.
 
 Tests: `sh test/make_media.sh && cmake --build build --target fulskrin_tests && ctest --test-dir build`
 (one process per area; `fulskrin_tests --area snapshots` runs one; CI runs them on the three platforms).
+Playback benchmark: `cmake --build build --target fulskrin_bench && sh test/bench_4k.sh build` (how many 4K files
+play together, per codec, with and without zero copy).
 
 ## Limits
 
-- Video decoded on the CPU (fine for a few HD streams); one stereo audio output.
+- Video: H.264, HEVC and ProRes decoded by the graphics hardware when it can (VideoToolbox on macOS, sampled in
+  place with no copy; D3D11VA / VAAPI elsewhere, copied back then uploaded); other codecs on the CPU. HAP is
+  decompressed on the CPU and sampled compressed, except Hap R and Hap HDR on macOS (no BPTC in its OpenGL: decoded
+  on the CPU, slow in 4K; Hap Q is the fast one there). One stereo audio output.
 - No MIDI/DMX; ISF audio inputs are black. Cameras need Qt Multimedia (without it, none are listed).
 - NDI and OMT send a GPU readback (one frame of latency).
 
