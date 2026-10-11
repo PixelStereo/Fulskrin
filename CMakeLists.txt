@@ -227,6 +227,13 @@ if(APPLE)
   else()
     message(WARNING "Qt camera permission plugin not found: the camera will not be asked for on macOS")
   endif()
+  # The microphone permission plugin, the same way
+  find_package(Qt6QDarwinMicrophonePermissionPlugin QUIET)
+  if(TARGET Qt6::QDarwinMicrophonePermissionPlugin)
+    target_link_libraries(Fulskrin PRIVATE Qt6::QDarwinMicrophonePermissionPlugin Qt6::QDarwinMicrophonePermissionPlugin_init)
+  else()
+    message(WARNING "Qt microphone permission plugin not found: the microphone will not be asked for on macOS")
+  endif()
   set_target_properties(Fulskrin PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "Fulskrin"
     MACOSX_BUNDLE_GUI_IDENTIFIER "fr.fulskrin.app"
