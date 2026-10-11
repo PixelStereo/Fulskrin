@@ -172,5 +172,6 @@ private:
     std::map<quint64, AudioChannelOutput> m_audioNow;
     std::map<QString, Port> m_ports;      // by port key
     std::map<QString, AudioDev> m_devices; // by device name
+    bool m_testSink = false;
     std::thread m_thread;
 };

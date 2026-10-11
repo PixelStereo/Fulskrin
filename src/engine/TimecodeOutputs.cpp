@@ -231,6 +231,11 @@ void TimecodeRouter::reconfigure(std::vector<Stream> &streams, const std::vector
         if (r.stream.clock && !r.dest.empty()) next.push_back(std::move(r));
     }
     m_running = std::move(next);
+    if (testSink != m_testSink) { // messages go elsewhere now: a full frame first there
+        m_testSink = testSink;
+        for (Running &r : m_running)
+            for (Destination &d : r.dest) d.mtc = MtcSender();
+    }
     // MIDI ports no MIDI output names any more: closed
     for (auto it = m_ports.begin(); it != m_ports.end();) {
         bool used = false;
@@ -294,7 +299,14 @@ void TimecodeRouter::openPorts(qint64 now, bool testSink, std::map<quint64, QStr
             auto out = std::make_unique<midi::Output>();
             QString err;
             const bool ok = m.port == QLatin1String(MidiOutput::kVirtualPort) ? out->openVirtual(m.name, &err) : out->open(m.port, &err);
-            if (ok) p.out = std::move(out);
+            if (ok) {
+                p.out = std::move(out);
+                for (Running &r : m_running) // a port opened (plugged in, made again): its receivers get a full frame first
+                    for (Destination &d : r.dest) {
+                        const auto dm = m_midiNow.find(d.midi);
+                        if (dm != m_midiNow.end() && portKey(dm->second) == key) d.mtc = MtcSender();
+                    }
+            }
             p.error = ok ? QString() : err;
         }
         if (!p.out) {
