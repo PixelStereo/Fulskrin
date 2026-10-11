@@ -222,6 +222,8 @@ if(APPLE)
   find_package(Qt6QDarwinCameraPermissionPlugin QUIET)
   if(TARGET Qt6::QDarwinCameraPermissionPlugin)
     target_link_libraries(Fulskrin PRIVATE Qt6::QDarwinCameraPermissionPlugin Qt6::QDarwinCameraPermissionPlugin_init)
+    # Qt's permission handler is an Objective-C class in that static library: -ObjC keeps it in the link
+    target_link_options(Fulskrin PRIVATE "-ObjC")
   else()
     message(WARNING "Qt camera permission plugin not found: the camera will not be asked for on macOS")
   endif()
