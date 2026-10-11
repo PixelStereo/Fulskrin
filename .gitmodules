@@ -1,0 +1,20 @@
+[submodule "third_party/miniaudio"]
+	path = third_party/miniaudio
+	url = https://github.com/mackron/miniaudio.git
+	shallow = true
+[submodule "third_party/bcdec"]
+	path = third_party/bcdec
+	url = https://github.com/iOrange/bcdec.git
+	shallow = true
+[submodule "third_party/syphon"]
+	path = third_party/syphon
+	url = https://github.com/Syphon/Syphon-Framework.git
+	shallow = true
+[submodule "third_party/spout2"]
+	path = third_party/spout2
+	url = https://github.com/leadedge/Spout2.git
+	shallow = true
+[submodule "third_party/rtmidi"]
+	path = third_party/rtmidi
+	url = https://github.com/thestk/rtmidi.git
+	shallow = true

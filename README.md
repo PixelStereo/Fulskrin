@@ -15,6 +15,9 @@ macOS). macOS, Windows, Linux.
 
 ## Build
 
+The libraries Fulskrin builds from source are git submodules in `third_party/` (miniaudio, bcdec, Syphon, Spout,
+RtMidi): clone with `git clone --recursive`, or run `git submodule update --init` in a clone.
+
 ```bash
 # macOS
 brew install qt ffmpeg cmake pkg-config
@@ -49,6 +52,6 @@ play together, per codec, with and without zero copy).
   set the viewport to the mode's size. Video only, 8 bits, no keying.
 
 Third party in the source tree: the Blackmagic DeckLink SDK's interfaces (`third_party/decklink`, SDK 12.0, Boost
-Software License 1.0, see its LICENSE).
+Software License 1.0, see its LICENSE; a copy, as OBS, GStreamer and VLC keep: Blackmagic publishes no repository).
 
 Links: [ISF](https://www.interactiveshaderformat.com/) · [OSCQuery](https://github.com/Vidvox/OSCQueryProposal)
