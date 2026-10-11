@@ -854,6 +854,12 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  return true;
              }),
              true);
+    L.method(P + "/solo", "T", 3, "Solo", [](Layer &l) { return QVariantList{l.solo}; },
+             L.edit([](Layer &l, const QVariantList &a) {
+                 l.solo = truth(a.value(0));
+                 return true;
+             }),
+             true);
     L.method(P + "/locked", "T", 3, "Locked", [](Layer &l) { return QVariantList{l.locked}; },
              L.edit([](Layer &l, const QVariantList &a) {
                  l.locked = truth(a.value(0));

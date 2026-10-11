@@ -52,6 +52,7 @@ private:
     void refreshLayerList();
     void refreshAll();
     void selectLayer(int index);
+    void toggleSolo(int row); // a setup aid: not undone, not saved
     int currentLayer() const;
     void statusTick();
     void updateTitle();

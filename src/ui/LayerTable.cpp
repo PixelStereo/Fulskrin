@@ -27,7 +27,7 @@
 #include <cmath>
 #include <functional>
 
-enum Col { ColVisible, ColLock, ColName, ColEffects, ColOpacity, ColBlend, ColPlayback, ColCount };
+enum Col { ColVisible, ColLock, ColSolo, ColName, ColEffects, ColOpacity, ColBlend, ColPlayback, ColCount };
 
 static const char *const kRowsMime = kLayerRowsMime;
 static constexpr int kArrowZone = 22;  // px at the left of a group's name: fold / unfold
@@ -174,7 +174,7 @@ protected:
             if (onCollapse) onCollapse(row);
             return;
         }
-        if (e->button() == Qt::LeftButton && col != ColVisible && col != ColLock) {
+        if (e->button() == Qt::LeftButton && col != ColVisible && col != ColLock && col != ColSolo) {
             m_pressRow = row;
             m_pressPos = p;
             // A plain click selects on release: a press that becomes a drag (onto the inspector's source, say)
@@ -380,13 +380,14 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     grid->onCollapse = [this](int row) { emit collapseToggled(row); };
     grid->onRename = [this](int row) { startRename(row); };
     m_table = grid;
-    m_table->setHorizontalHeaderLabels({QString(), QString(), QStringLiteral("Layer"), QStringLiteral("Fx"),
+    m_table->setHorizontalHeaderLabels({QString(), QString(), QString(), QStringLiteral("Layer"), QStringLiteral("Fx"),
                                         QStringLiteral("Opacity"), QStringLiteral("Blend Mode"), QStringLiteral("Playback")});
     m_table->setToolTip(QStringLiteral("Top layer is drawn on top · drop a media onto a layer to load it · "
                                        "drag layers onto a group · double-click a name to rename · "
                                        "the viewports, at the top, are windows onto the composition"));
     m_table->horizontalHeaderItem(ColVisible)->setToolTip(QStringLiteral("Enable"));
     m_table->horizontalHeaderItem(ColLock)->setToolTip(QStringLiteral("Locked: no edit allowed"));
+    m_table->horizontalHeaderItem(ColSolo)->setToolTip(QStringLiteral("Solo: only the soloed layers are drawn"));
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -402,6 +403,8 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     m_table->setColumnWidth(ColVisible, 30);
     h->setSectionResizeMode(ColLock, QHeaderView::Fixed);
     m_table->setColumnWidth(ColLock, 28);
+    h->setSectionResizeMode(ColSolo, QHeaderView::Fixed);
+    m_table->setColumnWidth(ColSolo, 26);
     h->setSectionResizeMode(ColName, QHeaderView::Interactive);
     h->setSectionResizeMode(ColName, QHeaderView::Interactive);
     m_table->setColumnWidth(ColName, 170);
@@ -427,6 +430,7 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     });
     connect(m_table, &QTableWidget::cellClicked, this, [this](int row, int col) {
         if (col == ColLock) emit lockToggled(row);
+        if (col == ColSolo && row >= 0 && row < int(m_rows.size()) && !m_rows[size_t(row)].viewport) emit soloToggled(row);
     });
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_table, &QTableWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
@@ -534,6 +538,23 @@ void LayerTable::updateRow(int r, const Row &row)
                      : row.lockedByGroup ? QStringLiteral("Locked by its group")
                                          : QStringLiteral("Click to lock (no edit allowed)"));
 
+    // Solo: an S, lit when soloed (not for the viewports)
+    QTableWidgetItem *solo = m_table->item(r, ColSolo);
+    if (!solo) {
+        solo = new QTableWidgetItem;
+        solo->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        solo->setTextAlignment(Qt::AlignCenter);
+        m_table->setItem(r, ColSolo, solo);
+    }
+    solo->setText(row.viewport ? QString() : QStringLiteral("S"));
+    QFont sf = solo->font();
+    sf.setBold(true);
+    solo->setFont(sf);
+    solo->setForeground(row.solo ? QColor(255, 214, 90) : QColor(95, 95, 102));
+    solo->setToolTip(row.viewport ? QString()
+                     : row.solo   ? QStringLiteral("Soloed — click to show every layer again")
+                                  : QStringLiteral("Solo: draw only this layer (and the other soloed ones)"));
+
     // Indented by depth (about kIndent px per level); a group starts with its fold arrow
     const QString prefix = QStringLiteral("        ").repeated(row.depth) +
                            (row.group ? (row.collapsed ? QStringLiteral("▸  ") : QStringLiteral("▾  ")) : QString());
@@ -542,8 +563,9 @@ void LayerTable::updateRow(int r, const Row &row)
     QFont f = name->font();
     f.setBold(true);
     name->setFont(f);
-    name->setForeground(row.error      ? QColor(255, 110, 95)
-                        : row.viewport ? QColor(140, 200, 255)
+    name->setForeground(row.error        ? QColor(255, 110, 95)
+                        : row.soloHidden ? QColor(110, 110, 115) // left out by a solo
+                        : row.viewport   ? QColor(140, 200, 255)
                         : row.group    ? QColor(255, 200, 140)
                                        : QColor(230, 230, 233));
     // Effects: their number, the names on hover

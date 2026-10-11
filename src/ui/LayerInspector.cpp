@@ -64,6 +64,7 @@ struct LayerValues {
     QRectF roi{0, 0, 1, 1};
     ColorAdjust color;
     bool effectsEnabled = true;
+    bool solo = false;
     int colorModels = 1;
     double aspect = 16.0 / 9.0; // source picture (before roi)
     QString name, sourcePath, error;
@@ -110,6 +111,7 @@ struct LayerValues {
         s.isViewport = l->isViewport;
         s.vpSize = l->viewportSize();
         s.locked = l->locked;
+        s.solo = l->solo;
         s.lockedByGroup = !l->locked && e->isLocked(index);
         s.members = e->groupMembers(index).size();
         s.roi = l->roi;
@@ -463,9 +465,26 @@ void LayerInspector::rebuild()
     lock->setStyleSheet("QToolButton:checked { background:#4a2422; }");
     lock->setProperty("allowLocked", true);
     lock->setEnabled(!s.lockedByGroup);
+    // Solo: only the soloed layers are drawn (a setup aid: not undone, not saved)
+    auto *solo = new QToolButton;
+    solo->setText(QStringLiteral("S"));
+    solo->setCheckable(true);
+    solo->setChecked(s.solo);
+    solo->setToolTip(QStringLiteral("Solo: draw only this layer (and the other soloed ones)"));
+    solo->setStyleSheet("QToolButton { font-weight:bold; min-width:22px; } QToolButton:checked { background:#5a4a1a; color:#ffd65a; }");
+    solo->setProperty("allowLocked", true);
+    solo->setVisible(!s.isViewport);
     head->addWidget(vis);
     head->addWidget(lock);
+    head->addWidget(solo);
     head->addWidget(name, 1);
+    connect(solo, &QToolButton::toggled, this, [this](bool on) {
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            if (Layer *l = m_engine->layer(m_layer)) l->solo = on;
+        }
+        emit layerChanged();
+    });
     v->addLayout(head);
     connect(lock, &QToolButton::toggled, this, [this](bool on) {
         setProp(cmd::SetLayerProp::Locked, on);

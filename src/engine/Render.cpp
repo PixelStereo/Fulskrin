@@ -3,6 +3,7 @@
 #include "EngineInternal.h"
 
 #include <map>
+#include <set>
 #include <memory>
 #include <vector>
 
@@ -157,6 +158,34 @@ void Engine::updateSource(Layer &l, double dt)
     }
 }
 
+// Solo: the soloed layers are kept, with everything inside a soloed group and the groups holding them; the others
+// are left out. Nothing soloed: none left out. Viewports are never left out.
+std::vector<bool> Engine::soloLeftOut() const
+{
+    std::vector<bool> out(m_layers.size(), false);
+    std::map<quint64, const Layer *> byId;
+    bool anySolo = false;
+    for (const auto &l : m_layers) {
+        byId[l->id] = l.get();
+        anySolo = anySolo || (l->solo && !l->isViewport);
+    }
+    if (!anySolo) return out;
+    auto up = [&](quint64 id) -> const Layer * {
+        const auto it = byId.find(id);
+        return it == byId.end() ? nullptr : it->second;
+    };
+    std::set<quint64> kept;
+    for (const auto &l : m_layers) {
+        bool in = false;
+        for (const Layer *p = l.get(); p && !in; p = up(p->parent)) in = p->solo;
+        if (!in) continue;
+        kept.insert(l->id);
+        for (const Layer *g = up(l->parent); g; g = up(g->parent)) kept.insert(g->id);
+    }
+    for (size_t i = 0; i < m_layers.size(); ++i) out[i] = !m_layers[i]->isViewport && !kept.count(m_layers[i]->id);
+    return out;
+}
+
 // Which layers are drawn this frame: shown (in a shown group), used as a source or as a mask by another,
 // previewed in the inspector, viewports. The others are neither uploaded nor rendered (their sound plays on).
 void Engine::markNeeded()
@@ -177,6 +206,8 @@ void Engine::markNeeded()
             if (mi >= 0) m_layers[size_t(mi)]->referenced = true;
         }
     }
+    const std::vector<bool> leftOut = soloLeftOut();
+    for (size_t i = 0; i < m_layers.size(); ++i) m_layers[i]->soloHidden = leftOut[i];
     // A group comes before its members: its verdict is known when they are reached
     std::map<quint64, bool> groupNeeded;
     for (auto &lp : m_layers) {
@@ -186,7 +217,7 @@ void Engine::markNeeded()
             const auto g = groupNeeded.find(l.parent);
             inShown = g != groupNeeded.end() && g->second;
         }
-        l.needed = l.isViewport || l.referenced || l.id == m_previewId || (l.enabled && inShown);
+        l.needed = l.isViewport || l.referenced || l.id == m_previewId || (l.enabled && inShown && !l.soloHidden);
         if (l.isGroup) groupNeeded[l.id] = l.needed;
     }
     for (auto &[id, t] : m_transitions) t->from->needed = true;
@@ -536,7 +567,7 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     for (int i = int(layers.size()) - 1; i >= 0; --i) {
         Layer &l = *layers[size_t(i)];
         const float opacity = viewport ? l.opacity * l.opacityIn(viewport) : l.opacity;
-        if (!l.enabled || !l.finalTex || opacity <= 0.0f) continue;
+        if (!l.enabled || l.soloHidden || !l.finalTex || opacity <= 0.0f) continue;
         const bool diff = l.blend == BlendMode::Difference;
         if (diff) {
             // Copy what is drawn so far (resolved if antialiased), then draw the layer against the copy
