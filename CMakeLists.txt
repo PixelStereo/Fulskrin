@@ -89,16 +89,19 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# Audio output: miniaudio (single header, public domain / MIT-0), downloaded at configure time
+# Third-party sources: git submodules in third_party/ (git submodule update --init), built here
 # ---------------------------------------------------------------------------
-include(FetchContent)
-FetchContent_Declare(miniaudio
-  GIT_REPOSITORY https://github.com/mackron/miniaudio.git
-  GIT_TAG 9634bedb5b5a2ca38c1ee7108a9358a4e233f14d # 0.11.25
-  GIT_SHALLOW FALSE
-  SOURCE_SUBDIR no-cmake) # download only: compiled in src/engine/MiniaudioImpl.cpp
-FetchContent_MakeAvailable(miniaudio)
-target_include_directories(fulskrin_engine PRIVATE "${miniaudio_SOURCE_DIR}")
+function(fulskrin_submodule name file)
+  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/${name}/${file}")
+    message(FATAL_ERROR "third_party/${name} is empty: run  git submodule update --init")
+  endif()
+endfunction()
+
+# ---------------------------------------------------------------------------
+# Audio output: miniaudio (single header, public domain / MIT-0), compiled in src/engine/MiniaudioImpl.cpp
+# ---------------------------------------------------------------------------
+fulskrin_submodule(miniaudio miniaudio.h)
+target_include_directories(fulskrin_engine PRIVATE "${CMAKE_SOURCE_DIR}/third_party/miniaudio")
 target_compile_definitions(fulskrin_engine PRIVATE MA_NO_DECODING MA_NO_ENCODING MA_NO_GENERATION MA_NO_ENGINE
   MA_NO_RESOURCE_MANAGER MA_NO_NODE_GRAPH)
 if(MSVC)
@@ -118,14 +121,10 @@ endif()
 
 # ---------------------------------------------------------------------------
 # HAP: texture blocks decoded on the CPU when the GPU cannot sample them (BC7 and BC6 on macOS).
-# bcdec: single header, MIT or Unlicense, downloaded at configure time.
+# bcdec: single header, MIT or Unlicense, compiled in src/engine/Hap.cpp.
 # ---------------------------------------------------------------------------
-FetchContent_Declare(bcdec
-  GIT_REPOSITORY https://github.com/iOrange/bcdec.git
-  GIT_TAG 80859ed3b7afb1c527a2a99d70c61457bea72d0c # 0.985
-  SOURCE_SUBDIR no-cmake) # download only: compiled in src/engine/Hap.cpp
-FetchContent_MakeAvailable(bcdec)
-target_include_directories(fulskrin_engine PRIVATE "${bcdec_SOURCE_DIR}")
+fulskrin_submodule(bcdec bcdec.h)
+target_include_directories(fulskrin_engine PRIVATE "${CMAKE_SOURCE_DIR}/third_party/bcdec")
 
 # ---------------------------------------------------------------------------
 # Output publishing
@@ -149,11 +148,8 @@ endif()
 
 if(APPLE AND FULSKRIN_SYPHON)
   enable_language(C OBJC OBJCXX) # Syphon: C and Objective-C sources
-  FetchContent_Declare(syphon
-    GIT_REPOSITORY https://github.com/Syphon/Syphon-Framework.git
-    GIT_TAG f4761677a45b8034a3c2069ec0f3d2553da81fba
-    SOURCE_SUBDIR no-cmake) # download only: we build the sources ourselves
-  FetchContent_MakeAvailable(syphon)
+  fulskrin_submodule(syphon SyphonServer.h)
+  set(syphon_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/syphon")
   # The sources import <Syphon/...>: expose the headers under this prefix.
   file(GLOB SYPHON_HEADERS "${syphon_SOURCE_DIR}/*.h")
   file(COPY ${SYPHON_HEADERS} DESTINATION "${CMAKE_BINARY_DIR}/syphon-include/Syphon")
@@ -214,12 +210,8 @@ if(FULSKRIN_DECKLINK)
 endif()
 
 if(WIN32 AND FULSKRIN_SPOUT)
-  FetchContent_Declare(spout2
-    GIT_REPOSITORY https://github.com/leadedge/Spout2.git
-    GIT_TAG c2bcc12147711d12ace7d5f08e869d774d840f8a
-    SOURCE_SUBDIR no-cmake) # download only: we build the sources ourselves
-  FetchContent_MakeAvailable(spout2)
-  set(SPOUT_DIR "${spout2_SOURCE_DIR}/SPOUTSDK/SpoutGL")
+  fulskrin_submodule(spout2 SPOUTSDK/SpoutGL/Spout.cpp)
+  set(SPOUT_DIR "${CMAKE_SOURCE_DIR}/third_party/spout2/SPOUTSDK/SpoutGL")
   add_library(spout_gl STATIC
     ${SPOUT_DIR}/Spout.cpp ${SPOUT_DIR}/SpoutCopy.cpp ${SPOUT_DIR}/SpoutDirectX.cpp
     ${SPOUT_DIR}/SpoutFrameCount.cpp ${SPOUT_DIR}/SpoutGL.cpp ${SPOUT_DIR}/SpoutGLextensions.cpp

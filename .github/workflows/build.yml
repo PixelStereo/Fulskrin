@@ -31,6 +31,8 @@ jobs:
     needs: media
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true # third_party/ (shallow, pinned commits)
       - uses: actions/download-artifact@v4
         with:
           name: test-media
@@ -56,6 +58,8 @@ jobs:
     needs: media
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true # third_party/ (shallow, pinned commits)
       - uses: actions/download-artifact@v4
         with:
           name: test-media
@@ -87,6 +91,8 @@ jobs:
       FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true # third_party/ (shallow, pinned commits)
       - uses: ilammy/msvc-dev-cmd@v1
       - uses: jurplel/install-qt-action@v4
         with:
