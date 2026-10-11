@@ -22,6 +22,7 @@ struct Timecode {
     static bool dropFrame(TcRate r) { return r == TcRate::Fps2997Df; }
     static QString rateName(TcRate r); // "25 fps", "29.97 fps drop frame"…
     static constexpr int64_t kDayFrames30 = 24LL * 3600 * 30;
+    static int64_t framesPerDay(TcRate r);
 
     bool valid() const;
     int64_t toFrames() const;                          // frames since 00:00:00:00 (drop frame: the numbers skipped)

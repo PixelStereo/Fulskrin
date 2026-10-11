@@ -40,8 +40,11 @@ struct ScopedCurrent {
 };
 
 Engine::Engine(QObject *parent)
-    : QObject(parent), m_audio(std::make_unique<AudioOutput>()), m_sequencer(new Sequencer(*this, m_mutex))
+    : QObject(parent), m_audio(std::make_unique<AudioOutput>()), m_sequencer(new Sequencer(*this, m_mutex)),
+      m_tcRouter(std::make_unique<TimecodeRouter>())
 {
+    connect(this, &Engine::timecodeRoutingChanged, this, &Engine::updateTimecodeRouting);
+    connect(this, &Engine::layersChanged, this, &Engine::updateTimecodeRouting); // a layer gone, or back (undo)
 }
 
 bool Engine::startAudio(const QString &device, QString *err, bool nullDevice)

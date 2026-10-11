@@ -9,7 +9,6 @@ TimecodeIo::TimecodeIo(TimecodeClock *clock, const TimecodeSettings &s) : d(std:
 {
     if (s.source != TimecodeSettings::Source::Internal)
         clock->setInputStatus(QStringLiteral("%1 input not available in this version").arg(TimecodeSettings::sourceName(s.source)));
-    if (s.sendLtc || s.sendMtc) d->status = QStringLiteral("sending not available in this version");
 }
 
 TimecodeIo::~TimecodeIo() = default;

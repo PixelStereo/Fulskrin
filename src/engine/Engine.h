@@ -23,6 +23,7 @@
 #include "LayerTree.h"
 #include "Publish.h"
 #include "Publishing.h"
+#include "TimecodeOutputs.h"
 
 #include <QColor>
 #include <QElapsedTimer>
@@ -201,7 +202,24 @@ public:
     bool setLayerTimecode(int i, const TimecodeSettings &s);
     std::optional<TimecodeSettings> layerTimecode(int i) const; // none: not a Timecode generator
     QString layerTimecodeStatus(int i) const;
-    void restartLayerTimecode(int i); // free run: from zero again
+    void restartLayerTimecode(int i); // free run: from its in point, playing
+    std::shared_ptr<TimecodeClock> layerTimecodeClock(int i) const; // its transport
+    int timecodeOutputUser(quint64 output) const; // the layer driving a timecode output (-1: none)
+
+    // --- Timecode outputs (TimecodeOutputs.h): named outputs the Timecode layers drive, patched to destinations (the
+    // destination gives the protocol: a MIDI output, MTC); and the MIDI patch: named MIDI outputs given a port each
+    std::vector<TimecodeOutput> timecodeOutputs() const;
+    quint64 addTimecodeOutput(const QString &name = QString()); // "Timecode 1", "Timecode 2"… by default
+    bool setTimecodeOutput(const TimecodeOutput &o);            // its name and its routes, by its id (false: no such)
+    void removeTimecodeOutput(quint64 id);                     // the layer driving it drives none
+    QString timecodeOutputStatus(quint64 id) const;            // who drives it and where it goes
+    std::vector<MidiOutput> midiOutputs() const;
+    quint64 addMidiOutput(const QString &name = QString());     // "MIDI 1"…, no port yet
+    bool setMidiOutput(const MidiOutput &o);
+    void removeMidiOutput(quint64 id);                         // and the routes to it
+    QString midiOutputStatus(quint64 id) const;                // "Sending MTC", "Port not found"…
+    static QStringList midiPorts() { return TimecodeRouter::midiPorts(); }
+    TimecodeRouter &timecodeRouter() { return *m_tcRouter; }   // tests
     // A live input (LiveInput.h) as the layer's source: a camera, an NDI or OMT source, a Syphon server
     bool setLayerInput(int i, const QString &uri, QString *err = nullptr);
     static std::vector<LiveInputInfo> liveInputs(const QString &libraryFolder = QString()) { return listLiveInputs(libraryFolder); }
@@ -503,6 +521,7 @@ signals:
     void animationsChanged();       // the timelines' contents (not their transport)
     void layerAnimsChanged(quint64 layer); // the animations of a layer's numbers (their contents, not their transport)
     void snapshotRecalled(int index);
+    void timecodeRoutingChanged(); // timecode / MIDI outputs, their patch, or which layer drives which output
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI
 
 public:
@@ -707,6 +726,14 @@ private:
     std::atomic<double> m_fps{0};
     std::atomic<quint64> m_frameCount{0};
     bool m_initialized = false;
+
+    std::vector<TimecodeOutput> m_tcOutputs;  // under m_mutex
+    std::vector<MidiOutput> m_midiOutputs;
+    quint64 m_nextPatchId = 1;                 // ids of both
+    std::unique_ptr<TimecodeRouter> m_tcRouter;
+    void updateTimecodeRouting();              // the router told what each clock sends where (main thread)
+    QString uniquePatchName(const QString &base, bool midi) const; // lock held
+    bool hasTimecodeOutput(quint64 id) const;
 
     QString m_projectPath;
     IsfLibrary m_library;

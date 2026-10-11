@@ -25,7 +25,7 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" && cmake --build b
 
 # Linux (Ubuntu)
 sudo apt install build-essential cmake pkg-config qt6-base-dev libqt6opengl6-dev qt6-multimedia-dev libgl1-mesa-dev \
-  libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev
+  libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev libasound2-dev
 cmake -S . -B build && cmake --build build -j
 ```
 

@@ -1,6 +1,6 @@
 #pragma once
-// The inputs and outputs of a timecode clock: LTC (audio), MTC (MIDI), ATC (NDI, DeckLink). Each opens its device on
-// its own thread and tells the clock what comes in; the outputs send the clock's timecode.
+// The inputs of a timecode clock: LTC (audio), MTC (MIDI), ATC (NDI, DeckLink). Each opens its device on its own
+// thread and tells the clock what comes in. (What a clock sends: TimecodeOutputs.h.)
 
 #include "TimecodeClock.h"
 

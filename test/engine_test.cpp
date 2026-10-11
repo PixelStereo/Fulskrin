@@ -3872,6 +3872,237 @@ int main(int argc, char **argv)
         CHECK(e.setLayerImage(li, tmp + "/redblue.png", &err) && !e.layerTimecode(li)); // another source: no clock
         CHECK(TimecodeSettings::fromJson(ts.toJson()) == ts);
     }
+    // The transport of a free run: play, pause, seek, in / out points and the play modes, on a test clock
+    {
+        TimecodeSettings fs;
+        fs.internal = TimecodeSettings::Internal::FreeRun;
+        TimecodeClock c(fs);
+        auto at = [&](qint64 ms) { c.setTestTime(ms); };
+        auto near = [](double a, double b) { return std::abs(a - b) < 1e-6; };
+        at(0);
+        c.rewind();
+        CHECK(c.usesTransport() && c.playing() && near(c.position(), 0));
+        at(2000);
+        CHECK(near(c.position(), 2) && c.running());
+        c.setPlaying(false);
+        at(5000);
+        CHECK(near(c.position(), 2) && !c.running() && !c.reading()->running);
+        c.setPlaying(true);
+        at(6000);
+        CHECK(near(c.position(), 3));
+        c.setInOut(10, 12); // the position is kept within them
+        CHECK(near(c.inPoint(), 10) && near(c.outPoint(), 12) && near(c.position(), 10));
+        at(8500); // loop: 10 → 12, then 10 → 10.5
+        CHECK(near(c.position(), 10.5) && c.reading()->forward);
+        c.setPlayMode(TcPlayMode::PingPong);
+        at(10500); // to 12 in 1.5 s, then back 0.5 s
+        CHECK(near(c.position(), 11.5) && !c.reading()->forward);
+        c.seek(11); // a seek keeps its way
+        at(11000);
+        CHECK(near(c.position(), 10.5) && !c.reading()->forward);
+        c.setPlayMode(TcPlayMode::OneShot); // backwards to the in point, and it ends there
+        at(13000);
+        CHECK(near(c.position(), 10) && !c.running() && c.now());
+        c.setPlaying(true); // played to its end: from its in point again, forwards
+        at(13500);
+        CHECK(near(c.position(), 10.5) && c.running() && c.reading()->forward);
+        CHECK(c.now() == (Timecode{0, 0, 10, 12, TcRate::Fps25}));
+        c.setPlayMode(TcPlayMode::Stop);
+        at(20000);
+        CHECK(!c.now() && !c.reading() && c.display().startsWith("--")); // stopped at its end: nothing shown or sent
+        c.rewind();
+        CHECK(c.now() == (Timecode{0, 0, 10, 0, TcRate::Fps25}));
+        c.setInOut(10, 24 * 3600.0); // to the end of the day: no out point
+        CHECK(c.outPoint() < 0);
+        TimecodeSettings fs2 = fs;
+        fs2.rate = TcRate::Fps30;
+        TimecodeClock d(fs2); // settings changed: a new clock takes the transport over
+        d.setTestTime(0);
+        d.takeTransport(c);
+        CHECK(near(d.position(), 10) && near(d.inPoint(), 10) && d.playMode() == TcPlayMode::Stop && d.playing());
+        CHECK(tcPlayModeFromKey(tcPlayModeKey(TcPlayMode::PingPong)) == TcPlayMode::PingPong);
+    }
+    // MTC sent from a clock's readings: a full frame at the start, then four quarter frames a frame, each sequence of
+    // eight on an even frame; held: a full frame when the frame changes; a jump: a full frame again
+    {
+        MtcSender s;
+        mtc::Decoder dec;
+        std::vector<MtcSender::Message> out;
+        TcReading r;
+        r.rate = TcRate::Fps25;
+        r.running = true;
+        r.frames = 1001.5;
+        s.step(r, out);
+        CHECK(out.size() == 1 && out[0].size() == 10 && out[0][0] == 0xF0);
+        CHECK(dec.push(out[0].data(), out[0].size()) && dec.current()->toFrames() == 1001);
+        out.clear();
+        int quarters = 0, sequences = 0, wrong = 0;
+        for (int k = 1; k <= 400; ++k) { // 20 frames, a step of 0.05 frame
+            r.frames = 1001.5 + k * 0.05;
+            s.step(r, out);
+            for (const auto &m : out) {
+                if (m.size() != 2 || m[0] != 0xF1) {
+                    ++wrong;
+                    continue;
+                }
+                ++quarters;
+                if (dec.push(m.data(), m.size())) { // piece 7: two frames after its sequence began, an even frame
+                    ++sequences;
+                    const int64_t got = dec.current()->toFrames();
+                    if (got % 2 != 0 || std::abs(double(got) - r.frames) > 1.0) ++wrong;
+                }
+            }
+            out.clear();
+        }
+        CHECK(wrong == 0 && quarters == 80 && sequences >= 9);
+        r.running = false;
+        s.step(r, out);
+        CHECK(out.size() == 1 && out[0][0] == 0xF0); // stopped: where it is
+        out.clear();
+        s.step(r, out);
+        CHECK(out.empty()); // still there: nothing
+        r.frames += 3;
+        s.step(r, out);
+        CHECK(out.size() == 1 && dec.push(out[0].data(), out[0].size()) && dec.current()->toFrames() == int64_t(r.frames));
+        out.clear();
+        r.running = true;
+        s.step(r, out);
+        CHECK(out.size() == 1 && out[0][0] == 0xF0); // runs again
+        out.clear();
+        r.frames += 50; // a seek
+        s.step(r, out);
+        CHECK(out.size() == 1 && out[0][0] == 0xF0);
+        out.clear();
+        r.forward = false; // backwards: full frames
+        r.frames -= 1;
+        s.step(r, out);
+        CHECK(out.size() == 1 && out[0][0] == 0xF0);
+        out.clear();
+        s.step(std::nullopt, out);
+        CHECK(out.empty());
+    }
+    // Timecode outputs and the MIDI patch: one layer per output, an output to several destinations, the protocol given
+    // by the destination; the transport in the layer's values (snapshots); saved and opened again; sent by the router
+    {
+        e.newProject();
+        CHECK(e.timecodeOutputs().empty() && e.midiOutputs().empty());
+        const quint64 o1 = e.addTimecodeOutput(), o2 = e.addTimecodeOutput();
+        const quint64 m1 = e.addMidiOutput(), m2 = e.addMidiOutput("Desk");
+        CHECK(e.timecodeOutputs().size() == 2 && e.timecodeOutputs()[1].name == "Timecode 2");
+        CHECK(e.midiOutputs()[0].name == "MIDI 1" && e.midiOutputs()[1].name == "Desk");
+        CHECK(e.addMidiOutput("Desk") && e.midiOutputs()[2].name == "Desk 2"); // names stay apart
+        e.removeMidiOutput(e.midiOutputs()[2].id);
+        TimecodeOutput t = e.timecodeOutputs()[0];
+        t.name = "Show";
+        t.routes = {tcroute::midi(m1), tcroute::midi(m2), tcroute::midi(m1), "midi:999", "audio:x"};
+        CHECK(e.setTimecodeOutput(t));
+        t = e.timecodeOutputs()[0];
+        CHECK(t.name == "Show" && t.routes == QStringList({tcroute::midi(m1), tcroute::midi(m2)})); // known ones, once
+        CHECK(tcroute::protocol(t.routes[0]) == "MTC" && tcroute::protocol("audio:x").isEmpty());
+        MidiOutput mo = e.midiOutputs()[0];
+        mo.port = MidiOutput::kVirtualPort;
+        CHECK(e.setMidiOutput(mo) && e.midiOutputs()[0].port == MidiOutput::kVirtualPort);
+        (void)Engine::midiPorts(); // whatever this machine has (none without a MIDI system)
+
+        const quint64 idA = e.layerId(e.addLayer("A")), idB = e.layerId(e.addLayer("B"));
+        auto a = [&] { return e.indexOfId(idA); };
+        auto b = [&] { return e.indexOfId(idB); };
+        TimecodeSettings fs;
+        fs.internal = TimecodeSettings::Internal::FreeRun;
+        fs.output = o1;
+        CHECK(e.setLayerTimecode(a(), fs) && e.timecodeOutputUser(o1) == a());
+        CHECK(!e.setLayerTimecode(b(), fs)); // o1 is A's
+        fs.output = 12345;
+        CHECK(!e.setLayerTimecode(b(), fs)); // not an output of the composition
+        fs.output = o2;
+        CHECK(e.setLayerTimecode(b(), fs) && e.timecodeOutputUser(o2) == b());
+        CHECK(e.timecodeOutputStatus(o1).startsWith("From A") && e.timecodeOutputStatus(o1).contains("MTC to Desk"));
+        e.removeTimecodeOutput(o2);
+        CHECK(e.timecodeOutputs().size() == 1 && e.layerTimecode(b())->output == 0 && e.timecodeOutputUser(o2) < 0);
+        e.removeMidiOutput(m2);
+        CHECK(e.timecodeOutputs()[0].routes == QStringList({tcroute::midi(m1)}));
+
+        // The transport is in the layer's values: a snapshot holds it
+        auto clockA = [&] { return e.layerTimecodeClock(e.indexOfId(idA)); };
+        auto param = [&](const char *path) {
+            Engine::Lock lk(&e.mutex());
+            return e.layer(e.indexOfId(idA))->parameter(path);
+        };
+        CHECK(param("tc/play") && param("tc/position") && param("tc/in") && param("tc/out") && param("tc/play_mode") &&
+              param("tc/rewind"));
+        clockA()->setTestTime(0);
+        clockA()->setPlaying(false);
+        clockA()->seek(100);
+        clockA()->setPlayMode(TcPlayMode::PingPong);
+        Engine::Snapshot snap;
+        snap.fade = 0;
+        snap.layers = e.captureLayers();
+        e.addSnapshot(snap); // 0: paused at 100
+        clockA()->setPlaying(true);
+        clockA()->setTestTime(5000);
+        snap.layers = e.captureLayers();
+        e.addSnapshot(snap); // 1: playing, stored at 105
+        clockA()->seek(300);
+        clockA()->setPlayMode(TcPlayMode::Loop);
+        e.recallSnapshot(0);
+        CHECK(!clockA()->playing() && std::abs(clockA()->position() - 100) < 1e-6 && clockA()->playMode() == TcPlayMode::PingPong);
+        e.recallSnapshot(1); // it plays there: from where it was stored, playing
+        CHECK(clockA()->playing() && std::abs(clockA()->position() - 105) < 1e-6);
+        clockA()->seek(200);
+        e.recallSnapshot(1); // playing already: it goes on
+        CHECK(clockA()->playing() && std::abs(clockA()->position() - 200) < 1e-6);
+        CHECK(param("tc/rewind")->setValue(QVariant()) && std::abs(clockA()->position()) < 1e-6);
+        // A new clock (its settings changed) keeps the transport
+        clockA()->seek(42);
+        clockA()->setPlaying(false);
+        fs.output = o1;
+        fs.rate = TcRate::Fps30;
+        CHECK(e.setLayerTimecode(e.indexOfId(idA), fs));
+        CHECK(clockA()->settings().rate == TcRate::Fps30 && !clockA()->playing() && std::abs(clockA()->position() - 42) < 1e-6);
+
+        // Saved and opened again: the patch, and which layer drives which output
+        CHECK(e.saveProject(tmp + "/tcout.fulskrin", {}, &err));
+        e.newProject();
+        CHECK(e.timecodeOutputs().empty());
+        CHECK(e.loadProject(tmp + "/tcout.fulskrin", nullptr, &err));
+        CHECK(e.timecodeOutputs().size() == 1 && e.timecodeOutputs()[0].name == "Show" &&
+              e.timecodeOutputs()[0].routes == QStringList({tcroute::midi(m1)}));
+        CHECK(e.midiOutputs().size() == 1 && e.midiOutputs()[0].id == m1 && e.midiOutputs()[0].port == MidiOutput::kVirtualPort);
+        const int a2 = e.indexOfId(idA);
+        CHECK(a2 >= 0 && e.layerTimecode(a2) && e.layerTimecode(a2)->output == o1 && e.timecodeOutputUser(o1) == a2);
+        CHECK(e.addTimecodeOutput() > std::max(o1, m1)); // ids go on after the saved ones
+        // A copy of the layer drives nothing (one layer per output)
+        const int copy = e.insertLayerJson(e.layerCount(), e.layerJson(a2));
+        CHECK(e.layerTimecode(copy) && e.layerTimecode(copy)->output == 0 && e.timecodeOutputUser(o1) == a2);
+
+        // The router sends the clock's MTC to the MIDI output (to a test sink here, not to a port)
+        std::mutex sentMutex;
+        std::vector<std::vector<uint8_t>> sent;
+        e.timecodeRouter().setTestSink([&](quint64 midi, const std::vector<uint8_t> &msg) {
+            std::lock_guard<std::mutex> lk(sentMutex);
+            if (midi == m1) sent.push_back(msg);
+        });
+        e.layerTimecodeClock(a2)->setPlaying(true);
+        e.layerTimecodeClock(a2)->seek(3600); // 01:00:00:00
+        QElapsedTimer wait;
+        wait.start();
+        std::optional<Timecode> got;
+        while (wait.elapsed() < 3000 && !got) {
+            QThread::msleep(20);
+            std::lock_guard<std::mutex> lk(sentMutex);
+            mtc::Decoder dec;
+            int quarters = 0;
+            for (const auto &m : sent) quarters += m[0] == 0xF1 && dec.push(m.data(), m.size());
+            if (quarters >= 2) got = dec.current();
+        }
+        CHECK(got && got->rate == TcRate::Fps30 && got->h == 1 && got->m == 0 && got->s < 4);
+        CHECK(e.midiOutputStatus(m1) == "Test");
+        {
+            std::lock_guard<std::mutex> lk(sentMutex);
+            CHECK(!sent.empty() && sent.front()[0] == 0xF0); // a full frame first
+        }
+        e.timecodeRouter().setTestSink(nullptr);
+    }
     }
 
     if (area("layersource")) {

@@ -71,6 +71,7 @@ add_library(fulskrin_engine STATIC
   src/engine/Timecode.cpp
   src/engine/TimecodeClock.cpp
   src/engine/TimecodeIo.cpp
+  src/engine/TimecodeOutputs.cpp
   src/engine/Presets.cpp
   src/engine/Animations.cpp
   src/engine/Parameter.cpp
@@ -125,6 +126,38 @@ endif()
 # ---------------------------------------------------------------------------
 fulskrin_submodule(bcdec bcdec.h)
 target_include_directories(fulskrin_engine PRIVATE "${CMAKE_SOURCE_DIR}/third_party/bcdec")
+
+# ---------------------------------------------------------------------------
+# MIDI (timecode sent as MTC): RtMidi (MIT-like license), built here. ALSA on Linux (without it: no MIDI ports),
+# Core MIDI on macOS, the Windows multimedia API on Windows.
+# ---------------------------------------------------------------------------
+fulskrin_submodule(rtmidi RtMidi.cpp)
+add_library(rtmidi STATIC "${CMAKE_SOURCE_DIR}/third_party/rtmidi/RtMidi.cpp")
+target_include_directories(rtmidi PUBLIC "${CMAKE_SOURCE_DIR}/third_party/rtmidi")
+set_target_properties(rtmidi PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(MSVC)
+  target_compile_options(rtmidi PRIVATE /W0)
+else()
+  target_compile_options(rtmidi PRIVATE -w)
+endif()
+if(APPLE)
+  target_compile_definitions(rtmidi PRIVATE __MACOSX_CORE__)
+  target_link_libraries(rtmidi PUBLIC "-framework CoreMIDI" "-framework CoreAudio" "-framework CoreFoundation")
+elseif(WIN32)
+  target_compile_definitions(rtmidi PRIVATE __WINDOWS_MM__)
+  target_link_libraries(rtmidi PUBLIC winmm)
+else()
+  find_package(ALSA QUIET)
+  find_package(Threads REQUIRED)
+  if(ALSA_FOUND)
+    target_compile_definitions(rtmidi PRIVATE __LINUX_ALSA__)
+    target_link_libraries(rtmidi PUBLIC ALSA::ALSA Threads::Threads)
+  else()
+    message(WARNING "ALSA not found (libasound2-dev): built without MIDI ports")
+    target_compile_definitions(rtmidi PRIVATE __RTMIDI_DUMMY__)
+  endif()
+endif()
+target_link_libraries(fulskrin_engine PRIVATE rtmidi)
 
 # ---------------------------------------------------------------------------
 # Output publishing

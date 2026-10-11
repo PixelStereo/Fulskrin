@@ -26,7 +26,7 @@ bool Timecode::valid() const
     return !(dropFrame(rate) && s == 0 && f < 2 && m % 10 != 0);
 }
 
-static int64_t framesPerDay(TcRate r)
+int64_t Timecode::framesPerDay(TcRate r)
 {
     if (r == TcRate::Fps2997Df) return 24LL * 6 * 17982; // 17982 frames each ten minutes
     return 24LL * 3600 * Timecode::nominalFps(r);
