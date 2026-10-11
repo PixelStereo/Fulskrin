@@ -443,6 +443,15 @@ void Engine::releaseAll()
     auto f = gl();
     for (RenderTarget &o : m_output) o.destroy();
     m_previewTarget.destroy();
+    if (m_previewPbo) f->glDeleteBuffers(1, &m_previewPbo);
+    m_previewPbo = 0;
+    m_previewPboW = m_previewPboH = 0;
+    m_previewPboId = 0;
+    {
+        std::lock_guard<std::mutex> lk(m_fenceMutex);
+        if (m_frameFence) f->glDeleteSync(m_frameFence);
+        m_frameFence = nullptr;
+    }
     m_videoConv.release();
     for (GLuint p : {m_blitProgram, m_compProgram, m_diffProgram, m_presentProgram, m_flipProgram, m_prepProgram, m_maskProgram,
                      m_fadeProgram})
@@ -509,12 +518,10 @@ void Engine::releaseOutputSurface(OutputSurface &o)
     m_currentSurface = m_surface;
 }
 
-GLuint Engine::viewportTexture(quint64 viewport) const
+void Engine::waitForFrame(QOpenGLExtraFunctions *f) const
 {
-    Lock lk(&m_mutex);
-    for (const auto &l : m_layers)
-        if (l->isViewport && l->id == viewport) return l->vpOut[l->vpPublished.load()].tex;
-    return 0;
+    std::lock_guard<std::mutex> lk(m_fenceMutex);
+    if (m_frameFence) f->glWaitSync(m_frameFence, 0, GL_TIMEOUT_IGNORED);
 }
 
 // Draws a viewport's last finished picture into its window, with the window's context current
@@ -535,6 +542,7 @@ void Engine::present(const Layer &viewport, OutputSurface &out)
     f->glClear(GL_COLOR_BUFFER_BIT);
     f->glUseProgram(m_presentProgram);
     f->glActiveTexture(GL_TEXTURE0);
+    waitForFrame(f);
     f->glBindTexture(GL_TEXTURE_2D, viewport.vpOut[viewport.vpPublished.load()].tex);
     f->glUniform1i(m_presentTexLoc, 0);
     f->glBindVertexArray(out.vao);
@@ -563,7 +571,7 @@ static void setSwapInterval(QOpenGLContext *ctx, int n)
 }
 
 // Each window on screen is drawn with its own context and swapped; the engine's context then becomes current
-// again. The pictures were finished (glFinish) at the end of the frame, so the other contexts see them whole.
+// again. Each window's context waits on the GPU for the frame's fence (waitForFrame) before drawing it.
 bool Engine::presentViewports()
 {
     std::vector<std::pair<const Layer *, OutputSurface *>> shown;
