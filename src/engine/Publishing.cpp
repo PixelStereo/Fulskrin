@@ -21,6 +21,7 @@ struct Publishing::Publication {
     int pboIndex = 0, pboW = 0, pboH = 0;
     bool pboPending = false;
     double pboTime = 0;
+    std::optional<Timecode> pboTc; // the timecode of the picture in the pending PBO
     int announcedRate = 0;
     double rateSince = 0;
 };
@@ -235,7 +236,8 @@ static int standardRate(double fps)
     return best;
 }
 
-void Publishing::readback(quint64 viewport, const RenderTarget &out, double fps, quint64 frame)
+void Publishing::readback(quint64 viewport, const RenderTarget &out, double fps, quint64 frame,
+                          const std::optional<Timecode> &tc)
 {
     const auto found = m_pubs.find(viewport);
     if (found == m_pubs.end()) return;
@@ -294,6 +296,7 @@ void Publishing::readback(quint64 viewport, const RenderTarget &out, double fps,
                 cf->height = h;
                 cf->stride = w * 4;
                 cf->timestamp100ns = qint64(pub.pboTime);
+                cf->timecode = pub.pboTc;
                 // Announced frame rate: only changes if the new value holds for 2 s
                 const int rate = standardRate(fps);
                 const double nowS = m_clock.nsecsElapsed() / 1e9;
@@ -310,6 +313,7 @@ void Publishing::readback(quint64 viewport, const RenderTarget &out, double fps,
     f->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
     pub.pboTime = double(m_clock.nsecsElapsed() / 100);
+    pub.pboTc = tc;
     pub.pboPending = true;
     pub.pboIndex = 1 - pub.pboIndex;
 }

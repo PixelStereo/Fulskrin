@@ -23,6 +23,7 @@ public:
 
     // Playback devices of the system (names), the default one first.
     static QStringList deviceNames();
+    static QStringList captureDeviceNames(); // the inputs (the timecode's LTC), the default one first
 
     // Opens the device named `device` (empty = system default). nullDevice: no sound card (tests),
     // the callback runs in real time anyway. Returns false with err if no device could be opened.

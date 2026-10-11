@@ -1,6 +1,8 @@
 // Engine: the project file — a layer to and from JSON, saving and opening a .fulskrin.
 #include "EngineInternal.h"
 
+#include <set>
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -75,6 +77,11 @@ void Engine::clearProject()
         for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
         m_transitions.clear();
         m_audio->setVolume(1.0f);
+        m_tcOutputs.clear();
+        m_midiOutputs.clear();
+        m_audioOutputs.clear();
+        m_atc.clear();
+        m_nextPatchId = 1;
     }
     for (auto &l : old) {
         if (l->video) l->video->close();
@@ -88,6 +95,7 @@ void Engine::clearProject()
     emit snapshotsChanged();
     emit presetsChanged();
     emit animationsChanged();
+    emit timecodeRoutingChanged();
 }
 
 QString Engine::resolvePath(const QJsonObject &o, const QString &projectDir) const
@@ -291,7 +299,9 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             l->text = TextSource{};
         }
         if (src.contains("timecode")) { // a Timecode generator: its clock (its text style comes with the values)
-            const TimecodeSettings ts = TimecodeSettings::fromJson(src.value("timecode").toObject());
+            TimecodeSettings ts = TimecodeSettings::fromJson(src.value("timecode").toObject());
+            // One layer per output (a copy drives none), and an output of the composition
+            if (ts.output && (timecodeOutputUser(ts.output) >= 0 || !hasTimecodeOutput(ts.output))) ts.output = 0;
             auto clock = std::make_shared<TimecodeClock>(ts);
             Lock lk(&m_mutex);
             Layer *l = layer(index);
@@ -360,6 +370,14 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         for (const Preset &p : m_presets) presets.append(presetToJson(p));
         root["presets"] = presets;
         root["timelines"] = animationsToJson();
+        QJsonArray tcOutputs, midiOutputs;
+        for (const TimecodeOutput &t : m_tcOutputs) tcOutputs.append(t.toJson());
+        for (const MidiOutput &m : m_midiOutputs) midiOutputs.append(m.toJson());
+        root["timecode_outputs"] = tcOutputs;
+        root["midi_outputs"] = midiOutputs;
+        QJsonArray audioOutputs;
+        for (const AudioChannelOutput &a : m_audioOutputs) audioOutputs.append(a.toJson());
+        root["audio_channel_outputs"] = audioOutputs;
         root["sequences"] = m_sequencer->toJson();
         root["current_sequence"] = m_sequencer->current();
     }
@@ -415,6 +433,24 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         rs.frameRate = comp.value("fps").toDouble(-1); // -1: the machine's default
         setRenderSettings(rs);
     }
+    { // the patch before the layers: their timecode outputs are there to be taken
+        Lock lk(&m_mutex);
+        std::set<quint64> ids; // one id space for the three
+        auto fresh = [&ids](quint64 id) { return id && ids.insert(id).second; };
+        for (const QJsonValue &v : root.value("midi_outputs").toArray()) {
+            const MidiOutput m = MidiOutput::fromJson(v.toObject());
+            if (fresh(m.id)) m_midiOutputs.push_back(m);
+        }
+        for (const QJsonValue &v : root.value("audio_channel_outputs").toArray()) {
+            const AudioChannelOutput a = AudioChannelOutput::fromJson(v.toObject());
+            if (fresh(a.id)) m_audioOutputs.push_back(a);
+        }
+        for (const QJsonValue &v : root.value("timecode_outputs").toArray()) {
+            const TimecodeOutput t = TimecodeOutput::fromJson(v.toObject());
+            if (fresh(t.id)) m_tcOutputs.push_back(t); // its routes checked once the viewports are there
+        }
+        if (!ids.empty()) m_nextPatchId = *ids.rbegin() + 1;
+    }
     const QString dir = QFileInfo(path).absolutePath();
     QStringList warnings;
     const QJsonArray layers = root.value("layers").toArray();
@@ -428,6 +464,12 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     }
     ensureViewport();
     fixLayerReferences(&warnings);
+    {
+        Lock lk(&m_mutex);
+        std::set<QString> taken; // a destination takes one timecode output: the first one keeps it
+        for (TimecodeOutput &t : m_tcOutputs)
+            t.routes.removeIf([&](const QString &r) { return !routeTargetExists(r) || !taken.insert(r).second; });
+    }
     {
         Lock lk(&m_mutex);
     }
@@ -471,6 +513,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     if (uiState) *uiState = root.value("ui").toObject();
     setProjectPath(QFileInfo(path).absoluteFilePath());
     emit layersChanged();
+    emit timecodeRoutingChanged();
     if (!warnings.isEmpty() && err) *err = warnings.join('\n');
     return true;
 }

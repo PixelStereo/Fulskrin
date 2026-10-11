@@ -1,6 +1,9 @@
 #pragma once
 #include "Publish.h"
+#include <QPointer>
 #include <QTimer>
+#include <functional>
+#include <vector>
 #include <QWidget>
 
 class Engine;
@@ -16,7 +19,7 @@ class QLineEdit;
 class QProgressBar;
 
 // "Composition" tab, the project as a whole: its opacity and blackout (all viewports at once), the sound
-// volume, and its size — the pixel space the layers live in and the viewports are placed on. The machine's choices
+// volume, its size — the pixel space the layers live in and the viewports are placed on — and the timecode patch. The machine's choices
 // (rendering, sound card) are in Settings.
 class CompositionPanel : public QWidget
 {
@@ -44,6 +47,12 @@ private:
     void refreshMeters();
     void applyComposition();
     void syncRate();
+    // Timecode: the outputs the Timecode layers drive and where each goes; the MIDI outputs and the audio channels they
+    // are patched to, given their hardware here. Made again when the patch changes
+    QWidget *buildTimecodePatch();
+    void rebuildTimecodePatch();
+    QString timecodePatchKey() const; // what the patch shows (names, layers, viewports): made again when it changes
+    void refreshTimecodeStatus();
 
     Engine *m_engine;
     SliderField *m_composition = nullptr;
@@ -60,4 +69,7 @@ private:
     QProgressBar *m_meter[2] = {};
     QTimer m_meterTimer;
     bool m_syncing = false;
+    QWidget *m_tcPatch = nullptr;
+    QString m_tcPatchKey;
+    std::vector<std::pair<QPointer<QLabel>, std::function<QString()>>> m_tcStatus; // kept up to date
 };

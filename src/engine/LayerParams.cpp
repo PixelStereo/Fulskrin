@@ -26,7 +26,8 @@ quint64 keyOf(const Layer &l)
     const QSize c = l.compSize ? *l.compSize : QSize(1920, 1080);
     for (quint64 v : {quint64(l.type), quint64(l.hasTransport()), quint64(bool(l.audio)), quint64(l.isViewport),
                       quint64(l.isGroup), quint64(c.width()), quint64(c.height()), quint64(quintptr(l.generator.get())),
-                      quint64(l.effects.size()), quint64(std::llround(l.duration() * 1000)), quint64(l.hasPicture())})
+                      quint64(l.effects.size()), quint64(std::llround(l.duration() * 1000)), quint64(l.hasPicture()),
+                      quint64(quintptr(l.tcClock.get()))})
         mix(v);
     auto inputs = [&mix](const IsfInstance *i) {
         if (!i) return;
@@ -226,6 +227,37 @@ const std::vector<Parameter *> &Layer::parameters()
             .step(0.01)
             .ramp(Parameter::Ramp::Cut)
             .animatable(false);
+    }
+
+    // A Timecode generator's transport (its free run): played, paused, sought, its in / out points and play mode.
+    // Values in seconds of timecode; set at once (each one repositions the clock). In a snapshot, the position of a
+    // clock that plays there and plays already is left alone: it goes on (Engine::applyParams)
+    if (std::shared_ptr<TimecodeClock> c = tcClock) {
+        TimecodeClock *k = c.get(); // the parameters are made again when the clock changes
+        const double day = 24.0 * 3600.0;
+        num("tc/in", "Timecode › In (s)", 0, day, 0.0, [k] { return k->inPoint(); }, [k](double v) { k->setInOut(v, k->outPoint()); })
+            .step(0.04)
+            .ramp(Parameter::Ramp::Cut)
+            .animatable(false);
+        num("tc/out", "Timecode › Out (s)", -1, day, -1.0, [k] { return k->outPoint(); },
+            [k](double v) { k->setInOut(k->inPoint(), v < 0 ? -1.0 : v); })
+            .step(0.04)
+            .ramp(Parameter::Ramp::Cut)
+            .animatable(false);
+        add("tc/play_mode", "Timecode › Play Mode", T::Choice)
+            .choices({"oneshot", "loop", "pingpong", "stop"})
+            .byDefault(QStringLiteral("loop"))
+            .bind([k] { return QVariant(tcPlayModeKey(k->playMode())); },
+                  [k](const QVariant &v) { k->setPlayMode(tcPlayModeFromKey(v.toString())); });
+        num("tc/position", "Timecode › Position (s)", 0, day, 0.0, [k] { return k->position(); }, [k](double v) { k->seek(v); })
+            .step(0.04)
+            .ramp(Parameter::Ramp::Cut)
+            .animatable(false);
+        add("tc/play", "Timecode › Play", T::Bool)
+            .ramp(Parameter::Ramp::Cut)
+            .byDefault(true)
+            .bind([k] { return QVariant(k->playing()); }, [k](const QVariant &v) { k->setPlaying(v.toBool()); });
+        add("tc/rewind", "Timecode › Rewind", T::Trigger).bind(nullptr, [k](const QVariant &) { k->rewind(); });
     }
 
     // Text generator

@@ -309,6 +309,10 @@ void Engine::applyParams(Layer &layer, const QJsonObject &params, const QJsonObj
                 }
                 continue;
             }
+            // A timecode that plays here and plays already goes on: not sent back to where it was when stored
+            if (path == QLatin1String("tc/position") && params.value("tc/play").toBool(true) && l->tcClock &&
+                l->tcClock->playing())
+                continue;
             const bool cut = !p->isNumber() || info.ramp == ParamInfo::Ramp::Cut || (chain && path.startsWith("fx/"));
             if (path == "opacity") {
                 const double target = it.value().toDouble(p->number());

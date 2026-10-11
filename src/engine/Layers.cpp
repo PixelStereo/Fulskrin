@@ -1,6 +1,7 @@
 // Engine: the layers — creation, order and groups, sources (video, image, sound, ISF generator, another
 // layer), transport, effect chain, and the copy of parameters from one layer to another.
 #include "EngineInternal.h"
+#include "Midi.h"
 
 #include <QFontDatabase>
 #include <QDir>
@@ -1126,6 +1127,9 @@ bool Engine::setLayerTimecode(int i, const TimecodeSettings &s)
         Lock lk(&m_mutex);
         Layer *l = layer(i);
         if (!l || l->isGroup || l->isViewport) return false;
+        if (s.output && !hasTimecodeOutput(s.output)) return false;
+        const int user = s.output ? timecodeOutputUser(s.output) : -1;
+        if (user >= 0 && user != i) return false; // a timecode output is driven by one layer only
         already = l->type == SourceType::Text && l->timecode;
         if (already && *l->timecode == s) return true;
     }
@@ -1149,11 +1153,313 @@ bool Engine::setLayerTimecode(int i, const TimecodeSettings &s)
         Layer *l = layer(i);
         if (!l || l->type != SourceType::Text) return false;
         old = std::move(l->tcClock);
+        if (old) clock->takeTransport(*old); // the transport goes on where it was
         l->timecode = s;
         l->tcClock = clock;
     }
     old.reset(); // its devices closed outside the lock too
+    emit timecodeRoutingChanged();
     return true;
+}
+
+int Engine::timecodeOutputUser(quint64 output) const
+{
+    Lock lk(&m_mutex);
+    if (!output) return -1;
+    for (size_t k = 0; k < m_layers.size(); ++k)
+        if (m_layers[k]->timecode && m_layers[k]->timecode->output == output) return int(k);
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Timecode outputs and their patch (MIDI outputs, audio channels)
+// ---------------------------------------------------------------------------
+QString Engine::uniquePatchName(const QString &base, PatchKind kind) const
+{
+    auto taken = [&](const QString &n) {
+        switch (kind) {
+        case PatchKind::Timecode: return std::any_of(m_tcOutputs.begin(), m_tcOutputs.end(), [&](const auto &x) { return x.name == n; });
+        case PatchKind::Midi: return std::any_of(m_midiOutputs.begin(), m_midiOutputs.end(), [&](const auto &x) { return x.name == n; });
+        case PatchKind::Audio: return std::any_of(m_audioOutputs.begin(), m_audioOutputs.end(), [&](const auto &x) { return x.name == n; });
+        }
+        return false;
+    };
+    if (!base.isEmpty() && !taken(base)) return base;
+    const QString stem = !base.isEmpty()                 ? base
+                         : kind == PatchKind::Midi      ? QStringLiteral("MIDI")
+                         : kind == PatchKind::Audio     ? QStringLiteral("LTC")
+                                                        : QStringLiteral("Timecode");
+    for (int k = base.isEmpty() ? 1 : 2;; ++k)
+        if (!taken(QStringLiteral("%1 %2").arg(stem).arg(k))) return QStringLiteral("%1 %2").arg(stem).arg(k);
+}
+
+bool Engine::routeTargetExists(const QString &route) const
+{
+    const quint64 id = tcroute::id(route);
+    switch (tcroute::kind(route)) {
+    case tcroute::Kind::Midi: return std::any_of(m_midiOutputs.begin(), m_midiOutputs.end(), [id](const auto &x) { return x.id == id; });
+    case tcroute::Kind::Audio: return std::any_of(m_audioOutputs.begin(), m_audioOutputs.end(), [id](const auto &x) { return x.id == id; });
+    case tcroute::Kind::Viewport: {
+        const int i = indexOfId(id);
+        return i >= 0 && m_layers[size_t(i)]->isViewport;
+    }
+    case tcroute::Kind::None: break;
+    }
+    return false;
+}
+
+bool Engine::hasTimecodeOutput(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    return std::any_of(m_tcOutputs.begin(), m_tcOutputs.end(), [id](const TimecodeOutput &t) { return t.id == id; });
+}
+
+std::vector<TimecodeOutput> Engine::timecodeOutputs() const
+{
+    Lock lk(&m_mutex);
+    return m_tcOutputs;
+}
+
+quint64 Engine::addTimecodeOutput(const QString &name)
+{
+    quint64 id;
+    {
+        Lock lk(&m_mutex);
+        TimecodeOutput o;
+        o.id = id = m_nextPatchId++;
+        o.name = uniquePatchName(name.trimmed(), PatchKind::Timecode);
+        m_tcOutputs.push_back(o);
+    }
+    emit timecodeRoutingChanged();
+    return id;
+}
+
+bool Engine::setTimecodeOutput(const TimecodeOutput &o)
+{
+    {
+        Lock lk(&m_mutex);
+        auto it = std::find_if(m_tcOutputs.begin(), m_tcOutputs.end(), [&](const TimecodeOutput &t) { return t.id == o.id; });
+        if (it == m_tcOutputs.end()) return false;
+        TimecodeOutput n = o;
+        n.name = n.name.trimmed();
+        if (n.name.isEmpty()) n.name = it->name;
+        n.routes.removeDuplicates();
+        n.routes.removeIf([&](const QString &r) {
+            if (!routeTargetExists(r)) return true; // a destination that is not there (yet): left out
+            for (const TimecodeOutput &t : m_tcOutputs) // a destination takes one timecode output
+                if (t.id != n.id && t.routes.contains(r)) return true;
+            return false;
+        });
+        if (n == *it) return true;
+        *it = n;
+    }
+    emit timecodeRoutingChanged();
+    return true;
+}
+
+void Engine::removeTimecodeOutput(quint64 id)
+{
+    const int user = timecodeOutputUser(id);
+    if (user >= 0) {
+        if (std::optional<TimecodeSettings> s = layerTimecode(user)) {
+            s->output = 0;
+            setLayerTimecode(user, *s);
+        }
+    }
+    {
+        Lock lk(&m_mutex);
+        const auto n = m_tcOutputs.size();
+        m_tcOutputs.erase(std::remove_if(m_tcOutputs.begin(), m_tcOutputs.end(), [id](const TimecodeOutput &t) { return t.id == id; }),
+                          m_tcOutputs.end());
+        if (n == m_tcOutputs.size()) return;
+    }
+    emit timecodeRoutingChanged();
+}
+
+QString Engine::routeName(const QString &route) const
+{
+    Lock lk(&m_mutex);
+    const quint64 id = tcroute::id(route);
+    switch (tcroute::kind(route)) {
+    case tcroute::Kind::Midi:
+        for (const MidiOutput &x : m_midiOutputs)
+            if (x.id == id) return x.name;
+        break;
+    case tcroute::Kind::Audio:
+        for (const AudioChannelOutput &x : m_audioOutputs)
+            if (x.id == id) return x.name;
+        break;
+    case tcroute::Kind::Viewport: {
+        const int i = indexOfId(id);
+        if (i >= 0) return m_layers[size_t(i)]->name;
+        break;
+    }
+    case tcroute::Kind::None: break;
+    }
+    return QString();
+}
+
+QString Engine::timecodeOutputStatus(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    auto it = std::find_if(m_tcOutputs.begin(), m_tcOutputs.end(), [&](const TimecodeOutput &t) { return t.id == id; });
+    if (it == m_tcOutputs.end()) return QString();
+    const int user = timecodeOutputUser(id);
+    QString s = user >= 0 ? QStringLiteral("From %1").arg(m_layers[size_t(user)]->name) : QStringLiteral("No layer sends to it");
+    QStringList to;
+    for (const QString &r : it->routes) {
+        const QString name = routeName(r);
+        if (!name.isEmpty()) to << QStringLiteral("%1 to %2").arg(tcroute::protocol(tcroute::kind(r)), name);
+    }
+    return s + QStringLiteral(" · ") + (to.isEmpty() ? QStringLiteral("not patched") : to.join(QStringLiteral(", ")));
+}
+
+std::vector<MidiOutput> Engine::midiOutputs() const
+{
+    Lock lk(&m_mutex);
+    return m_midiOutputs;
+}
+
+quint64 Engine::addMidiOutput(const QString &name)
+{
+    quint64 id;
+    {
+        Lock lk(&m_mutex);
+        MidiOutput m;
+        m.id = id = m_nextPatchId++;
+        m.name = uniquePatchName(name.trimmed(), PatchKind::Midi);
+        m_midiOutputs.push_back(m);
+    }
+    emit timecodeRoutingChanged();
+    return id;
+}
+
+bool Engine::setMidiOutput(const MidiOutput &o)
+{
+    {
+        Lock lk(&m_mutex);
+        auto it = std::find_if(m_midiOutputs.begin(), m_midiOutputs.end(), [&](const MidiOutput &m) { return m.id == o.id; });
+        if (it == m_midiOutputs.end()) return false;
+        MidiOutput n = o;
+        n.name = n.name.trimmed();
+        if (n.name.isEmpty()) n.name = it->name;
+        if (n == *it) return true;
+        *it = n;
+    }
+    emit timecodeRoutingChanged();
+    return true;
+}
+
+void Engine::removeMidiOutput(quint64 id)
+{
+    {
+        Lock lk(&m_mutex);
+        const auto n = m_midiOutputs.size();
+        m_midiOutputs.erase(std::remove_if(m_midiOutputs.begin(), m_midiOutputs.end(), [id](const MidiOutput &m) { return m.id == id; }),
+                            m_midiOutputs.end());
+        if (n == m_midiOutputs.size()) return;
+        for (TimecodeOutput &t : m_tcOutputs) t.routes.removeAll(tcroute::midi(id));
+    }
+    emit timecodeRoutingChanged();
+}
+
+QString Engine::midiOutputStatus(quint64 id) const { return m_tcRouter->midiStatus(id); }
+
+std::vector<AudioChannelOutput> Engine::audioChannelOutputs() const
+{
+    Lock lk(&m_mutex);
+    return m_audioOutputs;
+}
+
+quint64 Engine::addAudioChannelOutput(const QString &name)
+{
+    quint64 id;
+    {
+        Lock lk(&m_mutex);
+        AudioChannelOutput a;
+        a.id = id = m_nextPatchId++;
+        a.name = uniquePatchName(name.trimmed(), PatchKind::Audio);
+        m_audioOutputs.push_back(a);
+    }
+    emit timecodeRoutingChanged();
+    return id;
+}
+
+bool Engine::setAudioChannelOutput(const AudioChannelOutput &o)
+{
+    {
+        Lock lk(&m_mutex);
+        auto it = std::find_if(m_audioOutputs.begin(), m_audioOutputs.end(), [&](const AudioChannelOutput &a) { return a.id == o.id; });
+        if (it == m_audioOutputs.end()) return false;
+        AudioChannelOutput n = o;
+        n.name = n.name.trimmed();
+        if (n.name.isEmpty()) n.name = it->name;
+        n.channel = std::clamp(n.channel, 0, 63);
+        if (n == *it) return true;
+        *it = n;
+    }
+    emit timecodeRoutingChanged();
+    return true;
+}
+
+void Engine::removeAudioChannelOutput(quint64 id)
+{
+    {
+        Lock lk(&m_mutex);
+        const auto n = m_audioOutputs.size();
+        m_audioOutputs.erase(std::remove_if(m_audioOutputs.begin(), m_audioOutputs.end(), [id](const AudioChannelOutput &a) { return a.id == id; }),
+                             m_audioOutputs.end());
+        if (n == m_audioOutputs.size()) return;
+        for (TimecodeOutput &t : m_tcOutputs) t.routes.removeAll(tcroute::audio(id));
+    }
+    emit timecodeRoutingChanged();
+}
+
+QString Engine::audioChannelOutputStatus(quint64 id) const { return m_tcRouter->audioStatus(id); }
+
+QStringList Engine::midiPorts() { return midi::outputNames(); }
+QStringList Engine::midiInputPorts() { return midi::inputNames(); }
+bool Engine::midiVirtualPorts() { return midi::virtualPorts(); }
+QStringList Engine::audioOutputDevices() { return AudioOutput::deviceNames(); }
+QStringList Engine::audioInputDevices() { return AudioOutput::captureDeviceNames(); }
+
+void Engine::updateTimecodeRouting()
+{
+    std::vector<TimecodeRouter::Stream> streams;
+    std::vector<MidiOutput> midi;
+    std::vector<AudioChannelOutput> audio;
+    {
+        Lock lk(&m_mutex);
+        midi = m_midiOutputs;
+        audio = m_audioOutputs;
+        m_atc.clear();
+        for (const auto &l : m_layers) {
+            if (!l->tcClock || !l->timecode || !l->timecode->output) continue;
+            for (const TimecodeOutput &t : m_tcOutputs) {
+                if (t.id != l->timecode->output) continue;
+                TimecodeRouter::Stream s;
+                s.output = t.id;
+                s.clock = l->tcClock;
+                for (const QString &r : t.routes) {
+                    const quint64 id = tcroute::id(r);
+                    switch (tcroute::kind(r)) {
+                    case tcroute::Kind::Midi: s.midi.push_back(id); break;
+                    case tcroute::Kind::Audio: s.audio.push_back(id); break;
+                    case tcroute::Kind::Viewport: m_atc[id] = l->tcClock; break; // read by Engine::frame
+                    case tcroute::Kind::None: break;
+                    }
+                }
+                streams.push_back(std::move(s));
+            }
+        }
+    }
+    m_tcRouter->configure(std::move(streams), std::move(midi), std::move(audio));
+}
+
+std::shared_ptr<TimecodeClock> Engine::layerTimecodeClock(int i) const
+{
+    Lock lk(&m_mutex);
+    return i >= 0 && i < int(m_layers.size()) ? m_layers[size_t(i)]->tcClock : nullptr;
 }
 
 std::optional<TimecodeSettings> Engine::layerTimecode(int i) const

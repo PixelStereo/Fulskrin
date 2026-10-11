@@ -1,6 +1,7 @@
 // Engine: one frame — the sources are updated, every layer is rendered in dependency order, the
 // composition is assembled, then read back for the interface preview and for publishing.
 #include "EngineInternal.h"
+#include "TimecodeClock.h"
 
 #include <map>
 #include <set>
@@ -886,16 +887,20 @@ void Engine::frame(double dt)
     // Publishing follows the viewports, however they changed (added, removed, undone, loaded, edited)
     std::vector<std::pair<quint64, PublishSettings>> publish;
     std::vector<std::pair<quint64, const RenderTarget *>> outs;
+    std::vector<std::optional<Timecode>> atc; // the timecode each viewport's pictures carry (ATC), if one is patched to it
     for (auto &l : m_layers)
         if (l->isViewport) {
             publish.push_back({l->id, l->vpPublish});
             outs.push_back({l->id, &l->vpOut[l->vpBack]});
+            const auto tc = m_atc.find(l->id);
+            atc.push_back(tc != m_atc.end() ? tc->second->now() : std::nullopt);
         }
     m_mutex.unlock();
 
     m_publishing.follow(publish);
     // NDI, OMT: read back in this context, before the frame's end
-    for (auto &[id, out] : outs) m_publishing.readback(id, *out, m_fps.load(), m_frameCount.load());
+    for (size_t k = 0; k < outs.size(); ++k)
+        m_publishing.readback(outs[k].first, *outs[k].second, m_fps.load(), m_frameCount.load(), atc[k]);
 
     auto f = gl();
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);

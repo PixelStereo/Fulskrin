@@ -21,6 +21,8 @@ class QDoubleSpinBox;
 class SliderField;
 class RangeField;
 class QButtonGroup;
+class QAbstractButton;
+class QLineEdit;
 class RoiEditor;
 class ColorEditor;
 class QComboBox;
@@ -123,6 +125,14 @@ private:
     QPointer<QProgressBar> m_meter;
     QPointer<QLabel> m_pictureFact; // known once frames are decoded: kept up to date
     QPointer<QLabel> m_timecodeStatus; // a Timecode generator: where its timecode comes from, kept up to date
+    struct TcTransport { // a free run's transport, kept up to date
+        QPointer<QAbstractButton> play, pause;
+        QPointer<QLineEdit> position, in, out;
+        QPointer<QButtonGroup> modes;
+        std::function<QString(double)> shown; // seconds of transport as the timecode shown
+    };
+    std::shared_ptr<TcTransport> m_tcTransport;
+    void refreshTimecodeTransport();
     QPointer<SliderField> m_genSpeed; // the generator's speed (above the tabs)
     QPointer<ViewportOutputPanel> m_output;
     QPointer<QTabWidget> m_tabs;

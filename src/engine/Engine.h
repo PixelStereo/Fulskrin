@@ -23,6 +23,7 @@
 #include "LayerTree.h"
 #include "Publish.h"
 #include "Publishing.h"
+#include "TimecodeOutputs.h"
 
 #include <QColor>
 #include <QElapsedTimer>
@@ -201,7 +202,38 @@ public:
     bool setLayerTimecode(int i, const TimecodeSettings &s);
     std::optional<TimecodeSettings> layerTimecode(int i) const; // none: not a Timecode generator
     QString layerTimecodeStatus(int i) const;
-    void restartLayerTimecode(int i); // free run: from zero again
+    void restartLayerTimecode(int i); // free run: from its in point, playing
+    std::shared_ptr<TimecodeClock> layerTimecodeClock(int i) const; // its transport
+    int timecodeOutputUser(quint64 output) const; // the layer driving a timecode output (-1: none)
+
+    // --- Timecode outputs (TimecodeOutputs.h): named outputs the Timecode layers drive, patched to destinations that
+    // give the protocol (a MIDI output: MTC; an audio channel: LTC; a viewport: ATC in its NDI and DeckLink pictures). The
+    // patch: named MIDI outputs given a port each, named audio channels given a device and a channel each
+    std::vector<TimecodeOutput> timecodeOutputs() const;
+    quint64 addTimecodeOutput(const QString &name = QString()); // "Timecode 1", "Timecode 2"… by default
+    // Its name and its routes, by its id (false: no such). Routes to nothing, or to a destination another output
+    // has, are left out
+    bool setTimecodeOutput(const TimecodeOutput &o);
+    void removeTimecodeOutput(quint64 id);                     // the layer driving it drives none
+    QString timecodeOutputStatus(quint64 id) const;            // who drives it and where it goes
+    QString routeName(const QString &route) const;             // the destination's name ("" : none)
+    std::vector<MidiOutput> midiOutputs() const;
+    quint64 addMidiOutput(const QString &name = QString());     // "MIDI 1"…, no port yet
+    bool setMidiOutput(const MidiOutput &o);
+    void removeMidiOutput(quint64 id);                         // and the routes to it
+    QString midiOutputStatus(quint64 id) const;                // "Sending MTC", "Port not found"…
+    std::vector<AudioChannelOutput> audioChannelOutputs() const;
+    quint64 addAudioChannelOutput(const QString &name = QString()); // "LTC 1"…, no device yet
+    bool setAudioChannelOutput(const AudioChannelOutput &o);
+    void removeAudioChannelOutput(quint64 id);                 // and the routes to it
+    QString audioChannelOutputStatus(quint64 id) const;        // "Sending LTC", "Channel 3: … has 2"…
+    // The hardware of this machine to patch to (looked up on each call)
+    static QStringList midiPorts();        // MIDI outputs
+    static QStringList midiInputPorts();   // MIDI inputs (MTC in)
+    static bool midiVirtualPorts();        // virtual MIDI ports can be made (macOS, Linux)
+    static QStringList audioOutputDevices();
+    static QStringList audioInputDevices(); // (LTC in)
+    TimecodeRouter &timecodeRouter() { return *m_tcRouter; }   // tests
     // A live input (LiveInput.h) as the layer's source: a camera, an NDI or OMT source, a Syphon server
     bool setLayerInput(int i, const QString &uri, QString *err = nullptr);
     static std::vector<LiveInputInfo> liveInputs(const QString &libraryFolder = QString()) { return listLiveInputs(libraryFolder); }
@@ -503,6 +535,7 @@ signals:
     void animationsChanged();       // the timelines' contents (not their transport)
     void layerAnimsChanged(quint64 layer); // the animations of a layer's numbers (their contents, not their transport)
     void snapshotRecalled(int index);
+    void timecodeRoutingChanged(); // timecode / MIDI outputs, their patch, or which layer drives which output
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI
 
 public:
@@ -707,6 +740,18 @@ private:
     std::atomic<double> m_fps{0};
     std::atomic<quint64> m_frameCount{0};
     bool m_initialized = false;
+
+    std::vector<TimecodeOutput> m_tcOutputs;  // under m_mutex
+    std::vector<MidiOutput> m_midiOutputs;
+    std::vector<AudioChannelOutput> m_audioOutputs;
+    quint64 m_nextPatchId = 1;                 // ids of all three
+    std::map<quint64, std::shared_ptr<TimecodeClock>> m_atc; // ATC: the clock each viewport's pictures carry
+    std::unique_ptr<TimecodeRouter> m_tcRouter;
+    void updateTimecodeRouting();              // the router told what each clock sends where (main thread)
+    enum class PatchKind { Timecode, Midi, Audio };
+    QString uniquePatchName(const QString &base, PatchKind kind) const; // lock held
+    bool routeTargetExists(const QString &route) const;                 // lock held
+    bool hasTimecodeOutput(quint64 id) const;
 
     QString m_projectPath;
     IsfLibrary m_library;

@@ -26,7 +26,7 @@ bool Timecode::valid() const
     return !(dropFrame(rate) && s == 0 && f < 2 && m % 10 != 0);
 }
 
-static int64_t framesPerDay(TcRate r)
+int64_t Timecode::framesPerDay(TcRate r)
 {
     if (r == TcRate::Fps2997Df) return 24LL * 6 * 17982; // 17982 frames each ten minutes
     return 24LL * 3600 * Timecode::nominalFps(r);
@@ -92,10 +92,58 @@ std::optional<Timecode> Timecode::parse(const QString &str, TcRate r)
     return t;
 }
 
+std::optional<Timecode> TcSequence::next(const std::optional<Timecode> &clock, int step)
+{
+    m_jumped = false;
+    if (!clock) {
+        m_last.reset();
+        return std::nullopt;
+    }
+    if (m_last && m_last->rate == clock->rate) {
+        const Timecode on = Timecode::fromFrames(m_last->toFrames() + step, m_last->rate);
+        // Within a frame or two of the clock (its reading and this one's ticks are not in step): it goes on
+        int64_t d = clock->toFrames() - on.toFrames();
+        const int64_t day = Timecode::framesPerDay(clock->rate);
+        if (d > day / 2) d -= day;
+        if (d < -day / 2) d += day;
+        if (d >= -2 && d <= 2) {
+            m_last = on;
+            return on;
+        }
+    }
+    m_jumped = bool(m_last);
+    m_last = clock;
+    return clock;
+}
+
+Timecode TcReading::timecode() const { return Timecode::fromFrames(int64_t(std::floor(frames + 1e-6)), rate); }
+
 // ---------------------------------------------------------------------------
 // LTC
 // ---------------------------------------------------------------------------
 namespace ltc {
+
+void Generator::render(float *out, int frames, int channels, const std::function<std::optional<TcReading>()> &clock)
+{
+    for (int i = 0; i < frames; ++i) {
+        if (m_pos >= m_buf.size()) { // the next frame's samples
+            m_buf.clear();
+            m_pos = 0;
+            const std::optional<TcReading> r = clock();
+            std::optional<Timecode> tc;
+            if (r && r->running && r->forward) {
+                tc = m_seq.next(r->timecode());
+            } else {
+                m_seq.reset();
+                if (r) tc = r->timecode();
+            }
+            if (tc) m_enc.frame(*tc, m_buf);
+            else m_buf.assign(size_t(m_rate / 25), 0.0f); // silence, a 25th of a second at a time
+        }
+        const float v = m_buf[m_pos++];
+        for (int c = 0; c < channels; ++c) out[i * channels + c] = v;
+    }
+}
 
 static const uint8_t kSync[16] = {0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1}; // bits 64 to 79
 
