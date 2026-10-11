@@ -38,6 +38,11 @@ Tests: `sh test/make_media.sh && cmake --build build --target fulskrin_tests && 
 (one process per area; `fulskrin_tests --area snapshots` runs one; CI runs them on the three platforms).
 Playback benchmark: `cmake --build build --target fulskrin_bench && sh test/bench_4k.sh build` (how many 4K files
 play together, per codec, with and without zero copy).
+Fuzzing of the HAP and Snappy readers (Clang, libFuzzer + ASan / UBSan; CI runs it two minutes):
+`cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DFULSKRIN_FUZZ=ON && cmake --build build-fuzz --target fuzz_hap`,
+then `sh test/make_fuzz_corpus.sh "$PWD/corpus" && ./build-fuzz/fuzz_hap -max_total_time=600 corpus`.
+HAP is read by Fulskrin itself (sections, chunks, Snappy, GPU blocks), not by Vidvox's library: on 4K frames its
+Snappy decompression is as fast as Google's or faster (same output), and it has no dependency.
 
 ## Limits
 

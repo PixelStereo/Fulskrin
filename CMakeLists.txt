@@ -314,6 +314,22 @@ target_compile_options(Fulskrin PRIVATE ${FULSKRIN_WARNINGS})
 install(TARGETS Fulskrin BUNDLE DESTINATION . RUNTIME DESTINATION bin)
 
 # ---------------------------------------------------------------------------
+# Fuzzing (Clang, libFuzzer + ASan / UBSan): the HAP and Snappy readers against damaged files (test/fuzz_hap.cpp)
+# ---------------------------------------------------------------------------
+option(FULSKRIN_FUZZ "Build the fuzz targets (requires Clang)" OFF)
+if(FULSKRIN_FUZZ)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "FULSKRIN_FUZZ needs Clang (libFuzzer): -DCMAKE_CXX_COMPILER=clang++")
+  endif()
+  add_executable(fuzz_hap EXCLUDE_FROM_ALL test/fuzz_hap.cpp src/engine/Hap.cpp src/engine/Snappy.cpp
+    src/engine/WorkerPool.cpp)
+  target_include_directories(fuzz_hap PRIVATE src/engine "${CMAKE_SOURCE_DIR}/third_party/bcdec")
+  target_link_libraries(fuzz_hap PRIVATE Qt6::Core)
+  target_compile_options(fuzz_hap PRIVATE -g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
+  target_link_options(fuzz_hap PRIVATE -fsanitize=fuzzer,address,undefined)
+endif()
+
+# ---------------------------------------------------------------------------
 # Engine tests (headless): cmake --build build --target fulskrin_tests
 # ---------------------------------------------------------------------------
 option(FULSKRIN_TESTS "Build the engine tests" ON)
