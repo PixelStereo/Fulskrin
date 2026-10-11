@@ -142,14 +142,6 @@ protected:
     }
 };
 
-QToolButton *barButton(const QString &text, const QString &tip)
-{
-    auto *b = new QToolButton;
-    b->setText(text);
-    b->setToolTip(tip);
-    b->setMinimumSize(30, 24);
-    return b;
-}
 } // namespace
 
 // The list of the snapshots: the one recalled last is marked apart from the selection — a green stripe on its left

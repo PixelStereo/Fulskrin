@@ -96,6 +96,8 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::Temp: return QStringLiteral("Change Temperature");
     case SetLayerProp::Tint: return QStringLiteral("Change Tint");
     case SetLayerProp::Transition: return QStringLiteral("Change Transition");
+    case SetLayerProp::ColorMask: return QStringLiteral("Change Color Mask");
+    case SetLayerProp::ColorMaskInvert: return QStringLiteral("Invert Color Mask");
     }
     return {};
 }

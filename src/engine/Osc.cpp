@@ -312,21 +312,6 @@ static QString sourceTypeKey(const Layer &l)
 // Layer of a given id, lock held
 static Layer *find(Engine *e, quint64 id) { return e->layer(e->indexOfId(id)); }
 
-static QStringList blendKeys() // every blend mode, by its key
-{
-    QStringList k;
-    for (BlendMode m : kBlendModes) k << blendModeKey(m);
-    return k;
-}
-
-static IsfInstance *findIsf(Engine *e, quint64 id, int slot)
-{
-    Layer *l = find(e, id);
-    if (!l) return nullptr;
-    if (slot < 0) return l->generator.get();
-    return slot < int(l->effects.size()) ? l->effects[size_t(slot)].get() : nullptr;
-}
-
 QString OscNamespace::signature() const
 {
     QString s;
