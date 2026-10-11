@@ -20,6 +20,8 @@
 #include <cmath>
 #include <functional>
 
+static constexpr double kPi = 3.14159265358979323846;
+
 static const QColor kSelected(255, 150, 40);
 static const QColor kHandle(255, 255, 255, 230);
 static const QColor kOutline(255, 150, 40, 220);
@@ -451,7 +453,7 @@ void MappingView::paintGuides()
             const QPointF c = toWidget(m_guideAt);
             const double r = 9;
             for (int k = 0; k < 24; ++k) {
-                const double a0 = k * M_PI / 12, a1 = (k + 1) * M_PI / 12;
+                const double a0 = k * kPi / 12, a1 = (k + 1) * kPi / 12;
                 pushLine(ring, c + QPointF(r * std::cos(a0), r * std::sin(a0)), c + QPointF(r * std::cos(a1), r * std::sin(a1)));
             }
             m_draw.drawLines(ring, kGuide);
@@ -585,6 +587,7 @@ void MappingView::paintScene()
     m_draw.drawTriangles(shadow, QColor(0, 0, 0, 160));
     m_draw.drawTriangles(handles, kHandle);
     m_draw.drawTriangles(sel, kSelected);
+    if (!m->meshMode) paintGrips(layerGrips());
 
     if (m_rubber) { // selection rectangle
         const QRectF r = QRectF(m_rubberStart, m_rubberEnd).normalized();
@@ -595,6 +598,52 @@ void MappingView::paintScene()
         pushLine(band, r.bottomLeft(), r.topLeft());
         m_draw.drawLines(band, kSelected);
     }
+}
+
+// The grips sit on the layer's own axes: scale above its top edge, rotation beside its right edge, both 22 px out
+MappingView::Grips MappingView::layerGrips() const
+{
+    Grips g;
+    Mapping *m = mapping();
+    if (!m || m_layer < 0 || isViewport(m_layer)) return g;
+    auto W = [&](QPointF p) { return toWidget(outOf(m_layer, p)); };
+    const QPointF k0 = W(m->corner(0)), k1 = W(m->corner(1)), k2 = W(m->corner(2)), k3 = W(m->corner(3));
+    g.center = (k0 + k1 + k2 + k3) / 4.0;
+    g.top = (k0 + k1) / 2.0;
+    g.right = (k1 + k2) / 2.0;
+    auto unit = [](QPointF v) { const double n = std::hypot(v.x(), v.y()); return n > 1e-6 ? v / n : QPointF(0, -1); };
+    g.scale = g.top + unit(g.top - g.center) * 22.0;
+    g.rotate = g.right + unit(g.right - g.center) * 22.0;
+    return g;
+}
+
+MappingView::Grip MappingView::hitGrip(QPointF p) const
+{
+    const Grips g = layerGrips();
+    auto near = [&](QPointF q) { return std::hypot(p.x() - q.x(), p.y() - q.y()) <= 10.0; };
+    if (near(g.scale)) return Grip::Scale;
+    if (near(g.rotate)) return Grip::Rotate;
+    return Grip::None;
+}
+
+// A line from each edge midpoint to its grip; the scale grip is a square, the rotation grip a ring
+void MappingView::paintGrips(const Grips &g)
+{
+    std::vector<float> stems, shadow, boxes, ring;
+    pushLine(stems, g.top, g.scale);
+    pushLine(stems, g.right, g.rotate);
+    m_draw.drawLines(stems, kOutline);
+    pushRect(shadow, g.scale, 7.5f);
+    pushRect(boxes, g.scale, 6.0f);
+    m_draw.drawTriangles(shadow, QColor(0, 0, 0, 160));
+    m_draw.drawTriangles(boxes, kHandle);
+    const int steps = 20;
+    for (int k = 0; k < steps; ++k) {
+        const double a0 = 2 * kPi * k / steps, a1 = 2 * kPi * (k + 1) / steps;
+        pushLine(ring, g.rotate + QPointF(std::cos(a0), std::sin(a0)) * 6.0,
+                 g.rotate + QPointF(std::cos(a1), std::sin(a1)) * 6.0);
+    }
+    m_draw.drawLines(ring, kHandle);
 }
 
 bool MappingView::isSelected(const Handle &h) const
@@ -803,6 +852,22 @@ void MappingView::mousePressEvent(QMouseEvent *e)
     const QPointF p = e->position();
     m_lastNorm = toNorm(p);
     const bool locked = m_engine->isLocked(m_layer);
+    // The grips of the layer (not for a viewport, a locked or a warped layer)
+    const Mapping *gm = mapping();
+    if (!locked && gm && !gm->meshMode) {
+        const Grip grip = hitGrip(p);
+        if (grip != Grip::None) {
+            m_selection.clear();
+            m_dragScale = grip == Grip::Scale;
+            m_dragRotate = grip == Grip::Rotate;
+            m_gestureCenter = layerGrips().center;
+            m_gestureStart = p;
+            m_dragBefore = *gm;
+            clearGuides();
+            update();
+            return;
+        }
+    }
     Handle h = locked ? Handle{} : hitHandle(p);
     const bool additive = e->modifiers() & Qt::ControlModifier; // Ctrl, ⌘ on Mac
     if (h.valid()) {
@@ -893,6 +958,24 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
         if (snapping(e->modifiers())) target = canvasOf(m_layer, snapPoint(outOf(m_layer, m_dragRaw), snapTargets()));
         moveSelection(target - handlePos(m_primary));
         emit mappingEdited();
+    } else if (m_dragScale || m_dragRotate) {
+        if (Mapping *m = mapping()) {
+            if (m_dragScale) { // the size grows with the distance from the center, around it
+                const double d0 = std::max(4.0, std::hypot(m_gestureStart.x() - m_gestureCenter.x(), m_gestureStart.y() - m_gestureCenter.y()));
+                const double d = std::hypot(e->position().x() - m_gestureCenter.x(), e->position().y() - m_gestureCenter.y());
+                const double f = std::clamp(d / d0, 0.01, 100.0);
+                m->size = QSizeF(m_dragBefore.size.width() * f, m_dragBefore.size.height() * f);
+            } else { // the angle from the center, in widget pixels (clockwise); Shift: steps of 15°
+                const double a0 = std::atan2(m_gestureStart.y() - m_gestureCenter.y(), m_gestureStart.x() - m_gestureCenter.x());
+                const QPointF q = e->position();
+                const double a = std::atan2(q.y() - m_gestureCenter.y(), q.x() - m_gestureCenter.x());
+                double deg = (a - a0) * 180.0 / kPi;
+                if (e->modifiers() & Qt::ShiftModifier) deg = std::round(deg / 15.0) * 15.0;
+                m->rotation = m_dragBefore.rotation + deg;
+            }
+            ++m->revision;
+        }
+        emit mappingEdited();
     } else if (m_dragLayer) {
         if (Mapping *m = mapping()) {
             m_dragOffsetRaw += delta;
@@ -929,15 +1012,18 @@ void MappingView::mouseReleaseEvent(QMouseEvent *)
         update();
         return;
     }
-    const bool dragging = m_dragHandle || m_dragLayer;
+    const bool grip = m_dragScale || m_dragRotate;
+    const bool dragging = m_dragHandle || m_dragLayer || grip;
     const bool handle = m_dragHandle;
-    m_dragHandle = m_dragLayer = false;
+    const bool scaling = m_dragScale;
+    m_dragHandle = m_dragLayer = m_dragScale = m_dragRotate = false;
     clearGuides();
     update();
     if (!dragging || !m_undo) return;
     const Mapping after = cmd::SetMapping::read(m_engine, m_layer);
     if (after == m_dragBefore) return;
-    const QString text = !handle ? (isViewport(m_layer) ? QStringLiteral("Move Viewport") : QStringLiteral("Move Layer"))
+    const QString text = grip ? (scaling ? QStringLiteral("Scale Layer") : QStringLiteral("Rotate Layer"))
+                         : !handle ? (isViewport(m_layer) ? QStringLiteral("Move Viewport") : QStringLiteral("Move Layer"))
                          : m_selection.size() > 1 ? QStringLiteral("Move %1 Points").arg(m_selection.size())
                                                   : QStringLiteral("Move Handle");
     m_undo->push(new cmd::SetMapping(m_engine, m_layer, m_dragBefore, after, text));

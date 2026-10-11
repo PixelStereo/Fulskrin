@@ -91,6 +91,14 @@ private:
     QPointF handlePos(const Handle &h) const;
     void moveHandle(const Handle &h, QPointF norm);
     Handle hitHandle(QPointF widgetPos) const;
+    // Grips around the selected layer (MadMapper-like): scale above its top edge, rotation at the side (widget pixels)
+    struct Grips {
+        QPointF center, top, scale, right, rotate;
+    };
+    Grips layerGrips() const;
+    enum class Grip { None, Scale, Rotate };
+    Grip hitGrip(QPointF widgetPos) const;
+    void paintGrips(const Grips &g);
     bool insideLayer(int index, QPointF widgetPos) const;
     std::vector<QPointF> outline(const Mapping &m, int steps) const;
     void pushLine(std::vector<float> &v, QPointF a, QPointF b) const;
@@ -110,6 +118,8 @@ private:
     std::vector<Handle> allHandles() const;
     void moveSelection(QPointF delta);
     bool m_dragHandle = false, m_dragLayer = false, m_rubber = false;
+    bool m_dragScale = false, m_dragRotate = false;     // the grips of the layer
+    QPointF m_gestureCenter, m_gestureStart;          // the layer's center and the press, widget pixels
     QPointF m_lastNorm, m_rubberStart, m_rubberEnd;
     QPointF m_dragRaw;                            // the dragged point without magnetism (canvas of the layer)
     QPointF m_dragOffsetRaw, m_dragOffsetApplied; // the dragged layer: its move without / with magnetism
