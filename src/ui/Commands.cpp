@@ -265,7 +265,7 @@ void RecallSnapshot::redo()
         const Engine::Snapshot m = m_e->snapshot(m_snapshot);
         if (!m.layers.isEmpty()) m_e->applyLayers(m.layers, 0, true);
         m_e->applyComposition(m.composition, 0);
-        m_e->applyInteractions(m.interactions, 0, m.interactionsKept);
+        m_e->applyInteractions(m.interactions, 0);
     }
 }
 

@@ -4673,21 +4673,20 @@ int main(int argc, char **argv)
               value(f).midiNumber == 7 && value(f).layer == a && value(f).param == "opacity");
         const quint64 next = e.addInteraction(Interaction::made(InteractionSource::Keyboard));
         CHECK(next > f && next != k); // ids go on after the one made again
-        // Made after a snapshot: switched off by its recall; a snapshot stored before they were kept leaves it alone
+        // Made after a snapshot: switched off by its recall (one holding none switches them all off)
         CHECK(e.setParameter(0, pre + "enable", true));
         Engine::Snapshot none;
         none.fade = 0;
         e.addSnapshot(none); // holds no interaction
         e.recallSnapshot(e.snapshotCount() - 1);
         CHECK(!value(f).enabled && !value(next).enabled);
+        // The same once saved and opened again (a snapshot holding none stores no part for them)
         CHECK(e.setParameter(0, pre + "enable", true));
-        Engine::Snapshot old;
-        old.fade = 0;
-        old.interactionsKept = false;
-        old.composition = e.captureComposition();
-        e.addSnapshot(old);
-        e.recallSnapshot(e.snapshotCount() - 1);
+        CHECK(e.saveProject(tmp + "/interactions-off.fulskrin", {}, &err));
+        CHECK(e.loadProject(tmp + "/interactions-off.fulskrin", nullptr, &err));
         CHECK(value(f).enabled);
+        e.recallSnapshot(e.snapshotCount() - 1);
+        CHECK(!value(f).enabled);
     }
     }
 

@@ -575,10 +575,10 @@ void Engine::stepCompositionFade(double dt)
 void Engine::recallSnapshot(int i)
 {
     const Snapshot m = snapshot(i);
-    if (m.layers.isEmpty() && m.composition.isEmpty() && m.interactions.isEmpty() && !m.interactionsKept) return;
+    if (m.layers.isEmpty() && m.composition.isEmpty() && m.interactions.isEmpty() && interactions().empty()) return;
     if (!m.layers.isEmpty()) applyLayers(m.layers, m.fade, true);
     applyComposition(m.composition, m.fade);
-    applyInteractions(m.interactions, m.fade, m.interactionsKept);
+    applyInteractions(m.interactions, m.fade);
     {
         Lock lk(&m_mutex);
         m_recalledSnapshot = m.id;
@@ -991,7 +991,7 @@ QJsonObject Engine::snapshotToJson(const Snapshot &m, const QString &dir) const
     }
     QJsonObject out{{"id", QString::number(m.id)}, {"name", m.name}, {"fade", m.fade}, {"layers", layers}};
     if (!m.composition.isEmpty()) out["composition"] = m.composition;
-    if (m.interactionsKept) out["interactions"] = m.interactions; // even none: those made since are switched off
+    if (!m.interactions.isEmpty()) out["interactions"] = m.interactions;
     if (!m.thumbnail.isNull()) {
         QByteArray png;
         QBuffer buf(&png);
@@ -1011,7 +1011,6 @@ Engine::Snapshot Engine::snapshotFromJson(const QJsonObject &o, const QString &d
     m.thumbnail.loadFromData(QByteArray::fromBase64(o.value("thumbnail").toString().toLatin1()), "PNG");
     m.composition = o.value("composition").toObject();
     m.interactions = o.value("interactions").toArray();
-    m.interactionsKept = o.contains("interactions");
     for (const QJsonValue &v : o.value("layers").toArray()) {
         QJsonObject l = v.toObject();
         auto resolve = [&](QJsonObject x) {
@@ -1085,16 +1084,15 @@ QJsonArray Engine::captureInteractions() const
     return out;
 }
 
-void Engine::applyInteractions(const QJsonArray &states, double fade, bool others)
+void Engine::applyInteractions(const QJsonArray &states, double fade)
 {
     {
         Lock lk(&m_mutex);
         // One the snapshot does not hold (made after it) is switched off; one it holds but leaves out stays as is
         QSet<quint64> held;
         for (const QJsonValue &v : states) held.insert(v.toObject().value("id").toString().toULongLong());
-        if (others)
-            for (Interaction &x : m_interactions)
-                if (!held.contains(x.id)) x.enabled = false;
+        for (Interaction &x : m_interactions)
+            if (!held.contains(x.id)) x.enabled = false;
         for (const QJsonValue &v : states) {
             const QJsonObject o = v.toObject();
             if (!o.value("included").toBool(true)) continue;
