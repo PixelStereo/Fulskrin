@@ -4633,6 +4633,46 @@ int main(int argc, char **argv)
         e.advanceFades(1.0);
         CHECK(std::abs(value(f).master) < 1e-9);
         e.setFadesManual(false);
+
+        // Its source, its target, its name and its curve are values too (presets, snapshots, OSC)
+        const QString pre = QStringLiteral("interaction/%1/").arg(f);
+        CHECK(e.parameterValue(0, pre + "source/kind").toString() == "midi");
+        CHECK(e.parameterValue(0, pre + "target").toString() == QStringLiteral("%1:opacity").arg(a));
+        CHECK(e.setParameter(0, pre + "source/midi/number", 9) && value(f).midiNumber == 9);
+        CHECK(e.setParameter(0, pre + "target", QStringLiteral("%1:scale").arg(a)) && value(f).param == "scale");
+        CHECK(e.setParameter(0, pre + "name", "Knob") && value(f).name == "Knob");
+        CHECK(e.setParameter(0, pre + "source/kind", "osc") && value(f).source == InteractionSource::Osc);
+        CHECK(e.setParameter(0, pre + "source/osc/address", "/knob") && value(f).oscAddress == "/knob");
+        CHECK(e.setParameter(0, pre + "source/kind", "midi") && e.setParameter(0, pre + "source/midi/number", 7) &&
+              e.setParameter(0, pre + "target", QStringLiteral("%1:opacity").arg(a)) && e.setParameter(0, pre + "name", "Fader 1"));
+
+        // Recalled when it no longer exists: made again, the same, with its source and its target
+        Engine::Snapshot whole;
+        whole.fade = 0;
+        whole.interactions = e.captureInteractions();
+        e.addSnapshot(whole);
+        e.removeInteraction(f);
+        CHECK(value(f).id == 0);
+        e.recallSnapshot(e.snapshotCount() - 1);
+        CHECK(value(f).id == f && value(f).name == "Fader 1" && value(f).source == InteractionSource::Midi &&
+              value(f).midiChannel == 1 && value(f).midiNumber == 7 && value(f).layer == a && value(f).param == "opacity");
+        ev.value = 0.5;
+        ev.number = 7;
+        e.feedInteraction(ev);
+        e.renderFrame();
+        CHECK(std::abs(e.parameterValue(a, "opacity").toDouble()) < 1.0); // it drives its target again
+        // A preset of its source and target makes it again too
+        Engine::Preset again;
+        again.fade = 0;
+        for (const char *key : {"source/kind", "source/midi/channel", "source/midi/number", "target", "name"})
+            again.values.push_back(e.presetValue(0, pre + key));
+        e.addPreset(again);
+        e.removeInteraction(f);
+        e.recallPreset(e.presetCount() - 1);
+        CHECK(value(f).id == f && value(f).name == "Fader 1" && value(f).source == InteractionSource::Midi &&
+              value(f).midiNumber == 7 && value(f).layer == a && value(f).param == "opacity");
+        const quint64 next = e.addInteraction(Interaction::made(InteractionSource::Keyboard));
+        CHECK(next > f && next != k); // ids go on after the one made again
     }
     }
 

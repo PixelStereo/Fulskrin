@@ -1057,11 +1057,16 @@ double Engine::snapshotDuration(quint64 id) const
 
 QStringList Engine::interactionKeys()
 {
-    return {QStringLiteral("enable"),       QStringLiteral("master"),      QStringLiteral("toggle"),
-            QStringLiteral("source/min"),   QStringLiteral("source/max"),  QStringLiteral("target/min"),
-            QStringLiteral("target/max"),   QStringLiteral("takeover"),    QStringLiteral("filter/enable"),
-            QStringLiteral("filter/type"),  QStringLiteral("filter/a"),    QStringLiteral("filter/b"),
-            QStringLiteral("curve/enable")};
+    // What it is first (its source, its target: a recall that makes it again sets them before its values)
+    return {QStringLiteral("name"),          QStringLiteral("source/kind"),        QStringLiteral("source/key"),
+            QStringLiteral("source/midi/input"), QStringLiteral("source/midi/channel"), QStringLiteral("source/midi/message"),
+            QStringLiteral("source/midi/number"), QStringLiteral("source/osc/address"), QStringLiteral("source/osc/argument"),
+            QStringLiteral("source/internal"), QStringLiteral("target"),           QStringLiteral("enable"),
+            QStringLiteral("master"),        QStringLiteral("toggle"),             QStringLiteral("source/min"),
+            QStringLiteral("source/max"),    QStringLiteral("target/min"),         QStringLiteral("target/max"),
+            QStringLiteral("takeover"),      QStringLiteral("filter/enable"),      QStringLiteral("filter/type"),
+            QStringLiteral("filter/a"),      QStringLiteral("filter/b"),           QStringLiteral("curve/enable"),
+            QStringLiteral("curve")};
 }
 
 QJsonArray Engine::captureInteractions() const
@@ -1096,11 +1101,31 @@ void Engine::applyInteractions(const QJsonArray &states, double fade)
 void Engine::applyInteractionValues(quint64 id, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,
                                     double fade)
 {
+    if (!id) return;
     const QString prefix = QStringLiteral("interaction/%1/").arg(id);
-    if (std::none_of(m_interactions.begin(), m_interactions.end(), [id](const Interaction &x) { return x.id == id; }))
-        return; // gone since: left alone
-    for (auto it = params.begin(); it != params.end(); ++it) {
-        const QString key = it.key().startsWith(prefix) ? it.key().mid(prefix.size()) : it.key();
+    if (std::none_of(m_interactions.begin(), m_interactions.end(), [id](const Interaction &x) { return x.id == id; })) {
+        // Removed since: made again, with its id (what the snapshot or the preset holds of it sets it below)
+        Interaction made = Interaction::made(InteractionSource::Keyboard);
+        made.id = id;
+        m_interactions.push_back(made);
+        m_nextInteractionId = std::max(m_nextInteractionId, id + 1);
+        m_interactionParamsDirty = true;
+        QMetaObject::invokeMethod(this, [this] {
+            updateMidiInputs();
+            emit interactionsChanged();
+        }, Qt::QueuedConnection);
+    }
+    // In the order of their keys: what it is (its source, its target) before its values
+    QStringList keys;
+    for (auto it = params.begin(); it != params.end(); ++it)
+        keys << (it.key().startsWith(prefix) ? it.key().mid(prefix.size()) : it.key());
+    const QStringList order = interactionKeys();
+    std::stable_sort(keys.begin(), keys.end(), [&](const QString &a, const QString &b) {
+        const auto ia = order.indexOf(a), ib = order.indexOf(b);
+        return (ia < 0 ? 1000 : ia) < (ib < 0 ? 1000 : ib);
+    });
+    for (const QString &key : keys) {
+        const QJsonValue value = params.contains(key) ? params.value(key) : params.value(prefix + key);
         const QString path = prefix + key;
         Parameter *p = findParameter(0, path);
         if (!p) continue;
@@ -1110,17 +1135,17 @@ void Engine::applyInteractionValues(quint64 id, const QJsonObject &params, const
                                  m_interactionFades.end());
         const ParamInfo info = p->info();
         const double t = timeOf(timing, key, fade);
-        if (p->isNumber() && info.ramp != ParamInfo::Ramp::Cut && t > 0 && it.value().isDouble()) {
+        if (p->isNumber() && info.ramp != ParamInfo::Ramp::Cut && t > 0 && value.isDouble()) {
             InteractionFade f;
             f.path = path;
             f.from = p->number();
-            f.to = it.value().toDouble();
+            f.to = value.toDouble();
             f.time = t;
             f.curve = int(easingOf(easing, key));
             if (std::abs(f.to - f.from) > 1e-12) m_interactionFades.push_back(f);
             else p->setNumber(f.to);
         } else {
-            p->setJson(it.value());
+            p->setJson(value);
         }
     }
 }

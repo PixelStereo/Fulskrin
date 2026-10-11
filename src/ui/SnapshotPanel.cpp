@@ -1493,8 +1493,8 @@ void SnapshotPanel::fillInteractions(const QJsonArray &interactions)
         it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
         it->setCheckState(0, o.value("included").toBool(true) ? Qt::Checked : Qt::Unchecked);
         if (gone) {
-            it->setForeground(0, QColor(150, 150, 156));
-            it->setToolTip(0, QStringLiteral("Removed since: left alone by the recall"));
+            it->setForeground(0, QColor(255, 180, 90));
+            it->setToolTip(0, QStringLiteral("Removed since: made again by the recall"));
         }
         const int row = -2 - k;
         auto field = [&](MemField::Kind kind, const QString &key, const QString &label) -> MemField {
@@ -1538,6 +1538,45 @@ void SnapshotPanel::fillInteractions(const QJsonArray &interactions)
                 *hi = std::max(1.0, params.value(key).toDouble());
             }
         };
+        // What it is: shown as it reads (set at once by the recall, which makes it again when it was removed)
+        auto info = [&](const QString &key, const QString &label, const QString &shown) {
+            if (params.contains(key)) addField(it, field(MemField::Info, key, label), QJsonValue(shown));
+        };
+        auto refText = [&](const QString &ref) { // "<layer id>:<address>": its layer's name › its value's
+            const int colon = ref.indexOf(QLatin1Char(':'));
+            if (colon < 0) return QStringLiteral("—");
+            const quint64 layer = ref.left(colon).toULongLong();
+            const QString path = ref.mid(colon + 1);
+            QString owner = QStringLiteral("Composition");
+            if (layer) {
+                Engine::Lock lk(&m_engine->mutex());
+                const Layer *l = m_engine->layer(m_engine->indexOfId(layer));
+                owner = l ? l->name : QStringLiteral("(gone)");
+            }
+            ParamInfo pi;
+            return owner + QStringLiteral(" › ") + (m_engine->parameterInfo(layer, path, &pi) ? pi.name() : path);
+        };
+        info(QStringLiteral("name"), QStringLiteral("Name"), params.value("name").toString());
+        choice(QStringLiteral("source/kind"), QStringLiteral("Source"),
+               {QStringLiteral("keyboard"), QStringLiteral("midi"), QStringLiteral("osc"), QStringLiteral("internal")},
+               {QStringLiteral("Keyboard"), QStringLiteral("MIDI"), QStringLiteral("OSC"), QStringLiteral("Internal")});
+        const QString kind = params.value("source/kind").toString();
+        if (kind == QLatin1String("keyboard")) info(QStringLiteral("source/key"), QStringLiteral("Key"), params.value("source/key").toString());
+        if (kind == QLatin1String("midi")) {
+            const QString in = params.value("source/midi/input").toString();
+            info(QStringLiteral("source/midi/input"), QStringLiteral("MIDI Input"), in.isEmpty() ? QStringLiteral("Any") : in);
+            const int ch = params.value("source/midi/channel").toInt();
+            info(QStringLiteral("source/midi/channel"), QStringLiteral("MIDI Channel"), ch ? QString::number(ch) : QStringLiteral("Any"));
+            info(QStringLiteral("source/midi/message"), QStringLiteral("MIDI Message"), params.value("source/midi/message").toString());
+            info(QStringLiteral("source/midi/number"), QStringLiteral("MIDI Number"), QString::number(params.value("source/midi/number").toInt()));
+        }
+        if (kind == QLatin1String("osc")) {
+            info(QStringLiteral("source/osc/address"), QStringLiteral("OSC Address"), params.value("source/osc/address").toString());
+            info(QStringLiteral("source/osc/argument"), QStringLiteral("OSC Argument"), QString::number(params.value("source/osc/argument").toInt()));
+        }
+        if (kind == QLatin1String("internal"))
+            info(QStringLiteral("source/internal"), QStringLiteral("Follows"), refText(params.value("source/internal").toString()));
+        info(QStringLiteral("target"), QStringLiteral("Target"), refText(params.value("target").toString()));
         flag(QStringLiteral("enable"), QStringLiteral("On"));
         number(QStringLiteral("master"), QStringLiteral("Master Level"), 0, 1, 100, QStringLiteral(" %"));
         flag(QStringLiteral("toggle"), QStringLiteral("Toggle"));
