@@ -510,17 +510,17 @@ void OscNamespace::build()
 
     // --- Sequence: GO, GO BACK, a step of the current sequence (1 = first), where it is
     {
-        add("/sequence/go", "N", 2, "GO").set = [e](const QVariantList &) { return e->sequenceGo(); };
-        add("/sequence/back", "N", 2, "GO Back").set = [e](const QVariantList &) { return e->sequenceBack(); };
+        add("/sequence/go", "N", 2, "GO").set = [e](const QVariantList &) { return e->sequencer().go(); };
+        add("/sequence/back", "N", 2, "GO Back").set = [e](const QVariantList &) { return e->sequencer().back(); };
         OscNode &st = add("/sequence/step", "i", 3, "Step");
-        st.get = [e] { return QVariantList{e->sequencePosition() + 1}; };
-        st.set = [e](const QVariantList &a) { return e->sequenceGoTo(int(std::lround(num(a.value(0)))) - 1); };
+        st.get = [e] { return QVariantList{e->sequencer().position() + 1}; };
+        st.set = [e](const QVariantList &a) { return e->sequencer().goTo(int(std::lround(num(a.value(0)))) - 1); };
         OscNode &cur = add("/sequence/current", "i", 3, "Current Sequence");
-        cur.get = [e] { return QVariantList{e->currentSequence() + 1}; };
+        cur.get = [e] { return QVariantList{e->sequencer().current() + 1}; };
         cur.set = [e](const QVariantList &a) {
             const int i = int(std::lround(num(a.value(0)))) - 1;
-            if (i < 0 || i >= e->sequenceCount()) return false;
-            e->setCurrentSequence(i);
+            if (i < 0 || i >= e->sequencer().count()) return false;
+            e->sequencer().setCurrent(i);
             return true;
         };
         m_nodes["/sequence"].description = "Sequence";

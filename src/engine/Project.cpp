@@ -42,8 +42,8 @@ void Engine::newProject()
     emit layersChanged();
     emit snapshotsChanged();
     emit animationsChanged();
-    emit sequencesChanged();
-    emit sequencePositionChanged();
+    emit m_sequencer->changed();
+    emit m_sequencer->positionChanged();
 }
 
 // Empties everything (layers, viewports, snapshots, media bin)
@@ -61,9 +61,7 @@ void Engine::clearProject()
         m_paused = false;
         m_compositionSpeed = 1.0;
         updateTimeScale();
-        m_sequences.clear();
-        m_currentSequence = m_sequencePosition = -1;
-        m_runs.clear();
+        m_sequencer->clear();
         m_animations.clear();
         m_nextAnimationId = 1;
         m_fades.clear();
@@ -72,7 +70,6 @@ void Engine::clearProject()
         for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
         m_transitions.clear();
         m_audio->setVolume(1.0f);
-        m_publishDirty = true; // the publishers of the viewports that went are stopped
     }
     for (auto &l : old) {
         if (l->video) l->video->close();
@@ -323,8 +320,8 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         for (const Snapshot &m : m_snapshots) mems.append(snapshotToJson(m, dir));
         root["snapshots"] = mems;
         root["timelines"] = animationsToJson();
-        root["sequences"] = sequencesToJson();
-        root["current_sequence"] = m_currentSequence;
+        root["sequences"] = m_sequencer->toJson();
+        root["current_sequence"] = m_sequencer->current();
     }
     root["ui"] = uiState;
     // Atomic write: a crash during save does not corrupt the existing file.
@@ -393,7 +390,6 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     fixLayerReferences(&warnings);
     {
         Lock lk(&m_mutex);
-        m_publishDirty = true;
     }
     QStringList bin;
     for (const QJsonValue &v : root.value("bin").toArray()) bin << resolvePath(v.toObject(), dir);
@@ -413,12 +409,12 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         for (Snapshot &m : m_snapshots)
             if (!m.id) m.id = m_nextSnapshotId++;
         animationsFromJson(root.value("timelines").toArray());
-        sequencesFromJson(root.value("sequences").toArray(), root.value("current_sequence").toInt(0));
+        m_sequencer->fromJson(root.value("sequences").toArray(), root.value("current_sequence").toInt(0));
     }
     emit snapshotsChanged();
     emit animationsChanged();
-    emit sequencesChanged();
-    emit sequencePositionChanged();
+    emit m_sequencer->changed();
+    emit m_sequencer->positionChanged();
     if (uiState) *uiState = root.value("ui").toObject();
     setProjectPath(QFileInfo(path).absoluteFilePath());
     emit layersChanged();

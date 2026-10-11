@@ -302,8 +302,8 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_seqBar, &SequenceBar::windowRequested, this, &MainWindow::openSequences);
     connect(m_seqWindow, &SequenceWindow::goToRequested, this, &MainWindow::sequenceGoTo);
     connect(m_seqWindow, &SequenceWindow::edited, this, &MainWindow::markDirty);
-    connect(m_seqBar, &SequenceBar::stopRequested, m_engine, &Engine::sequenceStop);
-    connect(m_seqWindow, &SequenceWindow::stopRequested, m_engine, &Engine::sequenceStop);
+    connect(m_seqBar, &SequenceBar::stopRequested, &m_engine->sequencer(), &Sequencer::stop);
+    connect(m_seqWindow, &SequenceWindow::stopRequested, &m_engine->sequencer(), &Sequencer::stop);
     m_timelineWindow = new TimelineWindow(m_engine, m_undo, this);
     m_timelineWindow->addActions({m_undoAction, m_redoAction}); // undo / redo from the Timelines window too
     connect(m_timelineWindow, &TimelineWindow::edited, this, &MainWindow::markDirty);
@@ -314,20 +314,20 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     });
     // A step's snapshot, when its pre-wait is over (GO, Space, OSC, or a step that follows): undoable; the bar
     // then shows the step unchanged
-    m_engine->setRecaller([this](int snapshot) {
+    m_engine->sequencer().setRecaller([this](int snapshot) {
         m_snapshots->recall(snapshot);
         m_cueUndoIndex = m_undo->index();
         m_seqBar->setModified(false);
         m_seqWindow->setModified(false);
     });
     // Played elsewhere (OSC) or another sequence: nothing changed since; any edit afterwards: the bar says so
-    connect(m_engine, &Engine::sequencePositionChanged, this, [this] {
+    connect(&m_engine->sequencer(), &Sequencer::positionChanged, this, [this] {
         m_cueUndoIndex = m_undo->index();
         m_seqBar->setModified(false);
         m_seqWindow->setModified(false);
     });
     connect(m_undo, &QUndoStack::indexChanged, this, [this](int i) {
-        if (m_engine->sequencePosition() >= 0 && i != m_cueUndoIndex) {
+        if (m_engine->sequencer().position() >= 0 && i != m_cueUndoIndex) {
             m_seqBar->setModified(true);
             m_seqWindow->setModified(true);
         }
@@ -379,7 +379,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
 MainWindow::~MainWindow()
 {
-    m_engine->setRecaller(nullptr);
+    m_engine->sequencer().setRecaller(nullptr);
     if (m_oscThread) {
         QMetaObject::invokeMethod(m_osc, [this] { m_osc->stop(); }, Qt::BlockingQueuedConnection);
         m_oscThread->quit();
@@ -525,7 +525,7 @@ void MainWindow::buildMenus()
     QMenu *seq = menuBar()->addMenu(QStringLiteral("&Sequence"));
     seq->addAction(QStringLiteral("GO — next step (Space)"), this, &MainWindow::sequenceGo);
     seq->addAction(QStringLiteral("GO BACK — previous step (Shift+Space)"), this, &MainWindow::sequenceBack);
-    seq->addAction(QStringLiteral("Stop the waits (pre-waits and follows still to come)"), m_engine, &Engine::sequenceStop);
+    seq->addAction(QStringLiteral("Stop the waits (pre-waits and follows still to come)"), &m_engine->sequencer(), &Sequencer::stop);
     seq->addSeparator();
     seq->addAction(QStringLiteral("Sequences…"), this, &MainWindow::openSequences);
     seq->addAction(QStringLiteral("Timelines…"), this, &MainWindow::openTimelines);
@@ -1353,12 +1353,12 @@ void MainWindow::setInOutAtPosition(bool in)
     statusBar()->showMessage((in ? QStringLiteral("In point: %1 s") : QStringLiteral("Out point: %1 s")).arg(pos, 0, 'f', 2), 3000);
 }
 
-void MainWindow::sequenceGo() { m_engine->sequenceGo(); }
+void MainWindow::sequenceGo() { m_engine->sequencer().go(); }
 
-void MainWindow::sequenceBack() { m_engine->sequenceBack(); }
+void MainWindow::sequenceBack() { m_engine->sequencer().back(); }
 
 // The step's GO: its pre-wait, then its snapshot (recalled through the undo stack, see the recaller), then what follows
-void MainWindow::sequenceGoTo(int step) { m_engine->sequenceGoTo(step); }
+void MainWindow::sequenceGoTo(int step) { m_engine->sequencer().goTo(step); }
 
 void MainWindow::openSequences()
 {

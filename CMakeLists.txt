@@ -61,7 +61,8 @@ add_library(fulskrin_engine STATIC
   src/engine/Osc.cpp
   src/engine/Zeroconf.cpp
   src/engine/Snapshots.cpp
-  src/engine/Sequences.cpp
+  src/engine/Sequencer.cpp
+  src/engine/Publishing.cpp
   src/engine/Animations.cpp
   src/engine/Parameter.cpp
   src/engine/LayerParams.cpp

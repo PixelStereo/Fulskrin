@@ -40,7 +40,10 @@ struct ScopedCurrent {
     ~ScopedCurrent() { e->doneCurrent(); }
 };
 
-Engine::Engine(QObject *parent) : QObject(parent), m_audio(std::make_unique<AudioOutput>()) {}
+Engine::Engine(QObject *parent)
+    : QObject(parent), m_audio(std::make_unique<AudioOutput>()), m_sequencer(new Sequencer(*this, m_mutex))
+{
+}
 
 bool Engine::startAudio(const QString &device, QString *err, bool nullDevice)
 {
@@ -183,13 +186,7 @@ bool Engine::initialize(QString *err)
     }
     m_blitTexLoc = f->glGetUniformLocation(m_blitProgram, "u_tex");
     m_presentTexLoc = f->glGetUniformLocation(m_presentProgram, "u_tex");
-    // Vertical flip for readback (NDI / OMT expect top-to-bottom rows)
-    m_flipProgram = compileProgram("#version 330 core\nlayout(location=0) in vec2 a_pos; out vec2 v_uv;\n"
-                                   "void main(){ v_uv = vec2(a_pos.x*0.5+0.5, 0.5-a_pos.y*0.5); gl_Position = vec4(a_pos,0.0,1.0); }\n",
-                                   "#version 330 core\nuniform sampler2D u_tex; in vec2 v_uv; out vec4 o;\n"
-                                   "void main(){ o = vec4(texture(u_tex, v_uv).rgb, 1.0); }\n",
-                                   &log);
-    m_flipTexLoc = f->glGetUniformLocation(m_flipProgram, "u_tex");
+    m_publishing.initGl(&log);
     // Layer preparation: roi (part of the source used), color (added / removed), unpremultiplied alpha (groups)
     m_prepProgram = compileProgram(quadVs,
                                    "#version 330 core\nuniform sampler2D u_tex; uniform vec4 u_roi; uniform vec3 u_add;\n"
@@ -430,11 +427,7 @@ void Engine::releaseAll()
     for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
     m_transitions.clear();
     // Publishers: GPU (current context required), then the send threads
-    for (auto &[id, pub] : m_pubs) releasePublication(*pub);
-    {
-        std::lock_guard<std::mutex> lk(m_stateMutex);
-        m_pubs.clear();
-    }
+    m_publishing.release();
     {
         Lock lk(&m_mutex);
         for (auto &l : m_layers) releaseLayer(*l);
@@ -453,7 +446,7 @@ void Engine::releaseAll()
         m_frameFence = nullptr;
     }
     m_videoConv.release();
-    for (GLuint p : {m_blitProgram, m_compProgram, m_diffProgram, m_presentProgram, m_flipProgram, m_prepProgram, m_maskProgram,
+    for (GLuint p : {m_blitProgram, m_compProgram, m_diffProgram, m_presentProgram, m_prepProgram, m_maskProgram,
                      m_fadeProgram})
         if (p) f->glDeleteProgram(p);
     GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};
@@ -462,7 +455,7 @@ void Engine::releaseAll()
     f->glDeleteVertexArrays(2, vaos);
     f->glDeleteTextures(1, &m_blackTex);
     m_quadVao = m_meshVao = 0;
-    m_blitProgram = m_compProgram = m_diffProgram = m_presentProgram = m_flipProgram = m_prepProgram = m_maskProgram = 0;
+    m_blitProgram = m_compProgram = m_diffProgram = m_presentProgram = m_prepProgram = m_maskProgram = 0;
     m_fadeProgram = 0;
 }
 

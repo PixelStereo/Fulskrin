@@ -13,6 +13,7 @@
 #include <QGuiApplication>
 #include <QSurfaceFormat>
 #include <QThread>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -126,10 +127,15 @@ int main(int argc, char **argv)
     tm.start();
     double fpsSum = 0;
     int fpsCount = 0;
+    std::vector<double> waits; // how long the interface waits for the engine's lock (ms), sampled as it would
     while (tm.elapsed() < seconds * 1000) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
         e.acknowledgeFrame();
-        QThread::msleep(100);
+        QElapsedTimer w;
+        w.start();
+        { Engine::Lock lk(&e.mutex()); }
+        waits.push_back(w.nsecsElapsed() / 1e6);
+        QThread::msleep(7);
         fpsSum += e.fps();
         ++fpsCount;
     }
@@ -137,6 +143,14 @@ int main(int argc, char **argv)
     const double renderFps = (e.frameCount() - frames0) / s;
     std::printf("Playing together: %d layers, composition %dx%d, %.1f s, render asked %.0f fps, got %.1f fps\n", n,
                 comp.width(), comp.height(), s, fps, renderFps);
+    if (!waits.empty()) {
+        std::sort(waits.begin(), waits.end());
+        double mean = 0;
+        for (double x : waits) mean += x;
+        mean /= double(waits.size());
+        std::printf("Interface waiting for the lock: mean %.2f ms, p99 %.2f ms, max %.2f ms (%zu samples)\n", mean,
+                    waits[std::min(waits.size() - 1, size_t(double(waits.size()) * 0.99))], waits.back(), waits.size());
+    }
     bool allGood = true;
     for (int k = 0; k < n; ++k) {
         const int i = e.indexOfId(ids[size_t(k)]);

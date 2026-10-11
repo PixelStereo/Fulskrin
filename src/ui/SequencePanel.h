@@ -99,7 +99,7 @@ private:
     bool m_modified = false;
     QPushButton *m_add, *m_dup, *m_del, *m_stepAdd, *m_stepDel, *m_up, *m_down, *m_stop;
     bool m_filling = false;
-    std::vector<Engine::StepRun> m_runs; // the steps on their way, drawn in their time columns
+    std::vector<Sequencer::Run> m_runs; // the steps on their way, drawn in their time columns
     void pollRuns();
     friend class StepDelegate;
 };

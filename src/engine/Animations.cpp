@@ -911,3 +911,34 @@ void Engine::animationsFromJson(const QJsonArray &arr)
     for (Animation &a : m_animations)
         if (!a.id) a.id = m_nextAnimationId++;
 }
+
+// What a timeline told to play will play, in real seconds (a sequence's step waits for it)
+double Engine::animationPlayTime(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    for (const Animation &a : m_animations) {
+        if (a.id != id) continue;
+        const double len = a.length();
+        if (!std::isfinite(len)) return 0; // endless: nothing to wait for
+        const double v = a.speed * timeScale();
+        if (v <= 1e-9) return std::numeric_limits<double>::infinity(); // frozen: waits for its speed
+        return (a.state == AnimState::Stopped ? len : std::max(0.0, len - a.clock)) / v; // in real seconds
+    }
+    return 0;
+}
+
+// What a timeline that was told to play still has to play, in real seconds: 0 once it is over (or stopped,
+// or gone, or endless: nothing to wait for), infinity while it does not move (paused, or speed 0)
+double Engine::animationRemaining(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    for (const Animation &a : m_animations) {
+        if (a.id != id) continue;
+        const double len = a.length();
+        if (a.state == AnimState::Stopped || !std::isfinite(len)) return 0;
+        const double v = a.speed * timeScale();
+        if (a.state == AnimState::Paused || v <= 1e-9) return std::numeric_limits<double>::infinity();
+        return std::max(0.0, len - a.clock) / v;
+    }
+    return 0;
+}

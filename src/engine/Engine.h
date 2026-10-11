@@ -15,11 +15,13 @@
 //    on a task while holding the lock, with no risk of deadlock.
 
 #include "PresentMetal.h"
+#include "Sequencer.h"
 #include "AudioOutput.h"
 #include "IsfLibrary.h"
 #include "Layer.h"
 #include "LayerTree.h"
 #include "Publish.h"
+#include "Publishing.h"
 
 #include <QColor>
 #include <QElapsedTimer>
@@ -292,86 +294,15 @@ public:
     // composition for a position
     void waveAround(quint64 layer, const QString &param, double *center, double *amplitude) const;
 
-    // --- Sequences: ordered steps, each recalling a snapshot or driving a timeline (and carrying a text for the
-    // operator), played by GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
-    //
-    // A step waits its pre-wait after its GO, then recalls its snapshot, whose fade is the step's action (its
-    // duration: the snapshot's longest time) — or acts on its timeline (Play: the time it plays, when it ends,
-    // followed as it goes: a speed or a loop mode changed meanwhile, by a step or by OSC, is taken into account,
-    // and a frozen timeline (speed 0) is waited for until it moves on and ends; the other actions take no time).
-    // What comes next (as in QLab):
-    //  - Wait: nothing, the next step waits for GO (button, Space, OSC);
-    //  - Follow: the next step gets its GO once this one was triggered (pre-wait over), after the post-wait,
-    //    without waiting for the action to end;
-    //  - AutoFollow: the next step gets its GO once the action is over, after the post-wait.
-    // A snapshot recalled does not stop the ones still running: only the values it holds itself are taken over.
-    enum class StepContinue { Wait = 0, Follow = 1, AutoFollow = 2 };
-    struct SequenceStep {
-        quint64 snapshot = 0;   // its id (0: none yet)
-        QString text;
-        quint64 timeline = 0; // or a timeline's (an animation's) id, driven by `action`
-        AnimAction action = AnimAction::Play;
-        double seekTime = 0;                  // Seek
-        AnimLoop loop = AnimLoop::Loop;       // LoopMode
-        int repeat = 0;                       // LoopMode
-        double speed = 1;                     // Speed
-        double preWait = 0, postWait = 0; // seconds
-        StepContinue next = StepContinue::Wait;
-    };
-    // A step on its way: since its GO, through its pre-wait, its action, and until the next step's GO
-    struct StepRun {
-        int step = -1;
-        SequenceStep target; // what it does (its snapshot, or its timeline and action)
-        quint64 snapshot = 0;
-        double elapsed = 0; // since its GO
-        double preWait = 0, duration = 0, postWait = 0;
-        StepContinue next = StepContinue::Wait;
-        bool fired = false, continued = false;
-        bool trackPending = false, tracking = false; // a Play: its action lasts as long as the timeline does
-        // When the next step gets its GO, counted from this one's GO (< 0: never — Wait)
-        double continueAt() const
-        {
-            switch (next) {
-            case StepContinue::Follow: return preWait + postWait;
-            case StepContinue::AutoFollow: return preWait + duration + postWait;
-            default: return -1;
-            }
-        }
-        double end() const { return std::max(preWait + duration, continueAt()); }
-    };
-    struct Sequence {
-        QString name;
-        bool loop = false; // GO on the last step goes to the first
-        std::vector<SequenceStep> steps;
-    };
-    int sequenceCount() const;
-    Sequence sequence(int i) const;
-    void setSequence(int i, const Sequence &s);
-    int addSequence(const Sequence &s, int at = -1);
-    void removeSequence(int i);
-    int currentSequence() const;          // -1: none
-    void setCurrentSequence(int i);       // its position goes back to before the first step
-    int sequencePosition() const;         // step last played in the current sequence (-1: none yet)
-    void setSequencePosition(int step);   // without recalling (the interface recalls, undoable)
-    int sequenceNext() const;             // the step GO plays (-1: none — the end, without loop)
-    int sequencePrevious() const;         // the step GO BACK plays (-1: none)
-    // GO / a given step: its pre-wait, then its snapshot, then what follows (chain = false: at once, and nothing
-    // follows). GO BACK: the previous step at once, the waits still running are stopped.
-    bool sequenceGo();
-    bool sequenceBack();
-    bool sequenceGoTo(int step, bool chain = true);
-    void sequenceStop();                     // the waits still running: no step comes from them any more
-    std::vector<StepRun> sequenceRuns() const; // the steps of the current sequence on their way
-    bool sequenceRunning() const;
-    void advanceSequence(double dt);         // moves the waits on (a timer does, except with setFadesManual)
-    // The snapshot a step recalls goes through this (the interface: its undo stack); recallSnapshot by default
-    void setRecaller(std::function<void(int snapshotIndex)> f) { m_recaller = std::move(f); }
+    // --- Sequences (the cue lists): Sequencer.h
+    Sequencer &sequencer() { return *m_sequencer; }
+    const Sequencer &sequencer() const { return *m_sequencer; }
     // A snapshot's action: its longest time (the fade, and the times of its own values)
     double snapshotDuration(quint64 id) const;
     // A step's action: its snapshot's, or the time its timeline will play (Play on a timeline that ends; else 0;
-    // infinity: its timeline is frozen, speed 0, and plays on when its speed is raised)
-    double stepDuration(const SequenceStep &st) const;
     double animationRemaining(quint64 id) const; // real seconds a timeline playing has left (infinity: not moving)
+    // Real seconds a timeline told to play now will play (0: endless or gone; infinity: frozen, speed 0)
+    double animationPlayTime(quint64 id) const;
     void recallSnapshot(int i); // with its fade
     bool isFading() const;
     // The snapshot recalled last, and where its fade is (its longest time: values with times of their own included)
@@ -386,7 +317,8 @@ public:
     void stepCompositionFade(double dt); // a snapshot's fade of the level and the volume (lock held)
     void stepTypewriters(double dt); // the texts snapshots gave are typed on (lock held)
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
-    void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
+    void setFadesManual(bool on) { m_fadesManual = on; }
+    bool fadesManual() const { return m_fadesManual; } // tests: only advanceFades moves them, not the frames
     // A snapshot gives a value of a layer its time ("timing": key → seconds, 0 at once) and its easing ("easing": key →
     // easing key) under its address or the address of a group it is in ("position" for "position/x", "fx/blur" for
     // that effect's); the other keys: "file" (another source's transition), "viewports" (its routing), "mesh" (its
@@ -502,8 +434,6 @@ signals:
     void layersChanged();
     void compositionSizeChanged(QSize size);
     void snapshotsChanged();
-    void sequencesChanged();        // their contents
-    void sequencePositionChanged(); // current sequence or step
     void animationsChanged();       // the timelines' contents (not their transport)
     void layerAnimsChanged(quint64 layer); // the animations of a layer's numbers (their contents, not their transport)
     void snapshotRecalled(int index);
@@ -559,13 +489,6 @@ private:
     QJsonObject layerToJson(Layer &l, const QString &projectDir) const;
     void layerFromJson(int index, const QJsonObject &o, const QString &projectDir, QStringList *warnings);
     double nextDt();
-    struct Publication;
-    void applyPublishing();               // render thread: every viewport's publishers follow its settings
-    void applyPublication(Publication &pub, const PublishSettings &s, bool withTap);
-    void publishReadback(Publication &pub, const RenderTarget &out); // NDI, OMT: before the frame's wait
-    void publishShared(Publication &pub, const RenderTarget &out);   // Syphon, Spout: after it
-    void releasePublication(Publication &pub); // render thread
-    void setPublishState(Publication &pub, PublishKind k, PublishState st);
 
     mutable QRecursiveMutex m_mutex;
 
@@ -705,15 +628,7 @@ private:
     void startLayerAnim(Animation &a); // from the start: the "current value" keys read now (lock held)
     void assignLayerAnims(Layer &l, const std::vector<Animation> &anims); // see setLayerAnims (lock held)
     void recallLayerAnims(Layer &l, const QJsonArray &stored);            // a snapshot's (lock held)
-    std::vector<Sequence> m_sequences;
-    int m_currentSequence = -1, m_sequencePosition = -1;
-    std::vector<StepRun> m_runs; // of the current sequence
-    std::function<void(int)> m_recaller;
-    QTimer *m_sequenceTimer = nullptr;
-    QElapsedTimer m_sequenceClock;
-    void startSequenceTimer();
-    QJsonArray sequencesToJson() const;
-    void sequencesFromJson(const QJsonArray &a, int current);
+    Sequencer *m_sequencer = nullptr; // a child QObject
     std::atomic<bool> m_fadesManual{false};
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
@@ -724,29 +639,8 @@ private:
     IsfLibrary m_library;
     QStringList m_binItems;
 
-    // Publishing, one set of publishers per viewport (render thread; states read by the interface)
-    struct Publication {
-        PublishSettings applied;
-        bool init = false;
-        std::unique_ptr<GpuPublisher> gpu[kPublishKindCount];
-        std::shared_ptr<CpuPublisher> cpu[kPublishKindCount], tap;
-        std::unique_ptr<CpuSendThread> sender;
-        PublishState states[kPublishKindCount]; // guarded by m_stateMutex
-        RenderTarget readback;
-        GLuint pbo[2] = {0, 0};
-        int pboIndex = 0, pboW = 0, pboH = 0;
-        bool pboPending = false;
-        double pboTime = 0;
-        int announcedRate = 0;
-        double rateSince = 0;
-    };
-    std::map<quint64, std::unique_ptr<Publication>> m_pubs; // by viewport id
-    bool m_publishDirty = true;
-    std::function<void(const CpuFrame &)> m_tap; // tests: frames of the main viewport
-    bool m_tapDirty = false;
-    mutable std::mutex m_stateMutex;
-    GLuint m_flipProgram = 0;
-    GLint m_flipTexLoc = -1;
+    // Publishing: the viewports' publishers (Publishing.h)
+    Publishing m_publishing{[this] { drawQuad(); }};
     GLuint m_maskProgram = 0; // an effect's result over its input, through a mask
     GLint m_maskInLoc = -1, m_maskFxLoc = -1, m_maskMaskLoc = -1, m_maskInvertLoc = -1;
     GLuint m_fadeProgram = 0; // a crossfade of two pictures (a source transition without a shader)

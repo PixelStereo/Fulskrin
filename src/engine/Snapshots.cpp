@@ -842,3 +842,26 @@ Engine::Snapshot Engine::snapshotFromJson(const QJsonObject &o, const QString &d
     }
     return m;
 }
+
+// A snapshot's action: its longest time
+double Engine::snapshotDuration(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    const Snapshot *m = nullptr;
+    for (const Snapshot &x : m_snapshots)
+        if (x.id == id) m = &x;
+    if (!m) return 0;
+    double d = 0;
+    auto scan = [&](const QJsonObject &timing) {
+        d = std::max(d, m->fade); // the values without a time of their own
+        for (auto it = timing.begin(); it != timing.end(); ++it)
+            if (it.value().isDouble()) d = std::max(d, std::clamp(it.value().toDouble(), 0.0, 600.0));
+    };
+    for (const QJsonValue &v : m->layers) {
+        const QJsonObject o = v.toObject();
+        if (o.value("included").toBool(true) && !o.value("viewport").toBool()) scan(o.value("timing").toObject());
+    }
+    if (!m->composition.isEmpty() && m->composition.value("included").toBool(true))
+        scan(m->composition.value("timing").toObject());
+    return d;
+}
