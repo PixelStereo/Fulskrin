@@ -255,6 +255,12 @@ public:
     std::vector<ParamInfo> parameters(quint64 layer) const;
     bool parameterInfo(quint64 layer, const QString &path, ParamInfo *p) const; // false: it has none at that address
     bool animParamValue(quint64 layer, const QString &path, double *value) const;
+    // One value, by its layer's id (0: the composition) and its address: every edit by hand (the interface and its
+    // undo) goes through here. Set, a fade that drives it lets go. Undefined / false: it has none at that address
+    QJsonValue parameterValue(quint64 layer, const QString &path) const;
+    bool setParameter(quint64 layer, const QString &path, const QJsonValue &v);
+    // Where a layer's shader keeps its values: "" its generator (slot -1), "fx/<fx>/" an effect
+    QString shaderPrefix(quint64 layer, int slot) const;
     void stepAnimations(double dt); // the layers' animations, then the timelines, move on and set their values (lock held)
 
     // --- Animations of a layer's numbers (Layer::anims, the Anim tab of the inspector): each one drives one number of

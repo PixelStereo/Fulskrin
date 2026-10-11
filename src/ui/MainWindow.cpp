@@ -169,16 +169,15 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_lastSelected = r;
     });
     connect(m_layerTable, &LayerTable::visibilityToggled, this, [this](int row, bool on) {
-        const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Enabled);
+        const quint64 id = m_engine->layerId(row);
+        const QVariant before = cmd::SetLayerProp::read(m_engine, id, cmd::SetLayerProp::Enabled);
         if (before.isValid() && before.toBool() != on)
-            m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Enabled, before, on));
+            m_undo->push(new cmd::SetLayerProp(m_engine, id, cmd::SetLayerProp::Enabled, before, on));
         if (row == m_inspector->layerIndex()) m_inspectorTimer.start();
     });
     connect(m_layerTable, &LayerTable::opacityEdited, this, [this](int row, double v) {
         if (refuseLocked(row)) return refreshLayerList();
-        const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Opacity);
-        if (before.isValid() && std::abs(before.toDouble() - v) > 1e-6)
-            m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Opacity, before, v));
+        cmd::setValue(m_undo, m_engine, m_engine->layerId(row), QStringLiteral("opacity"), v, QStringLiteral("Change Opacity"));
         if (row == m_inspector->layerIndex()) m_inspectorTimer.start(); // inspector resynced after the gesture
     });
     connect(m_layerTable, &LayerTable::removeClicked, this, &MainWindow::removeCurrentLayer);
@@ -189,9 +188,10 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
             statusBar()->showMessage(QStringLiteral("Locked by its group: unlock the group first."), 4000);
             return;
         }
-        const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Locked);
+        const quint64 id = m_engine->layerId(row);
+        const QVariant before = cmd::SetLayerProp::read(m_engine, id, cmd::SetLayerProp::Locked);
         if (!before.isValid()) return;
-        m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Locked, before, !before.toBool()));
+        m_undo->push(new cmd::SetLayerProp(m_engine, id, cmd::SetLayerProp::Locked, before, !before.toBool()));
         m_inspector->rebuild();
     });
     connect(m_layerTable, &LayerTable::collapseToggled, this, [this](int row) {
@@ -210,9 +210,10 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     });
     connect(m_layerTable, &LayerTable::renamed, this, [this](int row, const QString &name) {
         if (refuseLocked(row)) return;
-        const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Name);
+        const quint64 id = m_engine->layerId(row);
+        const QVariant before = cmd::SetLayerProp::read(m_engine, id, cmd::SetLayerProp::Name);
         if (before.isValid() && before.toString() != name)
-            m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Name, before, name));
+            m_undo->push(new cmd::SetLayerProp(m_engine, id, cmd::SetLayerProp::Name, before, name));
         refreshLayerList();
         if (row == m_inspector->layerIndex()) m_inspector->rebuild();
     });
@@ -1289,12 +1290,13 @@ void MainWindow::toggleLockCurrent()
     QList<int> rows = m_layerTable->selectedRows();
     if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
     if (rows.isEmpty()) return;
-    const bool lock = !cmd::SetLayerProp::read(m_engine, rows.first(), cmd::SetLayerProp::Locked).toBool();
+    const bool lock = !cmd::SetLayerProp::read(m_engine, m_engine->layerId(rows.first()), cmd::SetLayerProp::Locked).toBool();
     m_undo->beginMacro(lock ? QStringLiteral("Lock") : QStringLiteral("Unlock"));
     for (int r : rows) {
-        const QVariant before = cmd::SetLayerProp::read(m_engine, r, cmd::SetLayerProp::Locked);
+        const quint64 id = m_engine->layerId(r);
+        const QVariant before = cmd::SetLayerProp::read(m_engine, id, cmd::SetLayerProp::Locked);
         if (before.isValid() && before.toBool() != lock)
-            m_undo->push(new cmd::SetLayerProp(m_engine, r, cmd::SetLayerProp::Locked, before, lock));
+            m_undo->push(new cmd::SetLayerProp(m_engine, id, cmd::SetLayerProp::Locked, before, lock));
     }
     m_undo->endMacro();
     m_inspector->rebuild();
@@ -1337,16 +1339,16 @@ void MainWindow::setInOutAtPosition(bool in)
     const int i = currentLayer();
     if (i >= 0 && refuseLocked(i)) return;
     double pos;
-    QVariant before;
+    quint64 id;
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(i);
         if (!l || !l->hasTransport()) return;
         pos = l->position();
-        before = in ? l->inPoint : l->outPoint;
+        id = l->id;
     }
-    const auto prop = in ? cmd::SetLayerProp::InPoint : cmd::SetLayerProp::OutPoint;
-    m_undo->push(new cmd::SetLayerProp(m_engine, i, prop, before, pos));
+    cmd::setValue(m_undo, m_engine, id, in ? QStringLiteral("in") : QStringLiteral("out"), pos,
+                  in ? QStringLiteral("Set In Point") : QStringLiteral("Set Out Point"));
     m_inspector->rebuild();
     statusBar()->showMessage((in ? QStringLiteral("In point: %1 s") : QStringLiteral("Out point: %1 s")).arg(pos, 0, 'f', 2), 3000);
 }

@@ -14,35 +14,41 @@ QStringList blendKeys()
     return k;
 }
 
-// What the parameters are made from: when it changes, they are made again
-std::vector<quint64> keyOf(const Layer &l)
+// What the parameters are made from: when it changes, they are made again. A hash, without allocating: it is
+// computed on every look-up (each OSC message, each animated value, each frame of a fade)
+quint64 keyOf(const Layer &l)
 {
+    quint64 h = 1469598103934665603ULL; // FNV-1a over 64-bit words
+    auto mix = [&h](quint64 v) {
+        h ^= v;
+        h *= 1099511628211ULL;
+    };
     const QSize c = l.compSize ? *l.compSize : QSize(1920, 1080);
-    std::vector<quint64> k{quint64(l.type),       quint64(l.hasTransport()), quint64(bool(l.audio)), quint64(l.isViewport),
-                           quint64(l.isGroup),    quint64(c.width()),        quint64(c.height()),
-                           quint64(quintptr(l.generator.get())), quint64(l.effects.size()),
-                           quint64(std::llround(l.duration() * 1000)), quint64(l.hasPicture())};
-    auto inputs = [&k](const IsfInstance *i) {
+    for (quint64 v : {quint64(l.type), quint64(l.hasTransport()), quint64(bool(l.audio)), quint64(l.isViewport),
+                      quint64(l.isGroup), quint64(c.width()), quint64(c.height()), quint64(quintptr(l.generator.get())),
+                      quint64(l.effects.size()), quint64(std::llround(l.duration() * 1000)), quint64(l.hasPicture())})
+        mix(v);
+    auto inputs = [&mix](const IsfInstance *i) {
         if (!i) return;
-        k.push_back(quint64(i->isValid()));
-        for (const IsfInput &in : i->inputs()) k.push_back(qHash(in.name) ^ (quint64(in.type) << 40));
+        mix(quint64(i->isValid()));
+        for (const IsfInput &in : i->inputs()) mix(qHash(in.name) ^ (quint64(in.type) << 40));
     };
     inputs(l.generator.get());
     for (const auto &fx : l.effects) {
-        k.push_back(quint64(quintptr(fx.get())));
-        k.push_back(qHash(fx->name()));
+        mix(quint64(quintptr(fx.get())));
+        mix(qHash(fx->name()));
         inputs(fx.get());
     }
-    return k;
+    return h;
 }
 
 } // namespace
 
 const std::vector<Parameter *> &Layer::parameters()
 {
-    std::vector<quint64> key = keyOf(*this);
-    if (key == paramKey) return paramList;
-    paramKey = std::move(key);
+    const quint64 key = keyOf(*this);
+    if (key == paramKey && !paramList.empty()) return paramList;
+    paramKey = key;
     paramStore.clear();
     paramList.clear();
     using T = Parameter::Type;

@@ -33,21 +33,22 @@ static void setSwatch(QPushButton *b, const float c[4])
 
 void ParamPanel::setValue(int input, const QString &label, const std::function<void(IsfValue &)> &modify)
 {
-    IsfValue before;
+    IsfInput in;
     {
         Engine::Lock lk(&m_engine->mutex());
         IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
         if (!inst || input >= int(inst->inputs().size())) return;
-        before = inst->inputs()[size_t(input)].value();
+        in = inst->inputs()[size_t(input)];
     }
-    IsfValue after = before;
+    IsfValue after = in.value();
     modify(after);
-    if (after == before) return;
-    m_undo->push(new cmd::SetParam(m_engine, m_layer, m_slot, input, before, after, label));
+    if (after == in.value()) return;
+    cmd::setValues(m_undo, m_engine, m_layerId, cmd::isfValueJson(m_engine->shaderPrefix(m_layerId, m_slot), in, after),
+                   QStringLiteral("Change \"%1\"").arg(label));
 }
 
 ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, int options, QWidget *parent)
-    : QWidget(parent), m_engine(engine), m_undo(undo), m_layer(layer), m_slot(slot)
+    : QWidget(parent), m_engine(engine), m_undo(undo), m_layer(layer), m_layerId(engine->layerId(layer)), m_slot(slot)
 {
     // Copy metadata and values under the lock: widgets are then built without blocking rendering.
     std::vector<IsfInput> inputs;
@@ -89,14 +90,8 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, in
         m_speed->setValue(speed);
         m_speed->setToolTip(QStringLiteral("Speed of the shader's time (1 = normal, 0 = stopped)"));
         connect(m_speed, &SliderField::valueEdited, this, [this](double v) {
-            double before = 1.0;
-            {
-                Engine::Lock lk(&m_engine->mutex());
-                IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
-                if (!inst) return;
-                before = inst->speed;
-            }
-            if (std::abs(before - v) > 1e-9) m_undo->push(new cmd::SetIsfSpeed(m_engine, m_layer, m_slot, before, v));
+            cmd::setValue(m_undo, m_engine, m_layerId, m_engine->shaderPrefix(m_layerId, m_slot) + QStringLiteral("speed"), v,
+                          QStringLiteral("Change Speed"));
         });
         auto *name = new ResetLabel(QStringLiteral("Speed"), [this] {
             m_speed->setValue(1);
@@ -318,8 +313,8 @@ void ParamPanel::resetToDefaults()
 {
     {
         // A single undo step for all parameters
-        std::vector<std::pair<IsfValue, IsfValue>> changes;
-        std::vector<QString> labels;
+        QJsonObject defaults;
+        const QString prefix = m_engine->shaderPrefix(m_layerId, m_slot);
         {
             Engine::Lock lk(&m_engine->mutex());
             IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
@@ -331,16 +326,11 @@ void ParamPanel::resetToDefaults()
                 def.l = in.lDefault;
                 def.p = in.pDefault;
                 std::copy(in.cDefault, in.cDefault + 4, def.c);
-                changes.emplace_back(in.value(), def);
-                labels.push_back(in.label);
+                const QJsonObject o = cmd::isfValueJson(prefix, in, def);
+                for (auto it = o.begin(); it != o.end(); ++it) defaults.insert(it.key(), it.value());
             }
         }
-        m_undo->beginMacro(QStringLiteral("Reset to Defaults"));
-        for (size_t k = 0; k < changes.size(); ++k)
-            if (changes[k].first != changes[k].second)
-                m_undo->push(new cmd::SetParam(m_engine, m_layer, m_slot, int(k), changes[k].first, changes[k].second,
-                                               labels[k]));
-        m_undo->endMacro();
+        cmd::setValues(m_undo, m_engine, m_layerId, defaults, QStringLiteral("Reset to Defaults"));
         emit rebuildRequested();
     }
 }

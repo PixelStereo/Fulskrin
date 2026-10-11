@@ -451,6 +451,36 @@ bool Engine::parameterInfo(quint64 layer, const QString &path, ParamInfo *info) 
     return true;
 }
 
+QJsonValue Engine::parameterValue(quint64 layer, const QString &path) const
+{
+    Lock lk(&m_mutex);
+    const Parameter *p = const_cast<Engine *>(this)->findParameter(layer, path);
+    return p && p->isStored() ? p->json() : QJsonValue(QJsonValue::Undefined);
+}
+
+bool Engine::setParameter(quint64 layer, const QString &path, const QJsonValue &v)
+{
+    Lock lk(&m_mutex);
+    Parameter *p = findParameter(layer, path);
+    if (!p || !p->setJson(v)) return false;
+    if (layer) releaseFromFades(layer, path);
+    return true;
+}
+
+QString Engine::shaderPrefix(quint64 layer, int slot) const
+{
+    if (slot < 0) return QString();
+    Lock lk(&m_mutex);
+    for (const auto &l : m_layers) {
+        if (l->id != layer) continue;
+        QStringList names;
+        for (const auto &x : l->effects) names << x->name();
+        const QStringList segs = osc::uniqueSegments(names);
+        return slot < segs.size() ? QStringLiteral("fx/%1/").arg(segs[slot]) : QString();
+    }
+    return QString();
+}
+
 // ---------------------------------------------------------------------------
 // The animations of a layer's numbers
 

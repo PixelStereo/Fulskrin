@@ -1,7 +1,7 @@
 #pragma once
 // Undo commands (QUndoStack). Each command is applied to the engine under its lock.
-// Layers are identified by index: the stack guarantees that index order is consistent
-// at the time a command is undone or redone.
+// Values and properties are found by layer id; structural commands by index (the stack keeps the order consistent
+// at the time a command is undone or redone).
 
 #include "Engine.h"
 
@@ -13,65 +13,64 @@
 
 namespace cmd {
 
-enum Id { ParamId = 1, PropId = 2, NudgeId = 3 };
+enum Id { ValuesId = 1, PropId = 2, NudgeId = 3 };
 
 // A layer's ISF instance: slot -1 = generator, otherwise the effect index. Engine lock required.
 IsfInstance *resolveIsf(Engine *e, int layer, int slot);
 
-// ISF shader parameter (merges continuous moves of the same slider)
-class SetParam : public QUndoCommand
+// One value (Parameter.h) of a layer (0: the composition), by its address
+struct ValueChange {
+    quint64 layer = 0;
+    QString path;
+    QJsonValue before, after;
+};
+
+// Values edited together (a color's components, a ROI, Reset to Defaults: one step), through Engine::setParameter.
+// Every value the interface edits goes this way. By layer id: the list may change in between. The same values
+// edited again soon after (a slider dragged, the arrows of a number) merge into the step.
+class SetValues : public QUndoCommand
 {
 public:
-    SetParam(Engine *e, int layer, int slot, int input, const IsfValue &before, const IsfValue &after, const QString &label);
-    void undo() override;
-    void redo() override;
-    int id() const override { return ParamId; }
+    SetValues(Engine *e, std::vector<ValueChange> changes, const QString &text);
+    void undo() override { apply(false); }
+    void redo() override { apply(true); }
+    int id() const override { return ValuesId; }
     bool mergeWith(const QUndoCommand *other) override;
 
 private:
-    void apply(const IsfValue &v);
+    void apply(bool after);
     Engine *m_e;
-    int m_layer, m_slot, m_input;
-    IsfValue m_before, m_after;
+    std::vector<ValueChange> m_changes;
     qint64 m_time;
 };
 
-// Speed of the time of an ISF instance (generator or effect; merges continuous moves)
-class SetIsfSpeed : public QUndoCommand
+// Pushes a change of values of one layer (address → value), each read as it is now; nothing when none changes.
+// False: nothing pushed
+bool setValues(QUndoStack *undo, Engine *e, quint64 layer, const QJsonObject &after, const QString &text);
+inline bool setValue(QUndoStack *undo, Engine *e, quint64 layer, const QString &path, const QJsonValue &after,
+                     const QString &text)
 {
-public:
-    SetIsfSpeed(Engine *e, int layer, int slot, double before, double after);
-    void undo() override { apply(m_before); }
-    void redo() override { apply(m_after); }
-    int id() const override { return 9301; }
-    bool mergeWith(const QUndoCommand *other) override;
+    return setValues(undo, e, layer, QJsonObject{{path, after}}, text);
+}
+// The addresses of a shader input's value (one; x y; r g b a) and its value there
+QJsonObject isfValueJson(const QString &prefix, const IsfInput &in, const IsfValue &v);
 
-private:
-    void apply(double v);
-    Engine *m_e;
-    int m_layer, m_slot;
-    double m_before, m_after;
-    qint64 m_time;
-};
-
-// Simple layer property
+// What a layer is, rather than a value of it: its name, switch, lock, transition, the layer its color mask comes from
 class SetLayerProp : public QUndoCommand
 {
 public:
-    enum Prop { Name, Enabled, Opacity, Blend, Speed, Mode, Volume, Muted, InPoint, OutPoint,
-                ColorOn, TempOn, TintOn, AddOn, RemoveOn, Locked, EffectsEnabled,
-                ColorAdd, ColorRemove, Roi, Temp, Tint, Transition, ColorMask, ColorMaskInvert };
-    SetLayerProp(Engine *e, int layer, Prop prop, const QVariant &before, const QVariant &after);
+    enum Prop { Name, Enabled, Locked, Transition, ColorMask };
+    SetLayerProp(Engine *e, quint64 layer, Prop prop, const QVariant &before, const QVariant &after);
     void undo() override { apply(m_before); }
     void redo() override { apply(m_after); }
     int id() const override { return PropId; }
     bool mergeWith(const QUndoCommand *other) override;
-    static QVariant read(Engine *e, int layer, Prop prop);
+    static QVariant read(Engine *e, quint64 layer, Prop prop);
 
 private:
     void apply(const QVariant &v);
     Engine *m_e;
-    int m_layer;
+    quint64 m_layer;
     Prop m_prop;
     QVariant m_before, m_after;
     qint64 m_time;
