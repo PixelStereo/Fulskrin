@@ -1,12 +1,14 @@
 #include "TimecodeOutputs.h"
 
-#include "RtMidi.h"
+#include "Midi.h"
+#include "TimecodeIo.h"
 
 #include <QElapsedTimer>
 #include <QJsonArray>
-#include <QRegularExpression>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <set>
 #ifdef _WIN32
 #include <windows.h>
 #include <timeapi.h>
@@ -52,20 +54,55 @@ TimecodeOutput TimecodeOutput::fromJson(const QJsonObject &o)
     return t;
 }
 
-namespace tcroute {
-
-QString midi(quint64 midiOutput) { return QStringLiteral("midi:") + QString::number(midiOutput); }
-
-std::optional<quint64> midiId(const QString &route)
+QJsonObject AudioChannelOutput::toJson() const
 {
-    if (!route.startsWith(QLatin1String("midi:"))) return std::nullopt;
-    bool ok = false;
-    const quint64 id = route.mid(5).toULongLong(&ok);
-    if (!ok || !id) return std::nullopt;
-    return id;
+    QJsonObject o;
+    o["id"] = QString::number(id);
+    o["name"] = name;
+    if (!device.isEmpty()) o["device"] = device;
+    o["channel"] = channel + 1; // as shown
+    return o;
 }
 
-QString protocol(const QString &route) { return midiId(route) ? QStringLiteral("MTC") : QString(); }
+AudioChannelOutput AudioChannelOutput::fromJson(const QJsonObject &o)
+{
+    AudioChannelOutput a;
+    a.id = o.value("id").toString().toULongLong();
+    a.name = o.value("name").toString();
+    a.device = o.value("device").toString();
+    a.channel = std::clamp(o.value("channel").toInt(1) - 1, 0, 63);
+    return a;
+}
+
+namespace tcroute {
+
+static const char *const kKinds[] = {"", "midi:", "audio:", "viewport:"};
+
+QString make(Kind k, quint64 id) { return QLatin1String(kKinds[int(k)]) + QString::number(id); }
+
+Kind kind(const QString &route)
+{
+    for (int k = 1; k < 4; ++k)
+        if (route.startsWith(QLatin1String(kKinds[k]))) return id(route) ? Kind(k) : Kind::None;
+    return Kind::None;
+}
+
+quint64 id(const QString &route)
+{
+    const int colon = route.indexOf(QLatin1Char(':'));
+    return colon < 0 ? 0 : route.mid(colon + 1).toULongLong();
+}
+
+QString protocol(Kind k)
+{
+    switch (k) {
+    case Kind::Midi: return QStringLiteral("MTC");
+    case Kind::Audio: return QStringLiteral("LTC");
+    case Kind::Viewport: return QStringLiteral("ATC");
+    case Kind::None: break;
+    }
+    return QString();
+}
 
 } // namespace tcroute
 
@@ -109,8 +146,7 @@ void MtcSender::step(const std::optional<TcReading> &r, std::vector<Message> &ou
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
-static constexpr const char *kClientName = "Fulskrin";
-static constexpr qint64 kRetryMs = 2000; // a port missing or refused: tried again (plugged in later)
+static constexpr qint64 kRetryMs = 2000; // a port or a device missing or refused: tried again (plugged in later)
 
 TimecodeRouter::TimecodeRouter() { m_thread = std::thread([this] { run(); }); }
 
@@ -124,12 +160,13 @@ TimecodeRouter::~TimecodeRouter()
     m_thread.join();
 }
 
-void TimecodeRouter::configure(std::vector<Stream> streams, std::vector<MidiOutput> midi)
+void TimecodeRouter::configure(std::vector<Stream> streams, std::vector<MidiOutput> midi, std::vector<AudioChannelOutput> audio)
 {
     {
         std::lock_guard<std::mutex> lk(m_mutex);
         m_streams = std::move(streams);
         m_midi = std::move(midi);
+        m_audio = std::move(audio);
         m_dirty = true;
     }
     m_wake.notify_all();
@@ -138,8 +175,15 @@ void TimecodeRouter::configure(std::vector<Stream> streams, std::vector<MidiOutp
 QString TimecodeRouter::midiStatus(quint64 midiOutput) const
 {
     std::lock_guard<std::mutex> lk(m_mutex);
-    auto it = m_status.find(midiOutput);
-    return it == m_status.end() ? QString() : it->second;
+    auto it = m_midiStatus.find(midiOutput);
+    return it == m_midiStatus.end() ? QString() : it->second;
+}
+
+QString TimecodeRouter::audioStatus(quint64 audioOutput) const
+{
+    std::lock_guard<std::mutex> lk(m_mutex);
+    auto it = m_audioStatus.find(audioOutput);
+    return it == m_audioStatus.end() ? QString() : it->second;
 }
 
 void TimecodeRouter::setTestSink(Sink sink)
@@ -152,41 +196,6 @@ void TimecodeRouter::setTestSink(Sink sink)
     m_wake.notify_all();
 }
 
-// ALSA names its ports "Client:Port 20:0": the numbers change from a boot to the next, the names do not
-static QString baseName(const QString &port)
-{
-    static const QRegularExpression numbers(QStringLiteral("\\s+\\d+:\\d+$"));
-    return QString(port).remove(numbers);
-}
-
-static void quiet(RtMidiError::Type, const std::string &, void *) {} // errors are read from the port's state
-
-QStringList TimecodeRouter::midiPorts()
-{
-    QStringList ports;
-    try {
-        RtMidiOut out(RtMidi::UNSPECIFIED, kClientName);
-        out.setErrorCallback(&quiet);
-        const unsigned n = out.getPortCount();
-        for (unsigned i = 0; i < n; ++i) {
-            const QString name = QString::fromStdString(out.getPortName(i));
-            if (!name.isEmpty() && !name.startsWith(QLatin1String(kClientName) + QLatin1Char(':'))) ports << name; // not ours
-        }
-    } catch (const RtMidiError &) {
-        // no MIDI system (Linux without ALSA's sequencer): no ports
-    }
-    return ports;
-}
-
-bool TimecodeRouter::virtualPorts()
-{
-#if defined(__APPLE__) || defined(__linux__)
-    return true;
-#else
-    return false;
-#endif
-}
-
 QString TimecodeRouter::portKey(const MidiOutput &m)
 {
     if (m.port.isEmpty()) return QString();
@@ -194,47 +203,154 @@ QString TimecodeRouter::portKey(const MidiOutput &m)
     return QStringLiteral("port:") + m.port;
 }
 
-TimecodeRouter::Port *TimecodeRouter::openPort(const MidiOutput &m, qint64 nowMs)
+void TimecodeRouter::reconfigure(std::vector<Stream> &streams, const std::vector<MidiOutput> &midi,
+                                 const std::vector<AudioChannelOutput> &audio, bool testSink)
 {
-    const QString key = portKey(m);
-    if (key.isEmpty()) return nullptr;
-    Port &p = m_ports[key];
-    if (p.out && p.out->isPortOpen()) return &p;
-    if (p.triedAt >= 0 && nowMs - p.triedAt < kRetryMs) return nullptr;
-    p.triedAt = nowMs;
-    p.out.reset();
-    try {
-        auto out = std::make_unique<RtMidiOut>(RtMidi::UNSPECIFIED, kClientName);
-        out->setErrorCallback(&quiet);
-        if (m.port == QLatin1String(MidiOutput::kVirtualPort)) {
-            if (!virtualPorts()) {
-                p.error = QStringLiteral("No virtual ports on this system");
-                return nullptr;
-            }
-            out->openVirtualPort(m.name.toStdString());
-        } else {
-            const unsigned n = out->getPortCount();
-            int found = -1;
-            for (unsigned i = 0; i < n && found < 0; ++i)
-                if (QString::fromStdString(out->getPortName(i)) == m.port) found = int(i);
-            for (unsigned i = 0; i < n && found < 0; ++i)
-                if (baseName(QString::fromStdString(out->getPortName(i))) == baseName(m.port)) found = int(i);
-            if (found < 0) {
-                p.error = QStringLiteral("Port not found");
-                return nullptr;
-            }
-            out->openPort(unsigned(found), m.name.toStdString());
+    m_midiNow.clear();
+    for (const MidiOutput &m : midi) m_midiNow[m.id] = m;
+    m_audioNow.clear();
+    for (const AudioChannelOutput &a : audio) m_audioNow[a.id] = a;
+
+    // MTC: the senders kept for the destinations that stay (no full frame sent again), made for the new ones
+    std::vector<Running> next;
+    for (const Stream &s : streams) {
+        Running r;
+        const Running *before = nullptr;
+        for (const Running &o : m_running)
+            if (o.stream.output == s.output) before = &o;
+        for (quint64 id : s.midi) {
+            if (!m_midiNow.count(id)) continue;
+            Destination d;
+            d.midi = id;
+            if (before)
+                for (const Destination &o : before->dest)
+                    if (o.midi == id) d = o;
+            r.dest.push_back(d);
         }
-        if (!out->isPortOpen()) {
-            p.error = QStringLiteral("Port refused");
-            return nullptr;
+        r.stream = s;
+        if (r.stream.clock && !r.dest.empty()) next.push_back(std::move(r));
+    }
+    m_running = std::move(next);
+    // MIDI ports no MIDI output names any more: closed
+    for (auto it = m_ports.begin(); it != m_ports.end();) {
+        bool used = false;
+        for (const auto &[id, m] : m_midiNow) used = used || (!testSink && portKey(m) == it->first);
+        it = used ? std::next(it) : m_ports.erase(it);
+    }
+
+    // LTC: the lanes of each device (one per channel patched to a timecode), generators kept for those that stay
+    std::map<QString, std::vector<Lane>> lanes;
+    std::set<QString> devices;
+    for (const auto &[id, a] : m_audioNow)
+        if (!a.device.isEmpty()) devices.insert(a.device);
+    for (const Stream &s : streams) {
+        if (!s.clock) continue;
+        for (quint64 id : s.audio) {
+            auto a = m_audioNow.find(id);
+            if (a == m_audioNow.end() || a->second.device.isEmpty()) continue;
+            Lane l;
+            l.output = s.output;
+            l.audio = id;
+            l.channel = a->second.channel;
+            l.clock = s.clock;
+            auto dev = m_devices.find(a->second.device);
+            if (dev != m_devices.end() && dev->second.sink) {
+                std::lock_guard<std::mutex> lk(dev->second.sink->mutex);
+                for (const Lane &o : dev->second.sink->lanes)
+                    if (o.output == l.output && o.audio == l.audio && o.channel == l.channel) l.gen = o.gen;
+            }
+            if (!l.gen) l.gen = std::make_shared<ltc::Generator>(tcaudio::kRate);
+            lanes[a->second.device].push_back(std::move(l));
         }
-        p.out = std::move(out);
-        p.error.clear();
-        return &p;
-    } catch (const RtMidiError &e) {
-        p.error = QString::fromStdString(e.getMessage());
-        return nullptr;
+    }
+    for (auto it = m_devices.begin(); it != m_devices.end();)
+        it = devices.count(it->first) ? std::next(it) : m_devices.erase(it); // closed: its callback has returned
+    for (const QString &name : devices) {
+        AudioDev &d = m_devices[name];
+        if (!d.sink) {
+            d.sink = std::make_shared<AudioSink>();
+            d.sink->mono.resize(8192);
+        }
+        std::lock_guard<std::mutex> lk(d.sink->mutex);
+        d.sink->lanes = lanes[name];
+    }
+}
+
+void TimecodeRouter::openPorts(qint64 now, bool testSink, std::map<quint64, QString> &status)
+{
+    for (const auto &[id, m] : m_midiNow) {
+        if (testSink) {
+            status[id] = QStringLiteral("Test");
+            continue;
+        }
+        const QString key = portKey(m);
+        if (key.isEmpty()) {
+            status[id] = QStringLiteral("No port");
+            continue;
+        }
+        Port &p = m_ports[key];
+        if (!p.out && (p.triedAt < 0 || now - p.triedAt >= kRetryMs)) {
+            p.triedAt = now;
+            auto out = std::make_unique<midi::Output>();
+            QString err;
+            const bool ok = m.port == QLatin1String(MidiOutput::kVirtualPort) ? out->openVirtual(m.name, &err) : out->open(m.port, &err);
+            if (ok) p.out = std::move(out);
+            p.error = ok ? QString() : err;
+        }
+        if (!p.out) {
+            status[id] = p.error;
+            continue;
+        }
+        int n = 0;
+        for (const Running &r : m_running)
+            for (const Destination &d : r.dest) n += d.midi == id;
+        status[id] = n ? QStringLiteral("Sending MTC") : QStringLiteral("Open");
+    }
+}
+
+void TimecodeRouter::openAudio(qint64 now, std::map<quint64, QString> &status)
+{
+    for (auto &[name, d] : m_devices) {
+        if (d.dev || (d.triedAt >= 0 && now - d.triedAt < kRetryMs)) continue;
+        d.triedAt = now;
+        auto dev = std::make_unique<tcaudio::Device>();
+        std::shared_ptr<AudioSink> sink = d.sink;
+        QString err;
+        const QString device = name == QLatin1String(AudioChannelOutput::kDefaultDevice) ? QString() : name;
+        const bool ok = dev->openPlayback(device, [sink](float *out, int frames, int channels) {
+            std::lock_guard<std::mutex> lk(sink->mutex); // held by the router only to change the lanes
+            if (sink->mono.size() < size_t(frames)) return; // a device asking for more at once than expected: silence
+            for (Lane &l : sink->lanes) {
+                if (l.channel >= channels) continue;
+                TimecodeClock *clock = l.clock.get();
+                l.gen->render(sink->mono.data(), frames, 1, [clock] { return clock->reading(); });
+                for (int i = 0; i < frames; ++i) out[size_t(i) * size_t(channels) + size_t(l.channel)] = sink->mono[size_t(i)];
+            }
+        }, &err);
+        if (ok) d.dev = std::move(dev);
+        d.error = ok ? QString() : err;
+    }
+    for (const auto &[id, a] : m_audioNow) {
+        if (a.device.isEmpty()) {
+            status[id] = QStringLiteral("No device");
+            continue;
+        }
+        const AudioDev &d = m_devices[a.device];
+        if (!d.dev) {
+            status[id] = d.error;
+            continue;
+        }
+        const int channels = d.dev->channels();
+        if (a.channel >= channels) {
+            status[id] = QStringLiteral("Channel %1: %2 has %3").arg(a.channel + 1).arg(d.dev->name()).arg(channels);
+            continue;
+        }
+        bool sending = false;
+        {
+            std::lock_guard<std::mutex> lk(d.sink->mutex);
+            for (const Lane &l : d.sink->lanes) sending = sending || l.audio == id;
+        }
+        status[id] = sending ? QStringLiteral("Sending LTC") : QStringLiteral("Open");
     }
 }
 
@@ -247,76 +363,33 @@ void TimecodeRouter::run()
     clock.start();
     Sink sink;
     std::vector<MtcSender::Message> msgs;
-    std::map<quint64, QString> status;
+    std::map<quint64, QString> midiStatus, audioStatus;
     for (;;) {
         std::vector<Stream> streams;
         std::vector<MidiOutput> midi;
-        bool reconfigure = false;
+        std::vector<AudioChannelOutput> audio;
+        bool changed = false;
         {
             std::unique_lock<std::mutex> lk(m_mutex);
             const auto wakeUp = [this] { return m_stop || m_dirty; };
-            // Sending: each millisecond. Otherwise: now and then, to open a port plugged in since
+            // MTC: each millisecond. Otherwise now and then, to open a port or a device plugged in since
             m_wake.wait_for(lk, m_running.empty() ? std::chrono::milliseconds(500) : std::chrono::milliseconds(1), wakeUp);
             if (m_stop) break;
             if (m_dirty) {
                 streams = m_streams;
                 midi = m_midi;
+                audio = m_audio;
                 m_dirty = false;
-                reconfigure = true;
+                changed = true;
             }
             sink = m_sink;
         }
         const qint64 now = clock.elapsed();
-        if (reconfigure) {
-            m_midiNow.clear();
-            for (const MidiOutput &m : midi) m_midiNow[m.id] = m;
-            // Senders kept for the destinations that stay (no full frame sent again), made for the new ones
-            std::vector<Running> next;
-            for (Stream &s : streams) {
-                Running r;
-                const Running *before = nullptr;
-                for (const Running &o : m_running)
-                    if (o.stream.output == s.output) before = &o;
-                for (quint64 id : s.midi) {
-                    if (!m_midiNow.count(id)) continue;
-                    Destination d;
-                    d.midi = id;
-                    if (before)
-                        for (const Destination &o : before->dest)
-                            if (o.midi == id) d = o;
-                    r.dest.push_back(d);
-                }
-                r.stream = std::move(s);
-                if (r.stream.clock && !r.dest.empty()) next.push_back(std::move(r));
-            }
-            m_running = std::move(next);
-            // Ports no MIDI output names any more: closed
-            for (auto it = m_ports.begin(); it != m_ports.end();) {
-                bool used = !sink;
-                if (used) {
-                    used = false;
-                    for (const auto &[id, m] : m_midiNow) used = used || portKey(m) == it->first;
-                }
-                it = used ? std::next(it) : m_ports.erase(it);
-            }
-        }
+        if (changed) reconfigure(streams, midi, audio, bool(sink));
 
-        // The ports of the patch (opened even with nothing to send: the patch shows whether it works)
-        std::map<quint64, Port *> open;
-        std::map<quint64, QString> st;
-        for (const auto &[id, m] : m_midiNow) {
-            if (sink) {
-                st[id] = QStringLiteral("Test");
-                continue;
-            }
-            if (m.port.isEmpty()) {
-                st[id] = QStringLiteral("No port");
-                continue;
-            }
-            Port *p = openPort(m, now);
-            if (p) open[id] = p;
-            else st[id] = m_ports[portKey(m)].error;
-        }
+        std::map<quint64, QString> ms, as;
+        openPorts(now, bool(sink), ms);
+        openAudio(now, as);
 
         for (Running &r : m_running) {
             const std::optional<TcReading> reading = r.stream.clock->reading();
@@ -327,24 +400,23 @@ void TimecodeRouter::run()
                     for (const auto &msg : msgs) sink(d.midi, msg);
                     continue;
                 }
-                auto it = open.find(d.midi);
-                if (it == open.end()) continue;
-                for (const auto &msg : msgs) it->second->out->sendMessage(msg.data(), msg.size());
+                auto m = m_midiNow.find(d.midi);
+                if (m == m_midiNow.end()) continue;
+                auto p = m_ports.find(portKey(m->second));
+                if (p == m_ports.end() || !p->second.out) continue;
+                for (const auto &msg : msgs) p->second.out->send(msg);
             }
         }
-        for (const auto &[id, p] : open) {
-            int n = 0;
-            for (const Running &r : m_running)
-                for (const Destination &d : r.dest) n += d.midi == id;
-            st[id] = n ? QStringLiteral("Sending MTC") : QStringLiteral("Open");
-        }
-        if (st != status) {
-            status = st;
+        if (ms != midiStatus || as != audioStatus) {
+            midiStatus = ms;
+            audioStatus = as;
             std::lock_guard<std::mutex> lk(m_mutex);
-            m_status = st;
+            m_midiStatus = ms;
+            m_audioStatus = as;
         }
     }
     m_ports.clear(); // closed on this thread, as they were opened
+    m_devices.clear();
     m_running.clear();
 #ifdef _WIN32
     timeEndPeriod(1);

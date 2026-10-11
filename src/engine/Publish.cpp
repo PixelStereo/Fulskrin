@@ -2,6 +2,7 @@
 #include "NetVideo.h"
 
 #include <QCoreApplication>
+#include <cmath>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -364,7 +365,8 @@ public:
         v.frame_rate_D = f.fpsD;
         v.picture_aspect_ratio = f.height ? float(f.width) / float(f.height) : 0.f;
         v.frame_format_type = ndi::kProgressive;
-        v.timecode = INT64_MAX; // NDIlib_send_timecode_synthesize
+        // ATC: the picture's timecode, in 100 ns from midnight; else NDI makes one (NDIlib_send_timecode_synthesize)
+        v.timecode = f.timecode ? int64_t(std::llround(f.timecode->toSeconds() * 1e7)) : INT64_MAX;
         v.p_data = const_cast<uint8_t *>(f.bgra.data());
         v.line_stride_in_bytes = f.stride;
         // The buffer stays valid until the next send (handled by CpuSendThread)

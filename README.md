@@ -11,6 +11,11 @@ macOS). macOS, Windows, Linux.
 - **Snapshots, presets and sequences**: every value fades to the snapshot's own way (time and easing per value or group); snapshots in nested groups, reordered by dragging; presets hold only the values put in them; cue lists with waits and auto-follows.
 - **Animations**: any number animated by a waveform or Bézier keys, per layer or in timelines.
 - **Outputs**: fullscreen windows, Syphon, Spout, NDI, OMT, Blackmagic DeckLink / UltraStudio (SDI, HDMI).
+- **Timecode**: a generator layer per clock (time of day, a free run with its own transport — play, pause, seek, in / out,
+  loop, ping-pong — held by snapshots and presets, or LTC / MTC / ATC received). Each layer drives one of the
+  composition's named timecode outputs; the patch (Composition tab) sends an output to any number of destinations, and the
+  destination gives the protocol: a named MIDI output (MTC, on a port or a virtual port), a named audio channel (LTC, a
+  channel of any output device), a viewport (ATC in its NDI frames and DeckLink SDI: RP188, VITC in SD).
 - **Control**: OSC and OSCQuery (UDP 1234, TCP 5678, Zeroconf). One address per value everywhere: OSC, project file, snapshots, timelines (`/layer/<name>/position/x`, `…/fx/<fx>/param/<input>`, `…/<param>/anim/play`).
 
 ## Build
@@ -50,7 +55,7 @@ Snappy decompression is as fast as Google's or faster (same output), and it has 
   place with no copy; D3D11VA / VAAPI elsewhere, copied back then uploaded); other codecs on the CPU. HAP is
   decompressed on the CPU and sampled compressed, except Hap R and Hap HDR on macOS (no BPTC in its OpenGL: decoded
   on the CPU, slow in 4K; Hap Q is the fast one there). One stereo audio output.
-- No MIDI/DMX; ISF audio inputs are black. Cameras need Qt Multimedia (without it, none are listed).
+- MIDI for the timecode only (MTC), no DMX; ISF audio inputs are black. Cameras need Qt Multimedia (without it, none are listed).
 - NDI and OMT send a GPU readback (one frame of latency). DeckLink plays the same readback on the card's clock,
   three frames ahead (a new picture is shown at most four frames later; a missing one repeats the last). Its ports
   show up when Blackmagic Desktop Video is installed. A picture of another size than the mode is scaled (nearest):

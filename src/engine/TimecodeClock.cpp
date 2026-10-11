@@ -242,8 +242,6 @@ void TimecodeClock::setInputStatus(const QString &s)
     m_inputStatus = s;
 }
 
-Timecode TcReading::timecode() const { return Timecode::fromFrames(int64_t(std::floor(frames + 1e-6)), rate); }
-
 std::optional<TcReading> TimecodeClock::reading() const
 {
     std::lock_guard<std::mutex> lk(m_mutex);

@@ -42,15 +42,6 @@ enum class TcPlayMode { OneShot = 0, Loop, PingPong, Stop };
 QString tcPlayModeKey(TcPlayMode m);                   // "oneshot", "loop", "pingpong", "stop"
 TcPlayMode tcPlayModeFromKey(const QString &k);
 
-// The clock at an instant, as the outputs send it: a frame count with its fraction (offset included)
-struct TcReading {
-    double frames = 0;    // since 00:00:00:00, real frames (drop frame: the numbers skipped are not counted)
-    TcRate rate = TcRate::Fps25;
-    bool running = false; // advancing (else held: a pause, a source that stopped coming)
-    bool forward = true;  // a ping-pong coming back runs backwards
-    Timecode timecode() const;
-};
-
 class TimecodeClock
 {
 public:

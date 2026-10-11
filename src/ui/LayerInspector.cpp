@@ -1,4 +1,8 @@
 #include "LayerInspector.h"
+#include "AudioOutput.h"
+#include "DeckLink.h"
+#include "LiveInput.h"
+#include "Midi.h"
 #include "Commands.h"
 #include "Engine.h"
 #include "LayerTable.h"
@@ -19,6 +23,7 @@
 #include <QFontDatabase>
 #include <QMimeData>
 #include <QPlainTextEdit>
+#include <QStandardItemModel>
 #include <QTabWidget>
 #include <QUrl>
 #include <QDoubleSpinBox>
@@ -425,8 +430,16 @@ void LayerInspector::editSource(const QString &text, const std::function<void()>
 
 // --- Building ----------------------------------------------------------------
 
+static QString layerNameOf(Engine *e, int i)
+{
+    Engine::Lock lk(&e->mutex());
+    const Layer *l = e->layer(i);
+    return l ? l->name : QString();
+}
+
 void LayerInspector::rebuild()
 {
+    m_tcTransport.reset();
     if (m_content) {
         m_content->hide();
         m_content->deleteLater();
@@ -955,18 +968,14 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
             auto *clock = new QComboBox;
             clock->addItems({QStringLiteral("Time of day"), QStringLiteral("Free run")});
             clock->setCurrentIndex(int(ts.internal));
-            clock->setToolTip(QStringLiteral("Time of day: the computer's clock · Free run: counts from its start (Restart)"));
-            auto *restart = new QPushButton(QStringLiteral("Restart"));
-            restart->setToolTip(QStringLiteral("The free run from zero again (plus the offset)"));
-            restart->setVisible(ts.internal == TimecodeSettings::Internal::FreeRun);
+            clock->setToolTip(QStringLiteral("Time of day: the computer's clock · Free run: a transport of its own (played, "
+                                             "paused, sought, in / out points), held by snapshots and presets"));
             clockRow->addWidget(clock, 1);
-            clockRow->addWidget(restart);
             auto *clockLabel = new QLabel(QStringLiteral("Clock"));
             tf->addRow(clockLabel, clockRow);
             const bool internal = ts.source == TimecodeSettings::Source::Internal;
             clockLabel->setVisible(internal);
             clock->setVisible(internal);
-            restart->setVisible(internal && ts.internal == TimecodeSettings::Internal::FreeRun);
             auto *rate = new QComboBox;
             for (int k = 0; k < 4; ++k) rate->addItem(Timecode::rateName(TcRate(k)));
             rate->setCurrentIndex(int(ts.rate));
@@ -979,25 +988,235 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
             }
             offset->setToolTip(QStringLiteral("Added to what is shown and sent: HH:MM:SS:FF, a minus before it to take away"));
             tf->addRow(QStringLiteral("Offset"), offset);
+
+            // Where an external timecode comes from: the devices of its kind, the one chosen kept when it is not here
+            using Src = TimecodeSettings::Source;
+            auto fillDevices = [](QComboBox *box, const QList<QPair<QString, QString>> &items, const QString &current,
+                                  const QString &first) {
+                box->addItem(first, QString());
+                for (const auto &[label, value] : items) box->addItem(label, value);
+                int at = box->findData(current);
+                if (at < 0 && !current.isEmpty()) {
+                    box->addItem(QStringLiteral("%1 (not found)").arg(current), current);
+                    at = box->count() - 1;
+                }
+                box->setCurrentIndex(std::max(0, at));
+            };
+            auto names = [](const QStringList &l) {
+                QList<QPair<QString, QString>> out;
+                for (const QString &n : l) out.append({n, n});
+                return out;
+            };
+            QComboBox *input = nullptr;
+            if (ts.source != Src::Internal) {
+                input = new QComboBox;
+                input->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+                input->setMinimumContentsLength(10);
+                QList<QPair<QString, QString>> items;
+                QString first = QStringLiteral("First one");
+                if (ts.source == Src::Ltc) {
+                    items = names(AudioOutput::captureDeviceNames());
+                    first = QStringLiteral("Default input");
+                } else if (ts.source == Src::Mtc) {
+                    items = names(midi::inputNames());
+                } else if (ts.source == Src::AtcNdi) {
+                    for (const LiveInputInfo &li : listLiveInputs())
+                        if (li.kind == QLatin1String("NDI")) items.append({li.name, li.uri.section(':', 2, -1)});
+                    first = QStringLiteral("(choose a source)");
+                } else {
+                    for (const decklink::Port &p : decklink::inputPorts()) items.append({p.name, p.id});
+                }
+                fillDevices(input, items, ts.input, first);
+                auto *row = new QHBoxLayout;
+                row->addWidget(input, 1);
+                auto *rescan = new QPushButton(QStringLiteral("↻"));
+                rescan->setFixedWidth(28);
+                rescan->setToolTip(QStringLiteral("Look for the devices again (an NDI source takes a moment to be found)"));
+                row->addWidget(rescan);
+                tf->addRow(QStringLiteral("Input"), row);
+                input->setEnabled(!m_locked);
+                connect(rescan, &QPushButton::clicked, this, [this] {
+                    QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+                });
+                connect(input, qOverload<int>(&QComboBox::activated), this, [apply, input](int) {
+                    const QString v = input->currentData().toString();
+                    apply(QStringLiteral("Timecode Input"), [v](TimecodeSettings &t) { t.input = v; });
+                });
+            }
+            // Sent: to one of the composition's timecode outputs, whose patch (Composition tab) says where and so how
+            auto *output = new QComboBox;
+            output->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            output->setMinimumContentsLength(10);
+            output->setToolTip(QStringLiteral("The timecode output this layer drives (one layer per output). Where it goes, "
+                                              "and so in which protocol, is patched in the Composition tab: a MIDI output "
+                                              "(MTC), an audio channel (LTC), a viewport (ATC in its NDI and DeckLink outputs)"));
+            output->addItem(QStringLiteral("None"), QVariant::fromValue<quint64>(0));
+            for (const TimecodeOutput &o : m_engine->timecodeOutputs()) {
+                const int user = m_engine->timecodeOutputUser(o.id);
+                const bool other = user >= 0 && user != m_layer;
+                output->addItem(other ? QStringLiteral("%1 (from %2)").arg(o.name, layerNameOf(m_engine, user)) : o.name,
+                                QVariant::fromValue<quint64>(o.id));
+                if (other) // taken by another layer: not chosen here
+                    if (auto *model = qobject_cast<QStandardItemModel *>(output->model()))
+                        model->item(output->count() - 1)->setEnabled(false);
+            }
+            output->addItem(QStringLiteral("New Output…"), QVariant::fromValue<quint64>(~quint64(0)));
+            output->setCurrentIndex(std::max(0, output->findData(QVariant::fromValue<quint64>(ts.output))));
+            output->setEnabled(!m_locked);
+            tf->addRow(QStringLiteral("Output"), output);
+            connect(output, qOverload<int>(&QComboBox::activated), this, [this, apply, output](int) {
+                quint64 id = output->currentData().value<quint64>();
+                if (id == ~quint64(0)) id = m_engine->addTimecodeOutput(layerNameOf(m_engine, m_layer));
+                apply(QStringLiteral("Timecode Output"), [id](TimecodeSettings &t) { t.output = id; });
+                QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+            });
+
+            // The free run's transport: its values (tc/*), held by snapshots and presets, undone as any value. Times are
+            // shown as the timecode they give (offset included)
+            if (internal && ts.internal == TimecodeSettings::Internal::FreeRun) {
+                auto tcButton = [](const QIcon &icon, const QString &tip, bool checkable) {
+                    auto *b = new QToolButton;
+                    b->setIcon(icon);
+                    b->setIconSize(QSize(18, 18));
+                    b->setToolTip(tip);
+                    b->setCheckable(checkable);
+                    b->setAutoRaise(true);
+                    b->setProperty("allowLocked", true); // the transport stays available on a locked layer, as a media's
+                    b->setStyleSheet(QStringLiteral("QToolButton { padding:3px 7px; border-radius:3px; }"
+                                                    "QToolButton:checked { background:%1; }"
+                                                    "QToolButton:hover { background:#3a3a3f; }")
+                                         .arg(theme::css()));
+                    return b;
+                };
+                auto *playRow = new QHBoxLayout;
+                playRow->setSpacing(2);
+                auto *pause = tcButton(transportIcon(TransportIcon::Pause), QStringLiteral("Pause"), true);
+                auto *play = tcButton(transportIcon(TransportIcon::PlayForward), QStringLiteral("Play"), true);
+                auto *rewind = tcButton(transportIcon(TransportIcon::ToStart), QStringLiteral("Back to the in point"), false);
+                auto *group = new QButtonGroup(box);
+                group->setExclusive(true);
+                group->addButton(pause, 0);
+                group->addButton(play, 1);
+                playRow->addWidget(pause);
+                playRow->addWidget(play);
+                playRow->addWidget(rewind);
+                playRow->addSpacing(8);
+                auto *position = new QLineEdit;
+                position->setToolTip(QStringLiteral("Where it is: type a timecode to go there"));
+                position->setProperty("allowLocked", true);
+                playRow->addWidget(position, 1);
+                tf->addRow(QStringLiteral("Transport"), playRow);
+
+                auto *modeRow = new QHBoxLayout;
+                modeRow->setSpacing(2);
+                auto *modes = new QButtonGroup(box);
+                modes->setExclusive(true);
+                const struct { TcPlayMode mode; int icon; const char *tip; } kModes[] = {
+                    {TcPlayMode::Loop, int(PlayMode::Loop), "Loop: from the in point again at the out point"},
+                    {TcPlayMode::OneShot, int(PlayMode::OneShot), "One-shot: holds at the out point"},
+                    {TcPlayMode::PingPong, int(PlayMode::PingPong), "Ping-pong: forwards, then backwards, and so on"},
+                    {TcPlayMode::Stop, int(PlayMode::Stop), "Stop: plays once, then nothing is shown or sent"},
+                };
+                for (const auto &m : kModes) {
+                    auto *b = tcButton(playModeIcon(m.icon), QString::fromUtf8(m.tip), true);
+                    b->setProperty("allowLocked", false);
+                    b->setEnabled(!m_locked);
+                    modes->addButton(b, int(m.mode));
+                    modeRow->addWidget(b);
+                }
+                modeRow->addSpacing(8);
+                auto *in = new QLineEdit, *out = new QLineEdit;
+                in->setToolTip(QStringLiteral("In point: where it starts (and loops back to)"));
+                out->setToolTip(QStringLiteral("Out point: where it ends, loops or turns back (empty: the end of the day)"));
+                out->setPlaceholderText(QStringLiteral("End"));
+                in->setEnabled(!m_locked);
+                out->setEnabled(!m_locked);
+                modeRow->addWidget(new QLabel(QStringLiteral("In")));
+                modeRow->addWidget(in, 1);
+                modeRow->addWidget(new QLabel(QStringLiteral("Out")));
+                modeRow->addWidget(out, 1);
+                tf->addRow(QStringLiteral("Mode"), modeRow);
+
+                // Seconds of transport ↔ the timecode shown (the offset is added)
+                auto shown = [this](double secs) {
+                    const std::optional<TimecodeSettings> cur = m_engine->layerTimecode(m_layer);
+                    if (!cur) return QString();
+                    const int64_t f = int64_t(std::floor(secs * Timecode::realFps(cur->rate) + 1e-6)) + cur->offset;
+                    return Timecode::fromFrames(f, cur->rate).toString();
+                };
+                auto typed = [this](const QString &text) -> std::optional<double> {
+                    const std::optional<TimecodeSettings> cur = m_engine->layerTimecode(m_layer);
+                    if (!cur) return std::nullopt;
+                    const std::optional<Timecode> t = Timecode::parse(text.trimmed(), cur->rate);
+                    if (!t) return std::nullopt;
+                    const int64_t day = Timecode::framesPerDay(cur->rate);
+                    const int64_t f = ((t->toFrames() - cur->offset) % day + day) % day;
+                    return double(f) / Timecode::realFps(cur->rate);
+                };
+                m_tcTransport = std::make_shared<TcTransport>();
+                m_tcTransport->play = play;
+                m_tcTransport->pause = pause;
+                m_tcTransport->position = position;
+                m_tcTransport->in = in;
+                m_tcTransport->out = out;
+                m_tcTransport->modes = modes;
+                m_tcTransport->shown = shown;
+                connect(group, &QButtonGroup::idClicked, this, [this](int id) {
+                    cmd::setValue(m_undo, m_engine, m_layerId, QStringLiteral("tc/play"), id == 1,
+                                  id == 1 ? QStringLiteral("Play Timecode") : QStringLiteral("Pause Timecode"));
+                    refreshDynamic();
+                });
+                connect(rewind, &QToolButton::clicked, this, [this] {
+                    if (std::shared_ptr<TimecodeClock> c = m_engine->layerTimecodeClock(m_layer))
+                        cmd::setValue(m_undo, m_engine, m_layerId, QStringLiteral("tc/position"), c->inPoint(),
+                                      QStringLiteral("Rewind Timecode"));
+                    refreshDynamic();
+                });
+                connect(position, &QLineEdit::editingFinished, this, [this, position, typed] {
+                    if (const std::optional<double> v = typed(position->text()))
+                        cmd::setValue(m_undo, m_engine, m_layerId, QStringLiteral("tc/position"), *v,
+                                      QStringLiteral("Seek Timecode"));
+                    position->clearFocus();
+                    refreshDynamic();
+                });
+                connect(modes, &QButtonGroup::idClicked, this, [this](int id) {
+                    cmd::setValue(m_undo, m_engine, m_layerId, QStringLiteral("tc/play_mode"), tcPlayModeKey(TcPlayMode(id)),
+                                  QStringLiteral("Change Timecode Play Mode"));
+                });
+                connect(in, &QLineEdit::editingFinished, this, [this, in, typed] {
+                    if (const std::optional<double> v = typed(in->text()))
+                        cmd::setValue(m_undo, m_engine, m_layerId, QStringLiteral("tc/in"), *v, QStringLiteral("Set Timecode In"));
+                    in->clearFocus();
+                    refreshDynamic();
+                });
+                connect(out, &QLineEdit::editingFinished, this, [this, out, typed] {
+                    const QString text = out->text().trimmed();
+                    const std::optional<double> v = text.isEmpty() ? std::optional<double>(-1.0) : typed(text);
+                    if (v) cmd::setValue(m_undo, m_engine, m_layerId, QStringLiteral("tc/out"), *v, QStringLiteral("Set Timecode Out"));
+                    out->clearFocus();
+                    refreshDynamic();
+                });
+                refreshTimecodeTransport();
+            }
+
             auto *status = new QLabel;
             status->setWordWrap(true);
             status->setStyleSheet("color:#9ad;");
             status->setText(m_engine->layerTimecodeStatus(m_layer));
             tf->addRow(QString(), status);
             m_timecodeStatus = status;
-            for (QWidget *w : {static_cast<QWidget *>(source), static_cast<QWidget *>(clock), static_cast<QWidget *>(restart),
-                               static_cast<QWidget *>(rate), static_cast<QWidget *>(offset)})
+            for (QWidget *w : {static_cast<QWidget *>(source), static_cast<QWidget *>(clock), static_cast<QWidget *>(rate),
+                               static_cast<QWidget *>(offset)})
                 w->setEnabled(!m_locked);
             v->addWidget(box);
             connect(source, qOverload<int>(&QComboBox::activated), this, [this, apply](int k) {
                 apply(QStringLiteral("Timecode Source"), [k](TimecodeSettings &t) { t.source = TimecodeSettings::Source(k); });
                 QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection); // its fields change
             });
-            connect(clock, qOverload<int>(&QComboBox::activated), this, [this, apply, restart](int k) {
+            connect(clock, qOverload<int>(&QComboBox::activated), this, [this, apply](int k) {
                 apply(QStringLiteral("Timecode Clock"), [k](TimecodeSettings &t) { t.internal = TimecodeSettings::Internal(k); });
-                restart->setVisible(k == int(TimecodeSettings::Internal::FreeRun));
+                QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection); // its transport, or none
             });
-            connect(restart, &QPushButton::clicked, this, [this] { m_engine->restartLayerTimecode(m_layer); });
             connect(rate, qOverload<int>(&QComboBox::activated), this, [apply](int k) {
                 apply(QStringLiteral("Timecode Rate"), [k](TimecodeSettings &t) { t.rate = TcRate(k); });
             });
@@ -2426,6 +2645,21 @@ void LayerInspector::selectMask(int index)
     if (m_maskPanel) m_maskPanel->select(index);
 }
 
+void LayerInspector::refreshTimecodeTransport()
+{
+    const std::shared_ptr<TcTransport> t = m_tcTransport;
+    if (!t || !t->play) return;
+    const std::shared_ptr<TimecodeClock> c = m_engine->layerTimecodeClock(m_layer);
+    if (!c) return;
+    const bool playing = c->playing();
+    if (t->play->isChecked() != playing) t->play->setChecked(playing);
+    if (t->pause->isChecked() == playing) t->pause->setChecked(!playing);
+    if (!t->position->hasFocus()) t->position->setText(c->display());
+    if (!t->in->hasFocus()) t->in->setText(t->shown(c->inPoint()));
+    if (!t->out->hasFocus()) t->out->setText(c->outPoint() < 0 ? QString() : t->shown(c->outPoint()));
+    if (QAbstractButton *b = t->modes->button(int(c->playMode())); b && !b->isChecked()) b->setChecked(true);
+}
+
 void LayerInspector::refreshDynamic()
 {
     // The fields show the values as they move (a snapshot's fade), unless Settings keeps them still until it is over
@@ -2433,6 +2667,7 @@ void LayerInspector::refreshDynamic()
     if (follow) refreshSpatial();
     if (m_output) m_output->refreshStatus(); // mode set by ⌘F or a closed window, publishing states
     if (m_timecodeStatus) m_timecodeStatus->setText(m_engine->layerTimecodeStatus(m_layer));
+    refreshTimecodeTransport();
     // ROI preview: the source picture, read back by the render thread while the editor is shown
     const bool wantPreview = m_roi && m_roi->isVisible();
     if (wantPreview) {

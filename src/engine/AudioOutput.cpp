@@ -43,6 +43,25 @@ QStringList AudioOutput::deviceNames()
     return names;
 }
 
+QStringList AudioOutput::captureDeviceNames()
+{
+    QStringList names;
+    ma_context ctx;
+    if (ma_context_init(nullptr, 0, nullptr, &ctx) != MA_SUCCESS) return names;
+    ma_device_info *playback = nullptr, *capture = nullptr;
+    ma_uint32 nPlayback = 0, nCapture = 0;
+    if (ma_context_get_devices(&ctx, &playback, &nPlayback, &capture, &nCapture) == MA_SUCCESS) {
+        for (ma_uint32 i = 0; i < nCapture; ++i) {
+            const QString n = QString::fromUtf8(capture[i].name);
+            if (capture[i].isDefault) names.prepend(n);
+            else names.append(n);
+        }
+    }
+    ma_context_uninit(&ctx);
+    names.removeDuplicates();
+    return names;
+}
+
 bool AudioOutput::start(const QString &device, QString *err, bool nullDevice)
 {
     stop();

@@ -2,12 +2,15 @@
 // Where the layers' timecodes go.
 //  - Timecode outputs: named by the user, in the composition. A Timecode layer drives one of them (one layer per output,
 //    TimecodeSettings::output); an output is patched to any number of destinations, and each destination says the
-//    protocol: a MIDI output carries MTC (to come: an audio channel LTC, a DeckLink output or an NDI sender ATC).
-//  - MIDI outputs (the MIDI patch): named by the user too, each one given a port of this machine (a hardware port, or
-//    a virtual port other software can read). A project opened on another machine is patched again there: its routes
-//    name the MIDI outputs, not the ports.
-// TimecodeRouter sends: a thread of its own reads the clocks and writes the messages, with no engine lock.
+//    protocol: a MIDI output carries MTC, an audio channel LTC, a viewport ATC (in the pictures of its NDI and DeckLink
+//    outputs). A destination takes one timecode output.
+//  - MIDI outputs and audio channels (the patch): named by the user too, each one given a port or a channel of a device
+//    of this machine. A project opened on another machine is patched again there: its routes name the patch, not the
+//    hardware.
+// TimecodeRouter sends MTC and LTC: a thread of its own reads the clocks and writes the MIDI messages, the audio devices'
+// callbacks write the LTC; none takes the engine's lock. ATC goes with the frames (Engine::frame).
 
+#include "Timecode.h"
 #include "TimecodeClock.h"
 
 #include <QJsonObject>
@@ -33,10 +36,25 @@ struct MidiOutput {
     bool operator==(const MidiOutput &o) const { return id == o.id && name == o.name && port == o.port; }
 };
 
+struct AudioChannelOutput {
+    quint64 id = 0;
+    QString name;
+    QString device;  // an audio output of this machine, by its name ("": none; kDefaultDevice: the system's)
+    int channel = 0; // from 0 (shown from 1)
+    static constexpr const char *kDefaultDevice = "@default";
+
+    QJsonObject toJson() const;
+    static AudioChannelOutput fromJson(const QJsonObject &o);
+    bool operator==(const AudioChannelOutput &o) const
+    {
+        return id == o.id && name == o.name && device == o.device && channel == o.channel;
+    }
+};
+
 struct TimecodeOutput {
     quint64 id = 0;
     QString name;
-    QStringList routes; // destinations: "midi:<id>" (MTC)
+    QStringList routes; // destinations: "midi:<id>" (MTC), "audio:<id>" (LTC), "viewport:<layer id>" (ATC)
 
     QJsonObject toJson() const;
     static TimecodeOutput fromJson(const QJsonObject &o);
@@ -44,9 +62,14 @@ struct TimecodeOutput {
 };
 
 namespace tcroute {
-QString midi(quint64 midiOutput);               // "midi:12"
-std::optional<quint64> midiId(const QString &route);
-QString protocol(const QString &route);         // what goes there: "MTC" ("" for a route this version does not know)
+enum class Kind { None, Midi, Audio, Viewport };
+QString make(Kind k, quint64 id);              // "midi:12"
+Kind kind(const QString &route);               // None: a route this version does not know
+quint64 id(const QString &route);              // 0: none
+QString protocol(Kind k);                      // "MTC", "LTC", "ATC"
+inline QString midi(quint64 id) { return make(Kind::Midi, id); }
+inline QString audio(quint64 id) { return make(Kind::Audio, id); }
+inline QString viewport(quint64 id) { return make(Kind::Viewport, id); }
 } // namespace tcroute
 
 // MTC from a clock's readings, called often (each millisecond or so). While the clock runs forwards: quarter frames, four
@@ -67,7 +90,12 @@ private:
     int64_t m_held = -1;     // the frame last sent as a full frame while held (-1: none)
 };
 
-class RtMidiOut;
+namespace midi {
+class Output;
+}
+namespace tcaudio {
+class Device;
+}
 
 class TimecodeRouter
 {
@@ -76,22 +104,22 @@ public:
     struct Stream {
         quint64 output = 0;
         std::shared_ptr<TimecodeClock> clock;
-        std::vector<quint64> midi; // MIDI outputs (MTC)
+        std::vector<quint64> midi;  // MIDI outputs (MTC)
+        std::vector<quint64> audio; // audio channels (LTC)
     };
 
     TimecodeRouter();
     ~TimecodeRouter();
-    void configure(std::vector<Stream> streams, std::vector<MidiOutput> midi);
-    QString midiStatus(quint64 midiOutput) const; // "Open: 2 timecodes", "Port not found"…
-    static QStringList midiPorts();               // the MIDI outputs of this machine
-    static bool virtualPorts();                   // virtual ports can be made (macOS, Linux)
-    // Tests: the messages for each MIDI output go here instead of its port (none: back to the ports)
+    void configure(std::vector<Stream> streams, std::vector<MidiOutput> midi, std::vector<AudioChannelOutput> audio);
+    QString midiStatus(quint64 midiOutput) const;    // "Sending MTC", "Port not found"…
+    QString audioStatus(quint64 audioOutput) const;  // "Sending LTC", "Channel 3: the device has 2"…
+    // Tests: the MIDI messages for each MIDI output go here instead of its port (none: back to the ports)
     using Sink = std::function<void(quint64 midiOutput, const std::vector<uint8_t> &msg)>;
     void setTestSink(Sink sink);
 
 private:
     struct Port {
-        std::unique_ptr<RtMidiOut> out;
+        std::unique_ptr<midi::Output> out;
         QString error;
         qint64 triedAt = -1;
     };
@@ -103,22 +131,46 @@ private:
         Stream stream;
         std::vector<Destination> dest;
     };
+    // LTC: the lanes of an audio device (a channel each), read by its callback
+    struct Lane {
+        quint64 output = 0, audio = 0;
+        int channel = 0;
+        std::shared_ptr<TimecodeClock> clock;
+        std::shared_ptr<ltc::Generator> gen;
+    };
+    struct AudioSink {
+        std::mutex mutex;
+        std::vector<Lane> lanes;
+        std::vector<float> mono;
+        int channels = 0; // the device's
+    };
+    struct AudioDev {
+        std::unique_ptr<tcaudio::Device> dev;
+        std::shared_ptr<AudioSink> sink;
+        QString error;
+        qint64 triedAt = -1;
+    };
     void run();
-    void applyLocked(); // the new configuration, on the thread: ports opened and closed, senders kept or made
+    void reconfigure(std::vector<Stream> &streams, const std::vector<MidiOutput> &midi,
+                     const std::vector<AudioChannelOutput> &audio, bool testSink);
+    void openPorts(qint64 nowMs, bool testSink, std::map<quint64, QString> &status);
+    void openAudio(qint64 nowMs, std::map<quint64, QString> &status);
     static QString portKey(const MidiOutput &m);
-    Port *openPort(const MidiOutput &m, qint64 nowMs);
 
     mutable std::mutex m_mutex;
     std::condition_variable m_wake;
     bool m_stop = false, m_dirty = false;
-    std::vector<Stream> m_streams;              // configured (main thread)
+    std::vector<Stream> m_streams; // configured (main thread)
     std::vector<MidiOutput> m_midi;
+    std::vector<AudioChannelOutput> m_audio;
     Sink m_sink;
-    std::map<quint64, QString> m_status;        // by MIDI output, written by the thread
+    std::map<quint64, QString> m_midiStatus, m_audioStatus; // written by the thread
 
     // The thread's own
     std::vector<Running> m_running;
     std::map<quint64, MidiOutput> m_midiNow;
-    std::map<QString, Port> m_ports;            // by port key
+    std::map<quint64, AudioChannelOutput> m_audioNow;
+    std::map<QString, Port> m_ports;      // by port key
+    std::map<QString, AudioDev> m_devices; // by device name
     std::thread m_thread;
 };

@@ -6,6 +6,7 @@
 #include <QCheckBox>
 #include <algorithm>
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -15,6 +16,8 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
+#include <QTimer>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
@@ -41,6 +44,7 @@ CompositionPanel::CompositionPanel(Engine *engine, QWidget *parent) : QWidget(pa
     v->addWidget(buildCompositionLevel());
     v->addWidget(buildAudio());
     v->addWidget(buildComposition());
+    v->addWidget(buildTimecodePatch());
     v->addStretch();
     syncFromEngine();
     // Long screen or sound card names must not widen the panel beyond its column (they are elided).
@@ -346,6 +350,7 @@ void CompositionPanel::refreshStatus()
         m_audioVolumeLabel->setText(volumeText(vol));
     }
     m_syncing = false;
+    refreshTimecodeStatus();
 
     const int pct = int(std::lround(m_engine->outputLevel() * 100));
     m_compositionLabel->setText(QStringLiteral("out %1%").arg(pct)); // the fader, and the blackout over it
@@ -365,4 +370,335 @@ void CompositionPanel::refreshStatus()
         m_syncing = false;
     }
 
+}
+
+// ---------------------------------------------------------------------------
+// Timecode patch
+// ---------------------------------------------------------------------------
+
+static QToolButton *smallButton(const QString &text, const QString &tip)
+{
+    auto *b = new QToolButton;
+    b->setText(text);
+    b->setToolTip(tip);
+    b->setAutoRaise(true);
+    b->setFixedWidth(26);
+    return b;
+}
+
+static QLabel *statusLabel()
+{
+    auto *l = new QLabel;
+    l->setWordWrap(true);
+    l->setStyleSheet("color:#9ad; font-size:11px;");
+    return l;
+}
+
+QWidget *CompositionPanel::buildTimecodePatch()
+{
+    m_tcPatch = new QWidget;
+    auto *v = new QVBoxLayout(m_tcPatch);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(10);
+    // Made again when the patch, a layer's name or the viewports change (not while a field of it is being typed in)
+    auto later = [this] {
+        QTimer::singleShot(0, this, [this] {
+            if (timecodePatchKey() == m_tcPatchKey) return;
+            if (QWidget *f = QApplication::focusWidget(); f && m_tcPatch->isAncestorOf(f) && qobject_cast<QLineEdit *>(f)) return;
+            rebuildTimecodePatch();
+        });
+    };
+    connect(m_engine, &Engine::timecodeRoutingChanged, this, later);
+    connect(m_engine, &Engine::layersChanged, this, later);
+    rebuildTimecodePatch();
+    return m_tcPatch;
+}
+
+QString CompositionPanel::timecodePatchKey() const
+{
+    QStringList k;
+    for (const TimecodeOutput &o : m_engine->timecodeOutputs()) {
+        const int user = m_engine->timecodeOutputUser(o.id);
+        k << QString::number(o.id) << o.name << o.routes.join(',') << QString::number(user);
+        if (user >= 0) {
+            Engine::Lock lk(&m_engine->mutex());
+            if (const Layer *l = m_engine->layer(user)) k << l->name;
+        }
+    }
+    for (const MidiOutput &m : m_engine->midiOutputs()) k << QString::number(m.id) << m.name << m.port;
+    for (const AudioChannelOutput &a : m_engine->audioChannelOutputs())
+        k << QString::number(a.id) << a.name << a.device << QString::number(a.channel);
+    Engine::Lock lk(&m_engine->mutex());
+    for (int i = 0; i < m_engine->layerCount(); ++i)
+        if (const Layer *l = m_engine->layer(i); l && l->isViewport) k << QString::number(l->id) << l->name;
+    return k.join('\x1f');
+}
+
+void CompositionPanel::rebuildTimecodePatch()
+{
+    m_tcPatchKey = timecodePatchKey();
+    m_tcStatus.clear();
+    auto *v = static_cast<QVBoxLayout *>(m_tcPatch->layout());
+    while (QLayoutItem *it = v->takeAt(0)) {
+        if (QWidget *w = it->widget()) w->deleteLater();
+        delete it;
+    }
+    auto edited = [this] { emit compositionEdited(); }; // saved with the project
+    auto nameField = [](const QString &name) {
+        auto *e = new QLineEdit(name);
+        e->setToolTip(QStringLiteral("Its name, as the layers and the patch show it"));
+        return e;
+    };
+
+    // Timecode outputs: name, the layer driving it, its destinations
+    {
+        auto *g = new QGroupBox(QStringLiteral("Timecode Outputs"));
+        auto *gv = new QVBoxLayout(g);
+        gv->setSpacing(4);
+        const std::vector<TimecodeOutput> outputs = m_engine->timecodeOutputs();
+        // Every destination, and the output that has it (a destination takes one)
+        struct Dest {
+            QString route, label;
+        };
+        std::vector<Dest> dests;
+        for (const MidiOutput &m : m_engine->midiOutputs()) dests.push_back({tcroute::midi(m.id), QStringLiteral("MTC → %1").arg(m.name)});
+        for (const AudioChannelOutput &a : m_engine->audioChannelOutputs())
+            dests.push_back({tcroute::audio(a.id), QStringLiteral("LTC → %1").arg(a.name)});
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            for (int i = 0; i < m_engine->layerCount(); ++i)
+                if (const Layer *l = m_engine->layer(i); l && l->isViewport)
+                    dests.push_back({tcroute::viewport(l->id), QStringLiteral("ATC → %1 (NDI, DeckLink)").arg(l->name)});
+        }
+        for (const TimecodeOutput &o : outputs) {
+            auto *row = new QHBoxLayout;
+            auto *name = nameField(o.name);
+            row->addWidget(name, 1);
+            auto *patch = new QToolButton;
+            patch->setText(o.routes.isEmpty() ? QStringLiteral("Patch…") : QStringLiteral("%1 destination%2").arg(o.routes.size()).arg(o.routes.size() > 1 ? "s" : ""));
+            patch->setToolTip(QStringLiteral("Where it goes: the destination gives the protocol (a MIDI output: MTC, an audio "
+                                             "channel: LTC, a viewport: ATC in its NDI and DeckLink pictures)"));
+            patch->setPopupMode(QToolButton::InstantPopup);
+            auto *menu = new QMenu(patch);
+            if (dests.empty()) menu->addAction(QStringLiteral("Add a MIDI output or an LTC channel below"))->setEnabled(false);
+            for (const Dest &d : dests) {
+                QAction *a = menu->addAction(d.label);
+                a->setCheckable(true);
+                a->setChecked(o.routes.contains(d.route));
+                for (const TimecodeOutput &x : outputs)
+                    if (x.id != o.id && x.routes.contains(d.route)) {
+                        a->setEnabled(false); // another output's
+                        a->setText(QStringLiteral("%1 (%2)").arg(d.label, x.name));
+                    }
+                const QString route = d.route;
+                const quint64 id = o.id;
+                connect(a, &QAction::toggled, this, [this, id, route, edited](bool on) {
+                    for (TimecodeOutput t : m_engine->timecodeOutputs()) {
+                        if (t.id != id) continue;
+                        if (on) t.routes << route;
+                        else t.routes.removeAll(route);
+                        m_engine->setTimecodeOutput(t);
+                        edited();
+                    }
+                });
+            }
+            patch->setMenu(menu);
+            row->addWidget(patch);
+            auto *remove = smallButton(QStringLiteral("−"), QStringLiteral("Remove this output (the layer driving it drives none)"));
+            row->addWidget(remove);
+            gv->addLayout(row);
+            auto *status = statusLabel();
+            gv->addWidget(status);
+            const quint64 id = o.id;
+            m_tcStatus.push_back({status, [this, id] { return m_engine->timecodeOutputStatus(id); }});
+            connect(name, &QLineEdit::editingFinished, this, [this, id, name, edited] {
+                for (TimecodeOutput t : m_engine->timecodeOutputs())
+                    if (t.id == id && t.name != name->text().trimmed()) {
+                        t.name = name->text();
+                        m_engine->setTimecodeOutput(t);
+                        edited();
+                    }
+            });
+            connect(remove, &QToolButton::clicked, this, [this, id, edited] {
+                m_engine->removeTimecodeOutput(id);
+                edited();
+            });
+        }
+        auto *add = new QPushButton(QStringLiteral("+ Timecode Output"));
+        add->setToolTip(QStringLiteral("A new output; a Timecode layer picks it (its Output), the patch here says where it goes"));
+        connect(add, &QPushButton::clicked, this, [this, edited] {
+            m_engine->addTimecodeOutput();
+            edited();
+        });
+        gv->addWidget(add, 0, Qt::AlignLeft);
+        gv->addWidget(note(QStringLiteral("A Timecode layer drives one output; an output goes to any number of destinations, "
+                                          "each destination to one output.")));
+        static_cast<QVBoxLayout *>(m_tcPatch->layout())->addWidget(g);
+    }
+
+    // MIDI outputs: name, port of this machine
+    {
+        auto *g = new QGroupBox(QStringLiteral("MIDI Outputs"));
+        auto *gv = new QVBoxLayout(g);
+        gv->setSpacing(4);
+        const QStringList ports = Engine::midiPorts();
+        for (const MidiOutput &m : m_engine->midiOutputs()) {
+            auto *row = new QHBoxLayout;
+            auto *name = nameField(m.name);
+            row->addWidget(name, 1);
+            auto *port = new QComboBox;
+            port->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            port->setMinimumContentsLength(8);
+            port->addItem(QStringLiteral("No port"), QString());
+            if (Engine::midiVirtualPorts())
+                port->addItem(QStringLiteral("Virtual port \"%1\"").arg(m.name), QString::fromLatin1(MidiOutput::kVirtualPort));
+            for (const QString &p : ports) port->addItem(p, p);
+            int at = port->findData(m.port);
+            if (at < 0) {
+                port->addItem(QStringLiteral("%1 (not found)").arg(m.port), m.port);
+                at = port->count() - 1;
+            }
+            port->setCurrentIndex(at);
+            port->setToolTip(QStringLiteral("The MIDI port of this machine it sends to, or a port of its own other software reads"));
+            row->addWidget(port, 1);
+            auto *remove = smallButton(QStringLiteral("−"), QStringLiteral("Remove this MIDI output (and the routes to it)"));
+            row->addWidget(remove);
+            gv->addLayout(row);
+            auto *status = statusLabel();
+            gv->addWidget(status);
+            const quint64 id = m.id;
+            m_tcStatus.push_back({status, [this, id] { return m_engine->midiOutputStatus(id); }});
+            connect(name, &QLineEdit::editingFinished, this, [this, id, name, edited] {
+                for (MidiOutput x : m_engine->midiOutputs())
+                    if (x.id == id && x.name != name->text().trimmed()) {
+                        x.name = name->text();
+                        m_engine->setMidiOutput(x);
+                        edited();
+                    }
+            });
+            connect(port, qOverload<int>(&QComboBox::activated), this, [this, id, port, edited](int) {
+                for (MidiOutput x : m_engine->midiOutputs())
+                    if (x.id == id) {
+                        x.port = port->currentData().toString();
+                        m_engine->setMidiOutput(x);
+                        edited();
+                    }
+            });
+            connect(remove, &QToolButton::clicked, this, [this, id, edited] {
+                m_engine->removeMidiOutput(id);
+                edited();
+            });
+        }
+        auto *buttons = new QHBoxLayout;
+        auto *add = new QPushButton(QStringLiteral("+ MIDI Output"));
+        connect(add, &QPushButton::clicked, this, [this, edited] {
+            m_engine->addMidiOutput();
+            edited();
+        });
+        auto *rescan = new QPushButton(QStringLiteral("↻"));
+        rescan->setFixedWidth(28);
+        rescan->setToolTip(QStringLiteral("Look for the MIDI ports again"));
+        connect(rescan, &QPushButton::clicked, this, [this] { rebuildTimecodePatch(); });
+        buttons->addWidget(add);
+        buttons->addWidget(rescan);
+        buttons->addStretch();
+        gv->addLayout(buttons);
+        if (ports.isEmpty() && !Engine::midiVirtualPorts()) gv->addWidget(note(QStringLiteral("No MIDI port on this machine.")));
+        static_cast<QVBoxLayout *>(m_tcPatch->layout())->addWidget(g);
+    }
+
+    // Audio channels (LTC): name, device, channel
+    {
+        auto *g = new QGroupBox(QStringLiteral("LTC Audio Outputs"));
+        auto *gv = new QVBoxLayout(g);
+        gv->setSpacing(4);
+        const QStringList devices = Engine::audioOutputDevices();
+        for (const AudioChannelOutput &a : m_engine->audioChannelOutputs()) {
+            auto *row = new QHBoxLayout;
+            auto *name = nameField(a.name);
+            row->addWidget(name, 1);
+            auto *device = new QComboBox;
+            device->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            device->setMinimumContentsLength(8);
+            device->addItem(QStringLiteral("No device"), QString());
+            device->addItem(QStringLiteral("Default output"), QString::fromLatin1(AudioChannelOutput::kDefaultDevice));
+            for (const QString &d : devices) device->addItem(d, d);
+            int at = device->findData(a.device);
+            if (at < 0) {
+                device->addItem(QStringLiteral("%1 (not found)").arg(a.device), a.device);
+                at = device->count() - 1;
+            }
+            device->setCurrentIndex(at);
+            device->setToolTip(QStringLiteral("The audio output of this machine the LTC comes out of"));
+            row->addWidget(device, 1);
+            auto *channel = new IntBox;
+            channel->setRange(1, 64);
+            channel->setValue(a.channel + 1);
+            channel->setPrefix(QStringLiteral("ch "));
+            channel->setToolTip(QStringLiteral("Its channel on the device (each LTC on a channel of its own)"));
+            row->addWidget(channel);
+            auto *remove = smallButton(QStringLiteral("−"), QStringLiteral("Remove this audio output (and the routes to it)"));
+            row->addWidget(remove);
+            gv->addLayout(row);
+            auto *status = statusLabel();
+            gv->addWidget(status);
+            const quint64 id = a.id;
+            m_tcStatus.push_back({status, [this, id] { return m_engine->audioChannelOutputStatus(id); }});
+            auto change = [this, id, edited](const std::function<void(AudioChannelOutput &)> &fn) {
+                for (AudioChannelOutput x : m_engine->audioChannelOutputs())
+                    if (x.id == id) {
+                        fn(x);
+                        m_engine->setAudioChannelOutput(x);
+                        edited();
+                    }
+            };
+            connect(name, &QLineEdit::editingFinished, this, [name, change] {
+                change([name](AudioChannelOutput &x) {
+                    if (!name->text().trimmed().isEmpty()) x.name = name->text();
+                });
+            });
+            connect(device, qOverload<int>(&QComboBox::activated), this, [device, change](int) {
+                const QString d = device->currentData().toString();
+                change([d](AudioChannelOutput &x) { x.device = d; });
+            });
+            connect(channel, &QSpinBox::editingFinished, this, [channel, change] {
+                const int c = channel->value() - 1;
+                change([c](AudioChannelOutput &x) { x.channel = c; });
+            });
+            connect(remove, &QToolButton::clicked, this, [this, id, edited] {
+                m_engine->removeAudioChannelOutput(id);
+                edited();
+            });
+        }
+        auto *buttons = new QHBoxLayout;
+        auto *add = new QPushButton(QStringLiteral("+ LTC Output"));
+        connect(add, &QPushButton::clicked, this, [this, edited] {
+            m_engine->addAudioChannelOutput();
+            edited();
+        });
+        auto *rescan = new QPushButton(QStringLiteral("↻"));
+        rescan->setFixedWidth(28);
+        rescan->setToolTip(QStringLiteral("Look for the audio devices again"));
+        connect(rescan, &QPushButton::clicked, this, [this] { rebuildTimecodePatch(); });
+        buttons->addWidget(add);
+        buttons->addWidget(rescan);
+        buttons->addStretch();
+        gv->addLayout(buttons);
+        static_cast<QVBoxLayout *>(m_tcPatch->layout())->addWidget(g);
+    }
+    for (QComboBox *c : m_tcPatch->findChildren<QComboBox *>()) {
+        c->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        c->setMinimumContentsLength(8);
+    }
+    refreshTimecodeStatus();
+}
+
+void CompositionPanel::refreshTimecodeStatus()
+{
+    for (auto &[label, text] : m_tcStatus)
+        if (label) {
+            const QString t = text();
+            if (label->text() != t) label->setText(t);
+            label->setVisible(!t.isEmpty());
+        }
 }

@@ -1,6 +1,8 @@
 // Engine: the project file — a layer to and from JSON, saving and opening a .fulskrin.
 #include "EngineInternal.h"
 
+#include <set>
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -77,6 +79,8 @@ void Engine::clearProject()
         m_audio->setVolume(1.0f);
         m_tcOutputs.clear();
         m_midiOutputs.clear();
+        m_audioOutputs.clear();
+        m_atc.clear();
         m_nextPatchId = 1;
     }
     for (auto &l : old) {
@@ -371,6 +375,9 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         for (const MidiOutput &m : m_midiOutputs) midiOutputs.append(m.toJson());
         root["timecode_outputs"] = tcOutputs;
         root["midi_outputs"] = midiOutputs;
+        QJsonArray audioOutputs;
+        for (const AudioChannelOutput &a : m_audioOutputs) audioOutputs.append(a.toJson());
+        root["audio_channel_outputs"] = audioOutputs;
         root["sequences"] = m_sequencer->toJson();
         root["current_sequence"] = m_sequencer->current();
     }
@@ -428,27 +435,21 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     }
     { // the patch before the layers: their timecode outputs are there to be taken
         Lock lk(&m_mutex);
-        auto fresh = [this](quint64 id, auto &list) { // an id once, not 0
-            if (!id) return false;
-            for (const auto &x : list)
-                if (x.id == id) return false;
-            return true;
-        };
+        std::set<quint64> ids; // one id space for the three
+        auto fresh = [&ids](quint64 id) { return id && ids.insert(id).second; };
         for (const QJsonValue &v : root.value("midi_outputs").toArray()) {
             const MidiOutput m = MidiOutput::fromJson(v.toObject());
-            if (fresh(m.id, m_midiOutputs)) m_midiOutputs.push_back(m);
+            if (fresh(m.id)) m_midiOutputs.push_back(m);
+        }
+        for (const QJsonValue &v : root.value("audio_channel_outputs").toArray()) {
+            const AudioChannelOutput a = AudioChannelOutput::fromJson(v.toObject());
+            if (fresh(a.id)) m_audioOutputs.push_back(a);
         }
         for (const QJsonValue &v : root.value("timecode_outputs").toArray()) {
-            TimecodeOutput t = TimecodeOutput::fromJson(v.toObject());
-            if (!fresh(t.id, m_tcOutputs)) continue;
-            t.routes.removeIf([this](const QString &r) {
-                const std::optional<quint64> m = tcroute::midiId(r);
-                return !m || std::none_of(m_midiOutputs.begin(), m_midiOutputs.end(), [&](const MidiOutput &x) { return x.id == *m; });
-            });
-            m_tcOutputs.push_back(t);
+            const TimecodeOutput t = TimecodeOutput::fromJson(v.toObject());
+            if (fresh(t.id)) m_tcOutputs.push_back(t); // its routes checked once the viewports are there
         }
-        for (const MidiOutput &m : m_midiOutputs) m_nextPatchId = std::max(m_nextPatchId, m.id + 1);
-        for (const TimecodeOutput &t : m_tcOutputs) m_nextPatchId = std::max(m_nextPatchId, t.id + 1);
+        if (!ids.empty()) m_nextPatchId = *ids.rbegin() + 1;
     }
     const QString dir = QFileInfo(path).absolutePath();
     QStringList warnings;
@@ -463,6 +464,12 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     }
     ensureViewport();
     fixLayerReferences(&warnings);
+    {
+        Lock lk(&m_mutex);
+        std::set<QString> taken; // a destination takes one timecode output: the first one keeps it
+        for (TimecodeOutput &t : m_tcOutputs)
+            t.routes.removeIf([&](const QString &r) { return !routeTargetExists(r) || !taken.insert(r).second; });
+    }
     {
         Lock lk(&m_mutex);
     }
