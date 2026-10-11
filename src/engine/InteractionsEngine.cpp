@@ -2,6 +2,8 @@
 #include "EngineInternal.h"
 #include "Midi.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QSet>
 #include <QTimer>
 #include <cmath>
@@ -457,5 +459,98 @@ void Engine::makeInteractionParams()
             number(QStringLiteral("filter/b"), QStringLiteral("Filter ") + fb.name, fb.min, fb.max, fb.def,
                    [](Interaction &x) -> double & { return x.filterB; });
         flag(QStringLiteral("curve/enable"), QStringLiteral("Curve"), false, [](Interaction &x) -> bool & { return x.curveOn; });
+
+        // What it is: its name, its source, its target, its curve — set at once (presets and snapshots hold them; a
+        // snapshot holds them all, so that one removed since is made again as it was)
+        auto changed = [this] { // its name, its source or its target: the list, the MIDI inputs, the labels
+            m_interactionParamsDirty = true;
+            interactionValuesTouched();
+            QMetaObject::invokeMethod(this, [this] { updateMidiInputs(); }, Qt::QueuedConnection);
+        };
+        auto text = [&](const QString &path, const QString &name, std::function<QString(const Interaction &)> get,
+                        std::function<void(Interaction &, const QString &)> set) {
+            add(path, name, T::Text).ramp(Parameter::Ramp::Cut).bind(
+                [find, get] {
+                    Interaction *x = find();
+                    return x ? QVariant(get(*x)) : QVariant();
+                },
+                [this, find, set, changed](const QVariant &v) {
+                    if (Interaction *x = find()) {
+                        set(*x, v.toString());
+                        nameInteractions(m_interactions);
+                        changed();
+                    }
+                });
+        };
+        auto whole = [&](const QString &path, const QString &name, int lo, int hi, int def, std::function<int &(Interaction &)> field) {
+            add(path, name, T::Int).range(lo, hi).limits(lo, hi).step(1).byDefault(def).ramp(Parameter::Ramp::Cut).bind(
+                [find, field] {
+                    Interaction *x = find();
+                    return x ? QVariant(field(*x)) : QVariant();
+                },
+                [find, field, changed](const QVariant &v) {
+                    if (Interaction *x = find()) {
+                        field(*x) = v.toInt();
+                        changed();
+                    }
+                });
+        };
+        auto choice = [&](const QString &path, const QString &name, const QStringList &keys, std::function<int(const Interaction &)> get,
+                          std::function<void(Interaction &, int)> set) {
+            add(path, name, T::Choice).choices(keys).byDefault(keys.front()).ramp(Parameter::Ramp::Cut).bind(
+                [find, get, keys] {
+                    Interaction *x = find();
+                    return x ? QVariant(keys.value(get(*x))) : QVariant();
+                },
+                [find, set, keys, changed](const QVariant &v) {
+                    const int k = int(keys.indexOf(v.toString()));
+                    if (Interaction *x = find(); x && k >= 0) {
+                        set(*x, k);
+                        changed();
+                    }
+                });
+        };
+        // A value of the show, as text: "<layer id>:<address>" (0: the composition)
+        auto valueRef = [](quint64 layer, const QString &path) { return path.isEmpty() ? QString() : QStringLiteral("%1:%2").arg(layer).arg(path); };
+        auto parseRef = [](const QString &s, quint64 *layer, QString *path) {
+            const int colon = s.indexOf(QLatin1Char(':'));
+            *layer = colon < 0 ? 0 : s.left(colon).toULongLong();
+            *path = colon < 0 ? QString() : s.mid(colon + 1);
+        };
+        text(QStringLiteral("name"), QStringLiteral("Name"), [](const Interaction &x) { return x.name; },
+             [](Interaction &x, const QString &v) {
+                 if (!v.trimmed().isEmpty()) x.name = v.trimmed();
+             });
+        choice(QStringLiteral("source/kind"), QStringLiteral("Source"),
+               {QStringLiteral("keyboard"), QStringLiteral("midi"), QStringLiteral("osc"), QStringLiteral("internal")},
+               [](const Interaction &x) { return int(x.source); },
+               [](Interaction &x, int k) { x.source = InteractionSource(k); });
+        text(QStringLiteral("source/key"), QStringLiteral("Key"), [](const Interaction &x) { return x.key; },
+             [](Interaction &x, const QString &v) { x.key = v; });
+        text(QStringLiteral("source/midi/input"), QStringLiteral("MIDI Input"), [](const Interaction &x) { return x.midiPort; },
+             [](Interaction &x, const QString &v) { x.midiPort = v; });
+        whole(QStringLiteral("source/midi/channel"), QStringLiteral("MIDI Channel"), 0, 16, 0, [](Interaction &x) -> int & { return x.midiChannel; });
+        choice(QStringLiteral("source/midi/message"), QStringLiteral("MIDI Message"),
+               {QStringLiteral("cc"), QStringLiteral("note"), QStringLiteral("pitch_bend"), QStringLiteral("program")},
+               [](const Interaction &x) { return int(x.midiMessage); },
+               [](Interaction &x, int k) { x.midiMessage = MidiMessageKind(k); });
+        whole(QStringLiteral("source/midi/number"), QStringLiteral("MIDI Number"), 0, 127, 0, [](Interaction &x) -> int & { return x.midiNumber; });
+        text(QStringLiteral("source/osc/address"), QStringLiteral("OSC Address"), [](const Interaction &x) { return x.oscAddress; },
+             [](Interaction &x, const QString &v) { x.oscAddress = v; });
+        whole(QStringLiteral("source/osc/argument"), QStringLiteral("OSC Argument"), 0, 63, 0, [](Interaction &x) -> int & { return x.oscArgument; });
+        text(QStringLiteral("source/internal"), QStringLiteral("Follows"),
+             [valueRef](const Interaction &x) { return valueRef(x.sourceLayer, x.sourceParam); },
+             [parseRef](Interaction &x, const QString &v) { parseRef(v, &x.sourceLayer, &x.sourceParam); });
+        text(QStringLiteral("target"), QStringLiteral("Target"), [valueRef](const Interaction &x) { return valueRef(x.layer, x.param); },
+             [parseRef](Interaction &x, const QString &v) { parseRef(v, &x.layer, &x.param); });
+        text(QStringLiteral("curve"), QStringLiteral("Curve Keys"),
+             [](const Interaction &x) { return QString::fromUtf8(QJsonDocument(x.toJson().value("curve").toArray()).toJson(QJsonDocument::Compact)); },
+             [](Interaction &x, const QString &v) {
+                 const QJsonDocument d = QJsonDocument::fromJson(v.toUtf8());
+                 if (!d.isArray()) return;
+                 QJsonObject o = x.toJson();
+                 o["curve"] = d.array();
+                 x.curve = Interaction::fromJson(o).curve;
+             });
     }
 }

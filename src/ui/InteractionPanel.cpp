@@ -687,6 +687,8 @@ void InteractionPanel::rebuildSettings()
         name->setPlaceholderText(describe(unnamed));
     }
     form->addRow(QStringLiteral("Name"), name);
+    attachPreset({name}, {QStringLiteral("name")});
+    attachPreset({m_settingsTitle}, {QStringLiteral("source/kind")});
     connect(name, &QLineEdit::editingFinished, this, [edit, name] {
         edit(QStringLiteral("Rename Interaction"), [name](Interaction &x) { x.name = name->text().trimmed(); });
     });
@@ -701,6 +703,7 @@ void InteractionPanel::rebuildSettings()
 #endif
         key->setToolTip(QStringLiteral("The key (with its modifiers): pressed 1, let go 0"));
         form->addRow(QStringLiteral("Key"), key);
+        attachPreset({key}, {QStringLiteral("source/key")});
         connect(key, &QKeySequenceEdit::editingFinished, this, [edit, key] {
             const QKeySequence seq = key->keySequence();
             const QString k = seq.isEmpty() ? QString() : QKeySequence(seq[0]).toString(QKeySequence::PortableText); // one key
@@ -721,6 +724,7 @@ void InteractionPanel::rebuildSettings()
         port->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         port->setMinimumContentsLength(8);
         form->addRow(QStringLiteral("Input"), port);
+        attachPreset({port}, {QStringLiteral("source/midi/input")});
         auto *row = new QHBoxLayout;
         auto *channel = new QComboBox;
         channel->addItem(QStringLiteral("Any channel"), 0);
@@ -738,6 +742,9 @@ void InteractionPanel::rebuildSettings()
         row->addWidget(message, 1);
         row->addWidget(number);
         form->addRow(QStringLiteral("Message"), row);
+        attachPreset({channel}, {QStringLiteral("source/midi/channel")});
+        attachPreset({message}, {QStringLiteral("source/midi/message")});
+        attachPreset({number}, {QStringLiteral("source/midi/number")});
         connect(port, qOverload<int>(&QComboBox::activated), this, [edit, port](int) {
             const QString p = port->currentData().toString();
             edit(QStringLiteral("Change Interaction Input"), [p](Interaction &x) { x.midiPort = p; });
@@ -767,6 +774,8 @@ void InteractionPanel::rebuildSettings()
         row->addWidget(address, 1);
         row->addWidget(argument);
         form->addRow(QStringLiteral("Address"), row);
+        attachPreset({address}, {QStringLiteral("source/osc/address")});
+        attachPreset({argument}, {QStringLiteral("source/osc/argument")});
         auto *scale = new QComboBox;
         const struct { const char *name; double lo, hi; } kScales[] = {
             {"0 … 1", 0, 1}, {"−1 … 1", -1, 1}, {"0 … 127", 0, 127}, {"0 … 255", 0, 255}, {"0 … 1000", 0, 1000}};
@@ -832,6 +841,7 @@ void InteractionPanel::rebuildSettings()
                 if (const Layer *l = m_engine->layer(i); l && !l->isGroup) fill(menu->addMenu(l->name), l->id);
         });
         form->addRow(QStringLiteral("Follows"), source);
+        attachPreset({source}, {QStringLiteral("source/internal")});
         ParamInfo info;
         if (m_engine->parameterInfo(it.sourceLayer, it.sourceParam, &info) && info.isNumber()) {
             srcLo = std::min(info.min, it.srcMin);
@@ -875,6 +885,7 @@ void InteractionPanel::rebuildSettings()
             if (const Layer *l = m_engine->layer(i); l && !l->isGroup) fill(targetMenu->addMenu(l->name), l->id);
     });
     form->addRow(QStringLiteral("Target"), target);
+    attachPreset({target}, {QStringLiteral("target")});
 
     // What it does now
     m_inMeter = meter();
@@ -1057,7 +1068,7 @@ void InteractionPanel::rebuildSettings()
     curveRow->addStretch();
     curveRow->addWidget(resetCurve);
     form->addRow(QString(), curveRow);
-    attachPreset({curveOn}, {QStringLiteral("curve/enable")});
+    if (!it.curveOn) attachPreset({curveOn}, {QStringLiteral("curve/enable")});
     connect(curveOn, &QCheckBox::toggled, this, [this, edit](bool on) {
         m_revealCurve = on;
         edit(QStringLiteral("Change Curve"), [on](Interaction &x) { x.curveOn = on; });
@@ -1078,6 +1089,9 @@ void InteractionPanel::rebuildSettings()
                                         "it, double-click to remove it; right-click: its curve (easing, Bézier, hold)"));
         m_lane = lane;
         m_settingsLayout->addWidget(lane);
+        // Its right-click is its keys' own (their easing): only Edit mode (a click on its title) puts it in a preset
+        if (PresetEditor *pe = PresetEditor::instance()) pe->track(lane, 0, {QStringLiteral("interaction/%1/curve").arg(it.id)});
+        attachPreset({curveOn}, {QStringLiteral("curve/enable"), QStringLiteral("curve")});
         if (m_revealCurve) { // just turned on: shown
             m_revealCurve = false;
             QTimer::singleShot(60, this, [this] { // once laid out
