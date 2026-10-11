@@ -88,7 +88,8 @@ struct FadeTrack {
 
 // A layer on its way to a snapshot's state. Several snapshots can run at once: a new recall takes over only the values
 // it holds, the others go on with the snapshot that started them. Its parameters fade each on its own (how, their ramp
-// says: a switch, a choice, a text are set at once); its routing in the viewports and its mesh's points as a whole.
+// says: a switch, a choice, a text are set at once); its routing in the viewports, its mesh's points and its masks'
+// shapes as a whole.
 struct Engine::FadeJob {
     quint64 id = 0;
     std::vector<FadeTrack> tracks;
@@ -100,6 +101,10 @@ struct Engine::FadeJob {
     std::vector<QPointF> meshFrom, meshTo;
     double meshTime = 0;
     EasingCurve meshCurve = EasingCurve::EaseInOut;
+    bool masks = false; // its masks' points, handles and soft edges (the same shapes: as many masks, as many points)
+    std::vector<Mask> masksFrom, masksTo;
+    double masksTime = 0;
+    EasingCurve masksCurve = EasingCurve::EaseInOut;
     double elapsed = 0;  // its own clock: snapshots started at different times run side by side
     bool hideAtEnd = false; // faded out, then hidden once its opacity got there
     float finalOpacity = 1;
@@ -112,9 +117,10 @@ struct Engine::FadeJob {
         for (const FadeTrack &t : tracks) m = std::max(m, t.time);
         if (routing) m = std::max(m, routeTime);
         if (mesh) m = std::max(m, meshTime);
+        if (masks) m = std::max(m, masksTime);
         return m;
     }
-    bool done() const { return tracks.empty() && !routing && !mesh && !hideAtEnd; }
+    bool done() const { return tracks.empty() && !routing && !mesh && !masks && !hideAtEnd; }
     // The values another recall now sets: no longer this one's
     void drop(const QSet<QString> &paths)
     {
@@ -122,6 +128,7 @@ struct Engine::FadeJob {
                      tracks.end());
         if (paths.contains(QStringLiteral("viewports"))) routing = false;
         if (paths.contains(QStringLiteral("mesh"))) mesh = false;
+        if (paths.contains(QStringLiteral("masks"))) masks = false;
         if (paths.contains(QStringLiteral("opacity"))) hideAtEnd = false;
     }
 };
@@ -149,6 +156,29 @@ static double trackValue(const FadeTrack &t, double elapsed)
         return t.from + d * k;
     }
     return mixd(t.from, t.to, k);
+}
+
+// Masks that can move from one to the other: as many, each with as many points
+static bool masksMorph(const std::vector<Mask> &a, const std::vector<Mask> &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].nodes.size() != b[i].nodes.size()) return false;
+    return true;
+}
+
+// Masks `k` of the way from `a` to `b`: the points, their handles and the soft edge move, the rest is `b`'s
+static std::vector<Mask> mixMasks(const std::vector<Mask> &a, const std::vector<Mask> &b, double k)
+{
+    std::vector<Mask> out = b;
+    for (size_t i = 0; i < out.size(); ++i) {
+        for (size_t n = 0; n < out[i].nodes.size(); ++n) {
+            const MaskNode &x = a[i].nodes[n], &y = b[i].nodes[n];
+            out[i].nodes[n] = {x.p + (y.p - x.p) * k, x.in + (y.in - x.in) * k, x.out + (y.out - x.out) * k};
+        }
+        out[i].feather = mixd(a[i].feather, b[i].feather, k);
+    }
+    return out;
 }
 
 // Sets a job's values where it is now; what is over goes (lock held)
@@ -183,12 +213,37 @@ static void stepJob(Engine::FadeJob &job, Layer &l)
     } else {
         job.mesh = false;
     }
+    if (job.masks && masksMorph(l.masks, job.masksTo)) {
+        l.masks = e >= job.masksTime ? job.masksTo : mixMasks(job.masksFrom, job.masksTo, progress(e, job.masksTime, job.masksCurve));
+        ++l.masksRevision;
+        if (e >= job.masksTime) job.masks = false;
+    } else {
+        job.masks = false;
+    }
     if (job.hideAtEnd && e >= job.hideTime) {
         l.enabled = false;
         if (!job.opacityReleased)
             if (Parameter *p = l.parameter(QStringLiteral("opacity"))) p->setNumber(job.finalOpacity); // stays as stored
         job.hideAtEnd = false;
     }
+}
+
+// A layer's masks on their way to `to`: moved there over their time when they are the same shapes, set at once otherwise
+// (lock held)
+static void fadeMasks(Engine::FadeJob &job, Layer &l, const std::vector<Mask> &from, const std::vector<Mask> &to,
+                      double time, EasingCurve curve)
+{
+    if (time > 0 && from != to && masksMorph(from, to)) {
+        job.masks = true;
+        job.masksFrom = from;
+        job.masksTo = to;
+        job.masksTime = time;
+        job.masksCurve = curve;
+        l.masks = mixMasks(from, to, 0.0);
+    } else {
+        l.masks = to;
+    }
+    ++l.masksRevision;
 }
 
 static QStringList effectPaths(const QJsonArray &a)
@@ -639,6 +694,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                 job->meshTime = timeOf(timing, QStringLiteral("mesh"), fade);
                 job->meshCurve = easingOf(easing, QStringLiteral("mesh"));
             }
+            fadeMasks(*job, *l, old.masks, l->masks, timeOf(timing, QStringLiteral("masks"), fade), easingOf(easing, QStringLiteral("masks")));
             stepJob(*job, *l);
             if (!job->done()) jobs.push_back(job);
             continue;
@@ -652,6 +708,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         for (auto it = params.constBegin(); it != params.constEnd(); ++it) owned.insert(it.key());
         owned << QStringLiteral("viewports") << QStringLiteral("opacity");
         if (o.contains("mesh")) owned << QStringLiteral("mesh");
+        owned << QStringLiteral("masks");
         takeOver(id, owned);
 
         Lock lk(&m_mutex);
@@ -700,6 +757,10 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                 l->mapping.setMeshJson(o.value("mesh").toObject());
             }
         }
+        // Its masks (none when the snapshot has none): the same shapes move there, others are set at once
+        const std::vector<Mask> masksTo = masks::fromJson(o.value("masks").toArray());
+        if (masksTo != l->masks)
+            fadeMasks(*job, *l, l->masks, masksTo, timeOf(timing, QStringLiteral("masks"), fade), easingOf(easing, QStringLiteral("masks")));
         stepJob(*job, *l);
         if (!job->done()) jobs.push_back(job);
     }

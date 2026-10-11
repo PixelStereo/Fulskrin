@@ -2308,6 +2308,53 @@ int main(int argc, char **argv)
         // Saved with the layer
         const QJsonObject lj = e.layerJson(e.indexOfId(lid));
         CHECK(lj.value("masks").toArray().size() == 1);
+        // In snapshots: the same shapes move there over the fade (points, handles, soft edge), others are set at once
+        {
+            e.setLayerMasks(lid, {Mask::rectangle(QRectF(0, 0, 0.5, 1))});
+            const QJsonObject before = e.layerJson(e.indexOfId(lid)); // the half on the left, sharp
+            auto M = [&] { return e.layer(e.indexOfId(lid))->masks; };
+            Mask moved = Mask::rectangle(QRectF(0.5, 0, 0.5, 1));
+            moved.attach = Mask::Attach::Composition;
+            moved.invert = true;
+            moved.feather = 0.2;
+            e.setLayerMasks(lid, {moved});
+            e.applyLayers(QJsonArray{before}, 1.0);
+            CHECK(e.isFading() && std::abs(M()[0].nodes[0].p.x() - 0.5) < 1e-9 && std::abs(M()[0].feather - 0.2) < 1e-9);
+            CHECK(!M()[0].invert && M()[0].attach == Mask::Attach::Surface); // what does not move: at once
+            e.advanceFades(0.5);
+            CHECK(M()[0].nodes[0].p.x() > 0.05 && M()[0].nodes[0].p.x() < 0.45 && M()[0].feather > 0.01 && M()[0].feather < 0.19);
+            e.advanceFades(0.6);
+            CHECK(M()[0] == masks::fromJson(before.value("masks").toArray())[0] && !e.isFading());
+            CHECK(px(0.25, 0.5).red() > 250 && px(0.75, 0.5).red() < 5);
+            // Its own time (a cut here)
+            QJsonObject cut = before;
+            cut["timing"] = QJsonObject{{"masks", 0}};
+            e.setLayerMasks(lid, {moved});
+            e.applyLayers(QJsonArray{cut}, 1.0); // (the rest of the recall still fades: its routing)
+            CHECK(std::abs(M()[0].nodes[0].p.x()) < 1e-9);
+            e.advanceFades(0.3);
+            CHECK(std::abs(M()[0].nodes[0].p.x()) < 1e-9);
+            e.advanceFades(1.0);
+            // Another shape (as many masks, not as many points): at once
+            e.setLayerMasks(lid, {Mask::triangle(QRectF(0.5, 0, 0.5, 1))});
+            e.applyLayers(QJsonArray{before}, 1.0);
+            CHECK(M().size() == 1 && M()[0].nodes.size() == 4 && std::abs(M()[0].nodes[0].p.x()) < 1e-9);
+            e.advanceFades(0.3);
+            CHECK(M().size() == 1 && std::abs(M()[0].nodes[0].p.x()) < 1e-9);
+            e.advanceFades(1.0);
+            // A snapshot without masks takes them away; set by hand during a fade, they stay as set
+            QJsonObject none = before;
+            none.remove("masks");
+            e.applyLayers(QJsonArray{none}, 1.0);
+            CHECK(M().empty());
+            e.setLayerMasks(lid, {moved});
+            e.applyLayers(QJsonArray{before}, 1.0);
+            e.advanceFades(0.3);
+            e.setLayerMasks(lid, {moved});
+            e.advanceFades(1.0);
+            CHECK(std::abs(M()[0].nodes[0].p.x() - 0.5) < 1e-9);
+            e.setLayerMasks(lid, masks::fromJson(before.value("masks").toArray()));
+        }
         e.setLayerMasks(lid, {});
         CHECK(px(0.5, 0.5).red() > 250 && !e.layerJson(e.indexOfId(lid)).contains("masks"));
         // A viewport's mask: its picture, color included (its screen shows it opaque)

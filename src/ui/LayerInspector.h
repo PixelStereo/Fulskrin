@@ -74,6 +74,7 @@ private:
     QWidget *buildCompositing(const LayerValues &s);
     QWidget *buildMapping(const LayerValues &s);
     QPointer<MaskPanel> m_maskPanel;
+    unsigned m_masksRev = 0; // the masks' revision the panel shows
     int m_maskIndex = -1; // the mask selected (kept while the inspector is rebuilt for the same layer)
     QWidget *buildEffects(const LayerValues &s);
     void showEffectParams(); // parameters of the selected effect, swapped without rebuilding the list

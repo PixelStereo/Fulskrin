@@ -997,7 +997,7 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
                                     : QStringLiteral("the snapshot's fade (%1 s)").arg(m.fade, 0, 'f', 1);
         auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: %1 · TIME: its own time%2")
                                     .arg(follows, f.kind == MemField::Info && f.timeKey != "file" && f.timeKey != "text/content" &&
-                                                          f.timeKey != "mesh" && f.timeKey != "viewports"
+                                                          f.timeKey != "mesh" && f.timeKey != "viewports" && f.timeKey != "masks"
                                                       ? QStringLiteral(", for all its values that have none")
                                                       : QString()));
         note->setWordWrap(true);
@@ -1120,6 +1120,12 @@ void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObjec
         const QJsonObject mesh = o.value("mesh").toObject();
         info(parent, QStringLiteral("Mesh"), QStringLiteral("%1 × %2").arg(mesh.value("cols").toInt(4)).arg(mesh.value("rows").toInt(4)),
              QStringLiteral("Its warp's points"), QStringLiteral("mesh"));
+    }
+    {
+        const int n = o.value("masks").toArray().size();
+        info(parent, QStringLiteral("Masks"), n ? QString::number(n) : QStringLiteral("None"),
+             QStringLiteral("Its masks: the same shapes move there (points, handles, soft edge), others are set at once"),
+             QStringLiteral("masks"));
     }
 
     // Its animations: the recall gives them these settings and this transport
