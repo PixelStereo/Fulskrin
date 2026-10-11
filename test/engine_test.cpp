@@ -1224,35 +1224,35 @@ int main(int argc, char **argv)
         }
         // Sequences: steps recalling snapshots, GO / GO BACK, loop, saved with the project
         {
-            Engine::Sequence seq;
+            Sequencer::Sequence seq;
             seq.name = "Show";
             seq.steps = {{e.snapshot(1).id, "Act 1"}, {e.snapshot(0).id, "Act 2"}, {987654, "gone"}};
-            CHECK(e.addSequence(seq) == 0 && e.currentSequence() == 0 && e.sequencePosition() == -1);
-            CHECK(e.sequenceNext() == 0 && e.sequencePrevious() == -1);
+            CHECK(e.sequencer().add(seq) == 0 && e.sequencer().current() == 0 && e.sequencer().position() == -1);
+            CHECK(e.sequencer().next() == 0 && e.sequencer().previous() == -1);
             e.layer(V + 0)->opacity = 0.1f;
-            CHECK(e.sequenceGo() && e.sequencePosition() == 0); // snapshot 1 ("Look 2"): layer 0 at 0, with its fade
-            CHECK(e.sequenceGo() && e.sequencePosition() == 1 && std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // snapshot 0, at once
-            CHECK(e.sequenceGo() && e.sequencePosition() == 2); // its snapshot is gone: the position moves, nothing else
-            CHECK(e.sequenceNext() == -1 && !e.sequenceGo()); // the end, no loop
+            CHECK(e.sequencer().go() && e.sequencer().position() == 0); // snapshot 1 ("Look 2"): layer 0 at 0, with its fade
+            CHECK(e.sequencer().go() && e.sequencer().position() == 1 && std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // snapshot 0, at once
+            CHECK(e.sequencer().go() && e.sequencer().position() == 2); // its snapshot is gone: the position moves, nothing else
+            CHECK(e.sequencer().next() == -1 && !e.sequencer().go()); // the end, no loop
             seq.loop = true;
-            e.setSequence(0, seq);
-            CHECK(e.sequenceNext() == 0);
-            CHECK(e.sequenceBack() && e.sequencePosition() == 1);
-            e.setSequencePosition(0);
-            CHECK(e.sequencePrevious() == 2); // loop: before the first, the last
-            Engine::Sequence copy = e.sequence(0);
+            e.sequencer().setSequence(0, seq);
+            CHECK(e.sequencer().next() == 0);
+            CHECK(e.sequencer().back() && e.sequencer().position() == 1);
+            e.sequencer().setPosition(0);
+            CHECK(e.sequencer().previous() == 2); // loop: before the first, the last
+            Sequencer::Sequence copy = e.sequencer().sequence(0);
             copy.name = "Copy";
-            CHECK(e.addSequence(copy) == 1 && e.currentSequence() == 0);
-            e.setCurrentSequence(1);
-            CHECK(e.sequencePosition() == -1);
+            CHECK(e.sequencer().add(copy) == 1 && e.sequencer().current() == 0);
+            e.sequencer().setCurrent(1);
+            CHECK(e.sequencer().position() == -1);
             CHECK(e.saveProject(tmp + "/sequences.fulskrin", {}, &err));
             CHECK(e.loadProject(tmp + "/sequences.fulskrin", nullptr, &err));
-            CHECK(e.sequenceCount() == 2 && e.currentSequence() == 1 && e.sequence(0).loop &&
-                  e.sequence(0).steps.size() == 3 && e.sequence(0).steps[0].text == "Act 1" &&
-                  e.sequence(0).steps[0].snapshot == e.snapshot(1).id);
-            e.removeSequence(1);
-            e.removeSequence(0);
-            CHECK(e.sequenceCount() == 0 && e.currentSequence() == -1 && !e.sequenceGo());
+            CHECK(e.sequencer().count() == 2 && e.sequencer().current() == 1 && e.sequencer().sequence(0).loop &&
+                  e.sequencer().sequence(0).steps.size() == 3 && e.sequencer().sequence(0).steps[0].text == "Act 1" &&
+                  e.sequencer().sequence(0).steps[0].snapshot == e.snapshot(1).id);
+            e.sequencer().remove(1);
+            e.sequencer().remove(0);
+            CHECK(e.sequencer().count() == 0 && e.sequencer().current() == -1 && !e.sequencer().go());
         }
         // Snapshots run side by side: a recall takes over only the values it holds, from where they are
         {
@@ -1351,73 +1351,73 @@ int main(int argc, char **argv)
 
             // Pre-wait, post-wait, follow / auto-follow / wait
             std::vector<int> fired;
-            e.setRecaller([&](int mi) {
+            e.sequencer().setRecaller([&](int mi) {
                 fired.push_back(mi);
                 e.recallSnapshot(mi);
             });
-            Engine::Sequence seq;
+            Sequencer::Sequence seq;
             seq.name = "Waits";
-            Engine::SequenceStep s0, s1, s2;
+            Sequencer::Step s0, s1, s2;
             s0.snapshot = e.snapshot(mA1).id;
             s0.preWait = 1.0;
             s0.postWait = 0.5;
-            s0.next = Engine::StepContinue::Follow; // the next GO 0.5 s after this one is triggered
+            s0.next = Sequencer::StepContinue::Follow; // the next GO 0.5 s after this one is triggered
             s1.snapshot = e.snapshot(mB1).id;
             s1.postWait = 0.5;
-            s1.next = Engine::StepContinue::AutoFollow; // the next GO 0.5 s after its 2 s action
+            s1.next = Sequencer::StepContinue::AutoFollow; // the next GO 0.5 s after its 2 s action
             s2.snapshot = e.snapshot(mA0).id;               // Wait
             seq.steps = {s0, s1, s2};
-            e.setCurrentSequence(e.addSequence(seq));
-            CHECK(e.sequenceGo() && e.sequencePosition() == 0 && fired.empty()); // in its pre-wait
-            CHECK(e.sequenceRunning() && e.sequenceRuns().size() == 1 && !e.sequenceRuns()[0].fired);
-            e.advanceSequence(0.5);
+            e.sequencer().setCurrent(e.sequencer().add(seq));
+            CHECK(e.sequencer().go() && e.sequencer().position() == 0 && fired.empty()); // in its pre-wait
+            CHECK(e.sequencer().running() && e.sequencer().runs().size() == 1 && !e.sequencer().runs()[0].fired);
+            e.sequencer().advance(0.5);
             CHECK(fired.empty());
-            e.advanceSequence(0.5);
-            CHECK(fired == std::vector<int>{mA1} && e.sequencePosition() == 0);
-            e.advanceSequence(0.4);
-            CHECK(e.sequencePosition() == 0);
-            e.advanceSequence(0.1); // 1.5 s: pre-wait + post-wait, the next one without waiting for the action
-            CHECK(fired == (std::vector<int>{mA1, mB1}) && e.sequencePosition() == 1);
-            e.advanceSequence(2.4);
-            CHECK(e.sequencePosition() == 1);
-            e.advanceSequence(0.2); // its action (2 s) and its post-wait (0.5 s) over
-            CHECK(fired == (std::vector<int>{mA1, mB1, mA0}) && e.sequencePosition() == 2);
-            e.advanceSequence(10.0);
-            CHECK(fired.size() == 3 && !e.sequenceRunning() && e.sequenceRuns().empty()); // Wait: GO is awaited
+            e.sequencer().advance(0.5);
+            CHECK(fired == std::vector<int>{mA1} && e.sequencer().position() == 0);
+            e.sequencer().advance(0.4);
+            CHECK(e.sequencer().position() == 0);
+            e.sequencer().advance(0.1); // 1.5 s: pre-wait + post-wait, the next one without waiting for the action
+            CHECK(fired == (std::vector<int>{mA1, mB1}) && e.sequencer().position() == 1);
+            e.sequencer().advance(2.4);
+            CHECK(e.sequencer().position() == 1);
+            e.sequencer().advance(0.2); // its action (2 s) and its post-wait (0.5 s) over
+            CHECK(fired == (std::vector<int>{mA1, mB1, mA0}) && e.sequencer().position() == 2);
+            e.sequencer().advance(10.0);
+            CHECK(fired.size() == 3 && !e.sequencer().running() && e.sequencer().runs().empty()); // Wait: GO is awaited
             // All at once: the time beyond each GO is carried over to the next
             fired.clear();
-            e.setSequencePosition(-1);
-            e.sequenceGo();
-            e.advanceSequence(10.0);
-            CHECK(fired == (std::vector<int>{mA1, mB1, mA0}) && e.sequencePosition() == 2);
+            e.sequencer().setPosition(-1);
+            e.sequencer().go();
+            e.sequencer().advance(10.0);
+            CHECK(fired == (std::vector<int>{mA1, mB1, mA0}) && e.sequencer().position() == 2);
             // Stopped: what was still to come does not come
             fired.clear();
-            e.setSequencePosition(-1);
-            e.sequenceGo();
-            e.sequenceStop();
-            e.advanceSequence(10.0);
-            CHECK(fired.empty() && e.sequencePosition() == 0);
+            e.sequencer().setPosition(-1);
+            e.sequencer().go();
+            e.sequencer().stop();
+            e.sequencer().advance(10.0);
+            CHECK(fired.empty() && e.sequencer().position() == 0);
             // GO during a pre-wait: the playhead has moved on, the next GO is the next step
             fired.clear();
-            e.setSequencePosition(-1);
-            e.sequenceGo();
-            CHECK(e.sequenceNext() == 1);
+            e.sequencer().setPosition(-1);
+            e.sequencer().go();
+            CHECK(e.sequencer().next() == 1);
             // GO BACK: at once, and the waits running are stopped
-            e.setSequencePosition(2);
-            CHECK(e.sequenceBack() && e.sequencePosition() == 1 && fired == std::vector<int>{mB1});
-            e.advanceSequence(10.0);
+            e.sequencer().setPosition(2);
+            CHECK(e.sequencer().back() && e.sequencer().position() == 1 && fired == std::vector<int>{mB1});
+            e.sequencer().advance(10.0);
             CHECK(fired == std::vector<int>{mB1}); // neither step 0's pre-wait nor step 1's auto-follow
             // Saved with the project
             CHECK(e.saveProject(tmp + "/waits.fulskrin", {}, &err));
             CHECK(e.loadProject(tmp + "/waits.fulskrin", nullptr, &err));
             {
-                const Engine::Sequence w = e.sequence(e.currentSequence());
+                const Sequencer::Sequence w = e.sequencer().sequence(e.sequencer().current());
                 CHECK(w.steps.size() == 3 && near(w.steps[0].preWait, 1.0) && near(w.steps[0].postWait, 0.5) &&
-                      w.steps[0].next == Engine::StepContinue::Follow &&
-                      w.steps[1].next == Engine::StepContinue::AutoFollow && w.steps[2].next == Engine::StepContinue::Wait);
+                      w.steps[0].next == Sequencer::StepContinue::Follow &&
+                      w.steps[1].next == Sequencer::StepContinue::AutoFollow && w.steps[2].next == Sequencer::StepContinue::Wait);
             }
-            e.setRecaller(nullptr);
-            e.removeSequence(e.currentSequence());
+            e.sequencer().setRecaller(nullptr);
+            e.sequencer().remove(e.sequencer().current());
             for (int mi : {mA0, mB1, mA1}) e.removeSnapshot(mi); // the last first
             e.removeLayer(e.indexOfId(ia));
             e.removeLayer(e.indexOfId(ib));
@@ -1528,34 +1528,34 @@ int main(int argc, char **argv)
             CHECK(!e.animatableParams(tid).empty() && e.animatableParams(0).size() == 3);
             // Steps driving it: Play (its time, when it ends), Seek, Stop
             e.controlAnimation(aid, A::LoopMode, 0, L::Once);
-            Engine::Sequence sq;
+            Sequencer::Sequence sq;
             sq.name = "Timeline";
-            Engine::SequenceStep p0, p1, p2;
+            Sequencer::Step p0, p1, p2;
             p0.timeline = aid;
-            p0.next = Engine::StepContinue::AutoFollow;
+            p0.next = Sequencer::StepContinue::AutoFollow;
             p1.timeline = aid;
             p1.action = A::Seek;
             p1.seekTime = 1.0;
             p2.timeline = aid;
             p2.action = A::Stop;
-            Engine::SequenceStep p3;
+            Sequencer::Step p3;
             p3.timeline = aid;
             p3.action = A::Speed;
             p3.speed = 0.75;
             sq.steps = {p0, p1, p2, p3};
-            e.setCurrentSequence(e.addSequence(sq));
-            CHECK(near(e.stepDuration(p0), 4) && e.stepDuration(p1) == 0);
-            CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Playing);
+            e.sequencer().setCurrent(e.sequencer().add(sq));
+            CHECK(near(e.sequencer().stepDuration(p0), 4) && e.sequencer().stepDuration(p1) == 0);
+            CHECK(e.sequencer().go() && e.animation(ai).state == Engine::AnimState::Playing);
             e.advanceFades(3.9);
-            e.advanceSequence(3.9);
-            CHECK(e.sequencePosition() == 0);
+            e.sequencer().advance(3.9);
+            CHECK(e.sequencer().position() == 0);
             e.advanceFades(0.2); // (the timeline and the sequence run together)
-            e.advanceSequence(0.2); // its 4 s over: the seek
-            CHECK(e.sequencePosition() == 1 && near(e.animation(ai).clock, 1.0) &&
+            e.sequencer().advance(0.2); // its 4 s over: the seek
+            CHECK(e.sequencer().position() == 1 && near(e.animation(ai).clock, 1.0) &&
                   e.animation(ai).state == Engine::AnimState::Paused); // over, then sought: stays where it was sought
-            CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Stopped);
+            CHECK(e.sequencer().go() && e.animation(ai).state == Engine::AnimState::Stopped);
             e.controlAnimation(aid, A::LoopMode, 0, L::Loop, 0);
-            CHECK(e.stepDuration(p0) == 0); // endless: nothing to wait for
+            CHECK(e.sequencer().stepDuration(p0) == 0); // endless: nothing to wait for
             using S = Engine::AnimState;
             // Loop → Once while it plays past its first pass: it ends the pass it is in, no jump to the end
             e.controlAnimation(aid, A::Play);
@@ -1596,7 +1596,7 @@ int main(int argc, char **argv)
             }
             e.controlAnimation(aid, A::Play);
             e.advanceFades(1.0);
-            CHECK(near(e.animation(ai).clock, 2.0) && near(e.stepDuration(p0), 1.0));
+            CHECK(near(e.animation(ai).clock, 2.0) && near(e.sequencer().stepDuration(p0), 1.0));
             e.controlAnimation(aid, A::Stop);
             // Speed from a step (or OSC): it plays on from where it is
             e.controlAnimation(aid, A::Play);
@@ -1607,50 +1607,50 @@ int main(int argc, char **argv)
             e.controlAnimation(aid, A::Speed, 0); // frozen where it is, still playing
             e.advanceFades(1.0);
             CHECK(near(e.animation(ai).clock, 2.5) && e.animation(ai).state == Engine::AnimState::Playing &&
-                  !std::isfinite(e.stepDuration(p0)));
+                  !std::isfinite(e.sequencer().stepDuration(p0)));
             e.controlAnimation(aid, A::Stop);
             // An auto-follow Play on a frozen timeline waits; its speed raised meanwhile (OSC), it goes on, and the
             // next step comes once the timeline is really over
             {
-                const int keepSeq = e.currentSequence();
+                const int keepSeq = e.sequencer().current();
                 Engine::Animation x = e.animation(ai);
                 x.loop = L::Once;
                 x.speed = 0;
                 e.setAnimation(ai, x);
-                Engine::Sequence fq;
+                Sequencer::Sequence fq;
                 fq.name = "Frozen";
-                Engine::SequenceStep f0, f1;
+                Sequencer::Step f0, f1;
                 f0.timeline = aid;
-                f0.next = Engine::StepContinue::AutoFollow;
+                f0.next = Sequencer::StepContinue::AutoFollow;
                 f1.timeline = aid;
                 f1.action = A::Pause;
                 fq.steps = {f0, f1};
-                const int fi = e.addSequence(fq);
-                e.setCurrentSequence(fi);
-                CHECK(!std::isfinite(e.stepDuration(f0)));
-                CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Playing);
+                const int fi = e.sequencer().add(fq);
+                e.sequencer().setCurrent(fi);
+                CHECK(!std::isfinite(e.sequencer().stepDuration(f0)));
+                CHECK(e.sequencer().go() && e.animation(ai).state == Engine::AnimState::Playing);
                 for (int k = 0; k < 3; ++k) {
                     e.advanceFades(10.0);
-                    e.advanceSequence(10.0);
+                    e.sequencer().advance(10.0);
                 }
-                CHECK(e.sequencePosition() == 0 && near(e.animation(ai).clock, 0)); // still waiting
+                CHECK(e.sequencer().position() == 0 && near(e.animation(ai).clock, 0)); // still waiting
                 e.controlAnimation(aid, A::Speed, 2);
-                e.advanceSequence(0.01); // it sees the speed
+                e.sequencer().advance(0.01); // it sees the speed
                 e.advanceFades(1.0);
-                e.advanceSequence(1.0);
-                CHECK(e.sequencePosition() == 0 && near(e.animation(ai).clock, 2.0));
+                e.sequencer().advance(1.0);
+                CHECK(e.sequencer().position() == 0 && near(e.animation(ai).clock, 2.0));
                 e.controlAnimation(aid, A::Speed, 0); // frozen again: it waits again
                 e.advanceFades(5.0);
-                e.advanceSequence(5.0);
-                CHECK(e.sequencePosition() == 0 && near(e.animation(ai).clock, 2.0));
+                e.sequencer().advance(5.0);
+                CHECK(e.sequencer().position() == 0 && near(e.animation(ai).clock, 2.0));
                 e.controlAnimation(aid, A::Speed, 2);
-                e.advanceSequence(0.01);
+                e.sequencer().advance(0.01);
                 e.advanceFades(1.5);
-                e.advanceSequence(1.5); // its 4 s played: over, and the next step comes
-                CHECK(e.sequencePosition() == 1);
-                e.sequenceStop();
-                e.setCurrentSequence(keepSeq);
-                e.removeSequence(fi);
+                e.sequencer().advance(1.5); // its 4 s played: over, and the next step comes
+                CHECK(e.sequencer().position() == 1);
+                e.sequencer().stop();
+                e.sequencer().setCurrent(keepSeq);
+                e.sequencer().remove(fi);
                 e.controlAnimation(aid, A::Stop);
                 x.speed = 2;
                 e.setAnimation(ai, x);
@@ -1723,13 +1723,13 @@ int main(int argc, char **argv)
                 CHECK(ck >= 0 && e.animation(ck).tracks[0].keys[0].isCurrentValue && !e.animation(ck).tracks[0].keys[1].isCurrentValue &&
                       e.animation(ck).tracks[0].keys[0].curve == 0);
                 if (ck >= 0) e.removeAnimation(ck);
-                const Engine::Sequence w = e.sequence(e.currentSequence());
+                const Sequencer::Sequence w = e.sequencer().sequence(e.sequencer().current());
                 CHECK(w.steps.size() == 4 && w.steps[3].action == A::Speed && near(w.steps[3].speed, 0.75) &&
                       w.steps[0].timeline == aid && w.steps[0].snapshot == 0 &&
                       w.steps[0].action == A::Play && w.steps[1].action == A::Seek && near(w.steps[1].seekTime, 1.0) &&
                       w.steps[2].action == A::Stop);
             }
-            e.removeSequence(e.currentSequence());
+            e.sequencer().remove(e.sequencer().current());
             e.removeAnimation(e.indexOfAnimation(aid));
             e.removeLayer(e.indexOfId(tid));
             e.setFadesManual(false);
@@ -3182,10 +3182,13 @@ int main(int argc, char **argv)
         { // Negative speed, sound: backwards (880 Hz part, then 440 Hz), across 0 in Loop, then forwards again
             const int r = e.addLayer("Reverse");
             CHECK(e.setLayerAudio(r, root + "/media/tone.wav", &err));
-            e.setLayerSpeed(r, -1.0);
             {
+                // Backwards from its start: round to its end (Loop). Under the lock: the render thread, playing it
+                // already, would otherwise move it off its start in between
                 Engine::Lock lk(&e.mutex());
-                CHECK(e.layer(r)->dir == -1 && e.layer(r)->position() > 3.9); // starts from the end
+                e.seekLayer(r, 0);
+                e.setLayerSpeed(r, -1.0);
+                CHECK(e.layer(r)->dir == -1 && e.layer(r)->position() > 3.9);
             }
             e.seekLayer(r, 2.8);
             CHECK(tone(880, 20));

@@ -36,7 +36,7 @@ static QString snapshotName(Engine *e, quint64 id)
 }
 
 // What a timeline step does
-static QString actionName(const Engine::SequenceStep &st)
+static QString actionName(const Sequencer::Step &st)
 {
     using A = Engine::AnimAction;
     switch (st.action) {
@@ -63,7 +63,7 @@ static QString timelineName(Engine *e, quint64 id)
 }
 
 // What a step does: its snapshot (with its number), or its timeline and the action on it
-static QString stepTarget(Engine *e, const Engine::SequenceStep &st, bool numbered = true)
+static QString stepTarget(Engine *e, const Sequencer::Step &st, bool numbered = true)
 {
     if (st.timeline) return QStringLiteral("≋ %1 · %2").arg(timelineName(e, st.timeline), actionName(st));
     if (numbered) return snapshotName(e, st.snapshot);
@@ -71,7 +71,7 @@ static QString stepTarget(Engine *e, const Engine::SequenceStep &st, bool number
     return !st.snapshot ? QStringLiteral("—") : mi < 0 ? QStringLiteral("(snapshot gone)") : e->snapshot(mi).name;
 }
 
-static bool targetGone(Engine *e, const Engine::SequenceStep &st)
+static bool targetGone(Engine *e, const Sequencer::Step &st)
 {
     return st.timeline ? e->indexOfAnimation(st.timeline) < 0 : st.snapshot && e->indexOfSnapshot(st.snapshot) < 0;
 }
@@ -91,11 +91,11 @@ static QString seconds(double t)
     return QStringLiteral("%1:%2").arg(m).arg(t - m * 60, 4, 'f', 1, QLatin1Char('0'));
 }
 
-static QString continueName(Engine::StepContinue c)
+static QString continueName(Sequencer::StepContinue c)
 {
     switch (c) {
-    case Engine::StepContinue::Follow: return QStringLiteral("↓ Follow");
-    case Engine::StepContinue::AutoFollow: return QStringLiteral("⤓ Auto-follow");
+    case Sequencer::StepContinue::Follow: return QStringLiteral("↓ Follow");
+    case Sequencer::StepContinue::AutoFollow: return QStringLiteral("⤓ Auto-follow");
     default: return QStringLiteral("Wait (GO)");
     }
 }
@@ -105,7 +105,7 @@ struct RunPhases {
     double pre = -1, action = -1, post = -1;
     double preElapsed = 0, actionElapsed = 0, postElapsed = 0;
 };
-static RunPhases phasesOf(const Engine::StepRun &r)
+static RunPhases phasesOf(const Sequencer::Run &r)
 {
     RunPhases ph;
     auto frac = [](double e, double len) { return len > 0 ? std::clamp(e / len, 0.0, 1.0) : (e >= 0 ? 1.0 : 0.0); };
@@ -260,10 +260,10 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     connect(waits, &QTimer::timeout, this, &SequenceBar::pollWaits);
     waits->start();
     connect(m_sequence, qOverload<int>(&QComboBox::activated), this, [this](int i) {
-        if (!m_filling) m_engine->setCurrentSequence(i);
+        if (!m_filling) m_engine->sequencer().setCurrent(i);
     });
-    connect(m_engine, &Engine::sequencesChanged, this, &SequenceBar::refresh);
-    connect(m_engine, &Engine::sequencePositionChanged, this, &SequenceBar::refresh);
+    connect(&m_engine->sequencer(), &Sequencer::changed, this, &SequenceBar::refresh);
+    connect(&m_engine->sequencer(), &Sequencer::positionChanged, this, &SequenceBar::refresh);
     connect(m_engine, &Engine::snapshotsChanged, this, &SequenceBar::refresh);
     connect(m_engine, &Engine::animationsChanged, this, &SequenceBar::refresh);
     refresh();
@@ -272,10 +272,10 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
 // What is waiting: a step in its pre-wait, or the next step's GO after a follow / auto-follow
 void SequenceBar::pollWaits()
 {
-    const std::vector<Engine::StepRun> runs = m_engine->sequenceRuns();
-    const Engine::Sequence s = m_engine->sequence(m_engine->currentSequence());
+    const std::vector<Sequencer::Run> runs = m_engine->sequencer().runs();
+    const Sequencer::Sequence s = m_engine->sequencer().sequence(m_engine->sequencer().current());
     QStringList parts;
-    for (const Engine::StepRun &r : runs) {
+    for (const Sequencer::Run &r : runs) {
         if (!r.fired) {
             parts << QStringLiteral("<span style='color:%1'>%2. pre-wait %3 s</span>")
                          .arg(kPreWait.name()).arg(r.step + 1).arg(seconds(r.preWait - r.elapsed));
@@ -287,7 +287,7 @@ void SequenceBar::pollWaits()
         const int next = r.step + 1 < n ? r.step + 1 : s.loop ? 0 : -1;
         if (next < 0) continue;
         parts << QStringLiteral("<span style='color:%1'>%2 → %3 in %4 s</span>")
-                     .arg(kPostWait.name(), r.next == Engine::StepContinue::Follow ? QStringLiteral("follow") : QStringLiteral("auto-follow"))
+                     .arg(kPostWait.name(), r.next == Sequencer::StepContinue::Follow ? QStringLiteral("follow") : QStringLiteral("auto-follow"))
                      .arg(next + 1)
                      .arg(seconds(at - r.elapsed));
     }
@@ -307,16 +307,16 @@ void SequenceBar::setModified(bool on)
 void SequenceBar::refresh()
 {
     m_filling = true;
-    const int n = m_engine->sequenceCount(), cur = m_engine->currentSequence();
+    const int n = m_engine->sequencer().count(), cur = m_engine->sequencer().current();
     m_sequence->clear();
-    for (int i = 0; i < n; ++i) m_sequence->addItem(m_engine->sequence(i).name);
+    for (int i = 0; i < n; ++i) m_sequence->addItem(m_engine->sequencer().sequence(i).name);
     if (n == 0) m_sequence->addItem(QStringLiteral("No sequence"));
     m_sequence->setCurrentIndex(std::max(0, cur));
     m_sequence->setEnabled(n > 0);
     m_filling = false;
 
-    const Engine::Sequence s = m_engine->sequence(cur);
-    const int pos = m_engine->sequencePosition(), next = m_engine->sequenceNext(), prev = m_engine->sequencePrevious();
+    const Sequencer::Sequence s = m_engine->sequencer().sequence(cur);
+    const int pos = m_engine->sequencer().position(), next = m_engine->sequencer().next(), prev = m_engine->sequencer().previous();
     auto stepName = [&](int k) {
         if (k < 0 || k >= int(s.steps.size())) return QString();
         const QString name = stepTarget(m_engine, s.steps[size_t(k)], false);
@@ -373,7 +373,7 @@ public:
         }
         if (idx.column() == ColNext) {
             auto *c = new QComboBox(parent);
-            for (auto k : {Engine::StepContinue::Wait, Engine::StepContinue::Follow, Engine::StepContinue::AutoFollow})
+            for (auto k : {Sequencer::StepContinue::Wait, Sequencer::StepContinue::Follow, Sequencer::StepContinue::AutoFollow})
                 c->addItem(continueName(k), int(k));
             connect(c, qOverload<int>(&QComboBox::activated), this, [this, c] {
                 auto *self = const_cast<StepDelegate *>(this);
@@ -411,19 +411,19 @@ public:
         o.text.clear();
         const QWidget *w = opt.widget;
         (w ? w->style() : QApplication::style())->drawControl(QStyle::CE_ItemViewItem, &o, p, w);
-        const auto next = Engine::StepContinue(idx.sibling(idx.row(), ColNext).data(Qt::EditRole).toInt());
+        const auto next = Sequencer::StepContinue(idx.sibling(idx.row(), ColNext).data(Qt::EditRole).toInt());
         const bool selected = opt.state & QStyle::State_Selected;
         QColor ink = opt.palette.color(selected ? QPalette::HighlightedText : QPalette::Text);
         if (col == ColNext) {
-            if (next == Engine::StepContinue::Wait) ink.setAlphaF(0.45);
+            if (next == Sequencer::StepContinue::Wait) ink.setAlphaF(0.45);
             p->setPen(ink);
             p->drawText(opt.rect.adjusted(6, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft, continueName(next));
             return;
         }
         const double value = idx.data(Qt::EditRole).toDouble();
         // The step on its way (the latest, should it be there twice in a loop)
-        const Engine::StepRun *run = nullptr;
-        for (const Engine::StepRun &r : m_w->m_runs)
+        const Sequencer::Run *run = nullptr;
+        for (const Sequencer::Run &r : m_w->m_runs)
             if (r.step == idx.row()) run = &r;
         double frac = -1, elapsed = 0;
         QColor bar = kLive;
@@ -443,7 +443,7 @@ public:
             p->fillRect(QRectF(r.left(), r.top(), r.width() * frac, r.height()), fill);
         }
         // The post-wait only counts with a follow; a time of zero is quiet
-        const bool unused = col == ColPost && next == Engine::StepContinue::Wait;
+        const bool unused = col == ColPost && next == Sequencer::StepContinue::Wait;
         if (unused || (value == 0 && frac < 0)) ink.setAlphaF(0.4);
         QFont f = opt.font;
         QString text = value < 0 ? QStringLiteral("∞") : seconds(value);
@@ -549,63 +549,63 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     right->addLayout(stb);
     h->addLayout(right, 3);
 
-    auto current = [this] { return m_engine->currentSequence(); };
+    auto current = [this] { return m_engine->sequencer().current(); };
     connect(m_sequences, &QListWidget::currentRowChanged, this, [this](int r) {
-        if (!m_filling && r >= 0) m_engine->setCurrentSequence(r);
+        if (!m_filling && r >= 0) m_engine->sequencer().setCurrent(r);
     });
     connect(m_sequences, &QListWidget::itemChanged, this, [this](QListWidgetItem *it) {
         if (m_filling) return;
         const int i = m_sequences->row(it);
-        Engine::Sequence s = m_engine->sequence(i);
+        Sequencer::Sequence s = m_engine->sequencer().sequence(i);
         if (s.name == it->text()) return;
         s.name = it->text();
-        m_engine->setSequence(i, s);
+        m_engine->sequencer().setSequence(i, s);
         emit edited();
     });
     connect(m_add, &QPushButton::clicked, this, [this] {
-        Engine::Sequence s;
-        s.name = QStringLiteral("Sequence %1").arg(m_engine->sequenceCount() + 1);
-        m_engine->setCurrentSequence(m_engine->addSequence(s));
+        Sequencer::Sequence s;
+        s.name = QStringLiteral("Sequence %1").arg(m_engine->sequencer().count() + 1);
+        m_engine->sequencer().setCurrent(m_engine->sequencer().add(s));
         emit edited();
     });
     connect(m_dup, &QPushButton::clicked, this, [this, current] {
         if (current() < 0) return;
-        Engine::Sequence s = m_engine->sequence(current());
+        Sequencer::Sequence s = m_engine->sequencer().sequence(current());
         s.name += QStringLiteral(" copy");
-        m_engine->setCurrentSequence(m_engine->addSequence(s, current() + 1));
+        m_engine->sequencer().setCurrent(m_engine->sequencer().add(s, current() + 1));
         emit edited();
     });
     connect(m_del, &QPushButton::clicked, this, [this, current] {
         if (current() < 0) return;
-        m_engine->removeSequence(current());
+        m_engine->sequencer().remove(current());
         emit edited();
     });
     connect(m_loop, &QCheckBox::toggled, this, [this, current](bool on) {
         if (m_filling || current() < 0) return;
-        Engine::Sequence s = m_engine->sequence(current());
+        Sequencer::Sequence s = m_engine->sequencer().sequence(current());
         s.loop = on;
-        m_engine->setSequence(current(), s);
+        m_engine->sequencer().setSequence(current(), s);
         emit edited();
     });
     connect(m_steps, &QTableWidget::itemChanged, this, [this, current](QTableWidgetItem *it) {
         if (m_filling || current() < 0) return;
-        Engine::Sequence s = m_engine->sequence(current());
+        Sequencer::Sequence s = m_engine->sequencer().sequence(current());
         if (it->row() >= int(s.steps.size())) return;
-        Engine::SequenceStep &st = s.steps[size_t(it->row())];
+        Sequencer::Step &st = s.steps[size_t(it->row())];
         switch (it->column()) {
         case ColText: st.text = it->text(); break;
         case ColPre: st.preWait = std::clamp(it->data(Qt::EditRole).toDouble(), 0.0, 3600.0); break;
         case ColPost: st.postWait = std::clamp(it->data(Qt::EditRole).toDouble(), 0.0, 3600.0); break;
-        case ColNext: st.next = Engine::StepContinue(std::clamp(it->data(Qt::EditRole).toInt(), 0, 2)); break;
+        case ColNext: st.next = Sequencer::StepContinue(std::clamp(it->data(Qt::EditRole).toInt(), 0, 2)); break;
         default: return;
         }
-        m_engine->setSequence(current(), s);
+        m_engine->sequencer().setSequence(current(), s);
         emit edited();
     });
     connect(m_steps, &QTableWidget::cellDoubleClicked, this, [this](int row, int col) {
         if (col == ColNum) emit goToRequested(row);
         if (col == ColSnapshot) {
-            const Engine::Sequence s = m_engine->sequence(m_engine->currentSequence());
+            const Sequencer::Sequence s = m_engine->sequencer().sequence(m_engine->sequencer().current());
             if (row < int(s.steps.size()) && s.steps[size_t(row)].timeline) {
                 const QRect r = m_steps->visualItemRect(m_steps->item(row, col));
                 QMenu menu;
@@ -635,7 +635,7 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
             });
         }
         tl->setEnabled(!tl->isEmpty());
-        const Engine::Sequence cs = m_engine->sequence(m_engine->currentSequence());
+        const Sequencer::Sequence cs = m_engine->sequencer().sequence(m_engine->sequencer().current());
         if (row >= 0 && row < int(cs.steps.size()) && cs.steps[size_t(row)].timeline)
             fillActionMenu(menu.addMenu(QStringLiteral("Timeline action")), row);
         if (row >= 0) {
@@ -651,8 +651,8 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     connect(m_stepDel, &QPushButton::clicked, this, &SequenceWindow::removeSteps);
     connect(m_up, &QPushButton::clicked, this, [this] { moveStep(-1); });
     connect(m_down, &QPushButton::clicked, this, [this] { moveStep(+1); });
-    connect(m_engine, &Engine::sequencesChanged, this, &SequenceWindow::refresh);
-    connect(m_engine, &Engine::sequencePositionChanged, this, &SequenceWindow::refresh);
+    connect(&m_engine->sequencer(), &Sequencer::changed, this, &SequenceWindow::refresh);
+    connect(&m_engine->sequencer(), &Sequencer::positionChanged, this, &SequenceWindow::refresh);
     connect(m_engine, &Engine::snapshotsChanged, this, &SequenceWindow::refresh);
     connect(m_engine, &Engine::animationsChanged, this, &SequenceWindow::refresh);
     refresh();
@@ -663,21 +663,21 @@ void SequenceWindow::fillActionMenu(QMenu *menu, int row)
 {
     using A = Engine::AnimAction;
     using L = Engine::AnimLoop;
-    const Engine::Sequence s = m_engine->sequence(m_engine->currentSequence());
+    const Sequencer::Sequence s = m_engine->sequencer().sequence(m_engine->sequencer().current());
     if (row < 0 || row >= int(s.steps.size())) return;
-    const Engine::SequenceStep cur = s.steps[size_t(row)];
-    auto set = [this, row](const std::function<void(Engine::SequenceStep &)> &f) {
-        const int c = m_engine->currentSequence();
-        Engine::Sequence q = m_engine->sequence(c);
+    const Sequencer::Step cur = s.steps[size_t(row)];
+    auto set = [this, row](const std::function<void(Sequencer::Step &)> &f) {
+        const int c = m_engine->sequencer().current();
+        Sequencer::Sequence q = m_engine->sequencer().sequence(c);
         if (row >= int(q.steps.size())) return;
         f(q.steps[size_t(row)]);
-        m_engine->setSequence(c, q);
+        m_engine->sequencer().setSequence(c, q);
         emit edited();
     };
     for (A a : {A::Play, A::Pause, A::Stop, A::Rewind}) {
-        Engine::SequenceStep x;
+        Sequencer::Step x;
         x.action = a;
-        QAction *act = menu->addAction(actionName(x), this, [set, a] { set([a](Engine::SequenceStep &st) { st.action = a; }); });
+        QAction *act = menu->addAction(actionName(x), this, [set, a] { set([a](Sequencer::Step &st) { st.action = a; }); });
         act->setCheckable(true);
         act->setChecked(cur.action == a);
     }
@@ -685,7 +685,7 @@ void SequenceWindow::fillActionMenu(QMenu *menu, int row)
         bool ok = false;
         const double t = QInputDialog::getDouble(this, QStringLiteral("Seek"), QStringLiteral("Go to (seconds played)"),
                                                  cur.seekTime, 0, 360000, 2, &ok);
-        if (ok) set([t](Engine::SequenceStep &st) { st.action = A::Seek; st.seekTime = t; });
+        if (ok) set([t](Sequencer::Step &st) { st.action = A::Seek; st.seekTime = t; });
     });
     seek->setCheckable(true);
     seek->setChecked(cur.action == A::Seek);
@@ -696,14 +696,14 @@ void SequenceWindow::fillActionMenu(QMenu *menu, int row)
         const double v = QInputDialog::getDouble(this, QStringLiteral("Speed"),
                                                  QStringLiteral("Playback speed of the timeline (1 = normal, 0 = frozen)"),
                                                  cur.action == A::Speed ? cur.speed : 1.0, 0, 10, 2, &ok);
-        if (ok) set([v](Engine::SequenceStep &st) { st.action = A::Speed; st.speed = v; });
+        if (ok) set([v](Sequencer::Step &st) { st.action = A::Speed; st.speed = v; });
     });
     speed->setCheckable(true);
     speed->setChecked(cur.action == A::Speed);
     QMenu *loop = menu->addMenu(cur.action == A::LoopMode ? QStringLiteral("Loop mode  (%1)").arg(actionName(cur))
                                                           : QStringLiteral("Loop mode"));
     auto mode = [set](L l, int n) {
-        set([l, n](Engine::SequenceStep &st) {
+        set([l, n](Sequencer::Step &st) {
             st.action = A::LoopMode;
             st.loop = l;
             st.repeat = n;
@@ -727,10 +727,10 @@ void SequenceWindow::fillActionMenu(QMenu *menu, int row)
 // The steps on their way: their time columns are redrawn while they move (and once more when they are done)
 void SequenceWindow::pollRuns()
 {
-    std::vector<Engine::StepRun> runs = m_engine->sequenceRuns();
+    std::vector<Sequencer::Run> runs = m_engine->sequencer().runs();
     if (runs.empty() && m_runs.empty()) return;
     m_runs = std::move(runs);
-    m_stop->setEnabled(m_engine->sequenceRunning());
+    m_stop->setEnabled(m_engine->sequencer().running());
     if (isVisible()) m_steps->viewport()->update();
 }
 
@@ -744,22 +744,22 @@ void SequenceWindow::setModified(bool on)
 void SequenceWindow::refresh()
 {
     m_filling = true;
-    const int n = m_engine->sequenceCount(), cur = m_engine->currentSequence();
+    const int n = m_engine->sequencer().count(), cur = m_engine->sequencer().current();
     m_sequences->clear();
     for (int i = 0; i < n; ++i) {
-        auto *it = new QListWidgetItem(m_engine->sequence(i).name, m_sequences);
+        auto *it = new QListWidgetItem(m_engine->sequencer().sequence(i).name, m_sequences);
         it->setFlags(it->flags() | Qt::ItemIsEditable);
     }
     m_sequences->setCurrentRow(cur);
-    const Engine::Sequence s = m_engine->sequence(cur);
+    const Sequencer::Sequence s = m_engine->sequencer().sequence(cur);
     m_loop->setChecked(s.loop);
     for (QWidget *w : std::initializer_list<QWidget *>{m_dup, m_del, m_loop, m_stepDel, m_up, m_down}) // steps: a first one makes a sequence
         w->setEnabled(cur >= 0);
     const int keep = m_steps->currentRow();
     m_steps->setRowCount(int(s.steps.size()));
-    const int pos = m_engine->sequencePosition();
+    const int pos = m_engine->sequencer().position();
     for (int k = 0; k < int(s.steps.size()); ++k) {
-        const Engine::SequenceStep &st = s.steps[size_t(k)];
+        const Sequencer::Step &st = s.steps[size_t(k)];
         auto *num = new QTableWidgetItem(QString::number(k + 1));
         num->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         num->setTextAlignment(Qt::AlignCenter);
@@ -774,7 +774,7 @@ void SequenceWindow::refresh()
         // A timeline played without end: no time to wait for, shown as ∞
         const int ai = st.timeline ? m_engine->indexOfAnimation(st.timeline) : -1;
         const bool endless = ai >= 0 && st.action == Engine::AnimAction::Play && !std::isfinite(m_engine->animation(ai).length());
-        const double length = m_engine->stepDuration(st);
+        const double length = m_engine->sequencer().stepDuration(st);
         action->setData(Qt::EditRole, endless || !std::isfinite(length) ? -1.0 : length); // ∞: a frozen timeline too
         action->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         auto *post = new QTableWidgetItem;
@@ -815,84 +815,84 @@ void SequenceWindow::refresh()
 
 void SequenceWindow::addStep(int at, quint64 snapshot, quint64 timeline)
 {
-    int cur = m_engine->currentSequence();
+    int cur = m_engine->sequencer().current();
     if (cur < 0) { // a first sequence for it
-        Engine::Sequence s;
+        Sequencer::Sequence s;
         s.name = QStringLiteral("Sequence 1");
-        cur = m_engine->addSequence(s);
-        m_engine->setCurrentSequence(cur);
+        cur = m_engine->sequencer().add(s);
+        m_engine->sequencer().setCurrent(cur);
     }
-    Engine::Sequence s = m_engine->sequence(cur);
+    Sequencer::Sequence s = m_engine->sequencer().sequence(cur);
     if (at < 0 || at > int(s.steps.size())) at = int(s.steps.size());
-    Engine::SequenceStep st;
+    Sequencer::Step st;
     st.snapshot = timeline ? 0 : snapshot;
     st.timeline = timeline; // Play, by default
     s.steps.insert(s.steps.begin() + at, st);
     // The step played keeps being the same one
-    const int pos = m_engine->sequencePosition();
-    m_engine->setSequence(cur, s);
-    if (pos >= at) m_engine->setSequencePosition(pos + 1);
+    const int pos = m_engine->sequencer().position();
+    m_engine->sequencer().setSequence(cur, s);
+    if (pos >= at) m_engine->sequencer().setPosition(pos + 1);
     m_steps->setCurrentCell(at, ColSnapshot);
     emit edited();
 }
 
 void SequenceWindow::setStepSnapshot(int step, quint64 snapshot)
 {
-    const int cur = m_engine->currentSequence();
-    Engine::Sequence s = m_engine->sequence(cur);
+    const int cur = m_engine->sequencer().current();
+    Sequencer::Sequence s = m_engine->sequencer().sequence(cur);
     if (step < 0 || step >= int(s.steps.size())) return;
     s.steps[size_t(step)].snapshot = snapshot;
     s.steps[size_t(step)].timeline = 0;
-    m_engine->setSequence(cur, s);
+    m_engine->sequencer().setSequence(cur, s);
     emit edited();
 }
 
 void SequenceWindow::setStepTimeline(int step, quint64 timeline)
 {
-    const int cur = m_engine->currentSequence();
-    Engine::Sequence s = m_engine->sequence(cur);
+    const int cur = m_engine->sequencer().current();
+    Sequencer::Sequence s = m_engine->sequencer().sequence(cur);
     if (step < 0 || step >= int(s.steps.size())) return;
-    Engine::SequenceStep &st = s.steps[size_t(step)];
+    Sequencer::Step &st = s.steps[size_t(step)];
     if (!st.timeline) st.action = Engine::AnimAction::Play; // a step that recalled a snapshot: Play
     st.timeline = timeline;
     st.snapshot = 0;
-    m_engine->setSequence(cur, s);
+    m_engine->sequencer().setSequence(cur, s);
     emit edited();
 }
 
 void SequenceWindow::removeSteps()
 {
-    const int cur = m_engine->currentSequence();
-    Engine::Sequence s = m_engine->sequence(cur);
+    const int cur = m_engine->sequencer().current();
+    Sequencer::Sequence s = m_engine->sequencer().sequence(cur);
     QList<int> rows;
     for (const QModelIndex &i : m_steps->selectionModel()->selectedRows()) rows << i.row();
     if (rows.isEmpty() && m_steps->currentRow() >= 0) rows << m_steps->currentRow();
     if (rows.isEmpty()) return;
     std::sort(rows.begin(), rows.end(), std::greater<int>());
-    int pos = m_engine->sequencePosition();
+    int pos = m_engine->sequencer().position();
     for (int r : rows) {
         if (r < 0 || r >= int(s.steps.size())) continue;
         s.steps.erase(s.steps.begin() + r);
         if (pos == r) pos = r - 1; // the step played is gone: as if the one before was
         else if (pos > r) --pos;
     }
-    m_engine->setSequence(cur, s);
-    m_engine->setSequencePosition(pos);
+    m_engine->sequencer().setSequence(cur, s);
+    m_engine->sequencer().setPosition(pos);
     emit edited();
 }
 
 void SequenceWindow::moveStep(int delta)
 {
-    const int cur = m_engine->currentSequence();
-    Engine::Sequence s = m_engine->sequence(cur);
+    const int cur = m_engine->sequencer().current();
+    Sequencer::Sequence s = m_engine->sequencer().sequence(cur);
     const int r = m_steps->currentRow(), to = r + delta;
     if (r < 0 || to < 0 || to >= int(s.steps.size())) return;
     std::swap(s.steps[size_t(r)], s.steps[size_t(to)]);
-    int pos = m_engine->sequencePosition();
+    int pos = m_engine->sequencer().position();
     if (pos == r) pos = to;
     else if (pos == to) pos = r;
-    m_engine->setSequence(cur, s);
-    m_engine->setSequencePosition(pos);
+    m_engine->sequencer().setSequence(cur, s);
+    m_engine->sequencer().setPosition(pos);
     m_steps->setCurrentCell(to, ColSnapshot);
     emit edited();
 }
