@@ -50,14 +50,18 @@ struct VideoLayout {
     float matrix[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     float chromaShift[2] = {0, 0}; // chroma siting, in texels of the chroma planes
     QString description;           // "yuv420p · BT.709", "Hap Q"…
+    // The frames stay in the hardware decoder's surfaces (macOS: IOSurface), sampled there by the GPU: no copy.
+    // Their planes are described as for the copy path; the frame is `av` (the hardware frame).
+    bool surface = false;
 
     bool compressed() const { return planeCount > 0 && plane[0].texels != Texels::U8 && plane[0].texels != Texels::U16; }
 };
 
-// One frame of a stream. Its bytes are in one of three places:
+// One frame of a stream. Its bytes are in one of four places:
 //  - an upload buffer of the GPU (staging >= 0), packed at the layout's offsets;
 //  - `bytes`, packed at the layout's offsets;
-//  - the decoder's own frame (av), plane p at av->data[p] with av->linesize[p] bytes per row.
+//  - the decoder's own frame (av), plane p at av->data[p] with av->linesize[p] bytes per row;
+//  - the hardware decoder's surface (layout->surface): av is the hardware frame, its planes read by the GPU in place.
 struct VideoFrame {
     double pts = 0;
     std::shared_ptr<const VideoLayout> layout;

@@ -588,7 +588,15 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
             const double drawnH = b.height() / std::max(1e-6, view.height()) * target.h;
             mip = drawnW < l.finalW * 0.9 || drawnH < l.finalH * 0.9;
             if (mip) {
-                f->glGenerateMipmap(GL_TEXTURE_2D);
+                // A plain video's picture (no ROI, color or effect) changes only with a new frame of the file: its
+                // mipmaps are made once per frame of the video, not once per frame of the render or per output
+                const bool plainVideo = l.type == SourceType::Video && l.videoTex && l.finalTex == l.videoTex->texture();
+                const uint64_t frame = plainVideo ? l.videoTex->pictureSerial() : 0;
+                if (!plainVideo || l.mipTex != l.finalTex || l.mipFrame != frame) {
+                    f->glGenerateMipmap(GL_TEXTURE_2D);
+                    l.mipTex = plainVideo ? l.finalTex : 0;
+                    l.mipFrame = frame;
+                }
                 f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             }
         }

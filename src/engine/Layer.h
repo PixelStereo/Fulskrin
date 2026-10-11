@@ -221,6 +221,9 @@ struct Layer {
     VideoFrame frame;                       // the last one fetched from the decoder
     bool frameUploaded = true;              // and already on the GPU
     std::unique_ptr<VideoTexture> videoTex; // its picture (created in the render thread)
+    // Mipmaps of its picture made for this frame of the video (a plain video: made again only for a new frame)
+    GLuint mipTex = 0;
+    uint64_t mipFrame = 0; // VideoTexture::pictureSerial() they were made from
     bool playing = true;
     PlayMode mode = PlayMode::Loop;
     bool ended = false; // Stop mode: the end was reached, the layer shows nothing

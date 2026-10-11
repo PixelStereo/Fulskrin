@@ -11,7 +11,9 @@
 // Without a free one, the frame stays in the decoder's memory and is uploaded from there.
 //
 // Hardware decoding (VideoToolbox on macOS, D3D11VA / DXVA2 on Windows, VAAPI on Linux) when the codec allows
-// it, the frames copied back to memory; software otherwise, or when the hardware refuses a stream.
+// it; software otherwise, or when the hardware refuses a stream. On macOS the GPU samples VideoToolbox's frames
+// where they were decoded (zero copy: no upload buffer, no copy on the CPU); elsewhere they are copied back to
+// memory, then uploaded.
 
 #include "Timeline.h"
 #include "VideoFrame.h"
@@ -87,6 +89,11 @@ public:
     // --- Settings, for the decoders opened afterwards
     static void setHardwareDecoding(bool on);
     static bool hardwareDecoding();
+    // Hardware frames handed to the GPU in place (set by the render thread when it can sample them: macOS)
+    static void setZeroCopy(bool on);
+    static bool zeroCopy();
+    // A hardware frame whose surface the GPU refused: frames of its format are copied from now on (true: newly)
+    static bool refuseSurface(const AVFrame *hw);
     // Compressed texture formats the GPU samples (HAP): DXT (S3TC) and BPTC (BC7, BC6). RGTC is always there.
     static void setGpuFormats(bool s3tc, bool bptc);
 
@@ -108,6 +115,7 @@ private:
     void recycleLocked(VideoFrame &&f); // lock held
     bool takeStaging(size_t size, int *id, uint8_t **ptr);
     std::shared_ptr<const VideoLayout> layoutFor(const AVFrame *f);
+    std::shared_ptr<const VideoLayout> surfaceLayout(const AVFrame *hw); // null: not sampled in place
     std::shared_ptr<const VideoLayout> hapLayout(int count, int f0, int f1);
     bool setupHardware(const struct AVCodec *dec);
     friend struct HwFormat;
@@ -139,6 +147,7 @@ private:
         }
     };
     std::map<LayoutKey, std::shared_ptr<const VideoLayout>> m_layouts;
+    std::map<const VideoLayout *, std::shared_ptr<const VideoLayout>> m_surfaceLayouts; // by the copy path's layout
     std::shared_ptr<const VideoLayout> m_rgbaLayout; // CPU conversion of the formats the GPU does not take
 
     std::thread m_thread;

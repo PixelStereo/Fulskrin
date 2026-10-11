@@ -361,8 +361,9 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
     }
 
     // Loads a file into a fresh layer, lets frames reach the GPU until some came through an upload buffer
-    // (the first ones, decoded before the buffers were handed over, come from the decoder's memory), pauses,
-    // and returns the layer's source picture (top row first)
+    // (the first ones, decoded before the buffers were handed over, come from the decoder's memory) or were
+    // sampled in the hardware decoder's surface (macOS), pauses, and returns the layer's source picture (top row
+    // first). staged: frames through upload buffers or surfaces.
     auto playAndGrab = [&](const QString &path, QString *description, quint64 *staged) -> QImage {
         e.newProject();
         e.setCompositionSize(QSize(640, 360));
@@ -377,7 +378,7 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         auto stagedNow = [&] {
             Engine::Lock lk(&e.mutex());
             const Layer *l = e.layer(i);
-            return l->videoTex ? l->videoTex->stagedUploads() : 0;
+            return l->videoTex ? l->videoTex->stagedUploads() + l->videoTex->surfaceUploads() : 0;
         };
         while ((e.videoFramesShown(i) < 3 || stagedNow() < 1) && tm.elapsed() < 5000) {
             e.renderFrame();
@@ -389,7 +390,7 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
             Engine::Lock lk(&e.mutex());
             const Layer *l = e.layer(i);
             if (description) *description = l->frame.layout ? l->frame.layout->description : QString();
-            if (staged) *staged = l->videoTex ? l->videoTex->stagedUploads() : 0;
+            if (staged) *staged = l->videoTex ? l->videoTex->stagedUploads() + l->videoTex->surfaceUploads() : 0;
         }
         return e.grabLayerSource(i);
     };
@@ -424,7 +425,11 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         const QStringList layouts = QString::fromUtf8(c.layout).split('|');
         VCHECK(d.sameSize && std::any_of(layouts.begin(), layouts.end(), [&](const QString &l) { return desc.startsWith(l); }));
         VCHECK(d.max <= 8 && d.mean <= 1.5);
-        VCHECK(staged >= 1); // frames came through upload buffers
+        VCHECK(staged >= 1); // frames came through upload buffers, or were sampled in place
+#ifdef __APPLE__
+        // VideoToolbox's ProRes (P210, planar): sampled in its surface, not copied
+        if (desc.startsWith(QLatin1String("p210le")) && VideoDecoder::zeroCopy()) VCHECK(desc.contains(QLatin1String("zero copy")));
+#endif
     }
 
     // --- Every layout swscale writes: the GPU's conversion of the same frame against swscale's own, through the
@@ -469,6 +474,8 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
             VideoConverter conv;
             QString err;
             VCHECK(conv.init(vao, &err));
+            VCHECK(conv.surfaceShader()); // the conversion of hardware surfaces compiles (used on macOS)
+            std::printf("      Hardware surfaces sampled in place: %s\n", conv.surfaces() ? "yes" : "no");
             VideoDecoder none; // upload buffers are not used here
             for (const Fmt &fm : fmts) {
                 const AVPixelFormat pf = av_get_pix_fmt(fm.name);
