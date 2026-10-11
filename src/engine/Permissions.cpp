@@ -2,10 +2,8 @@
 
 #include <QCoreApplication>
 #include <QtGlobal>
-#ifdef FULSKRIN_HAS_CAMERA
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
 #include <QPermissions>
-#endif
 #endif
 
 #ifdef Q_OS_MACOS
@@ -14,6 +12,14 @@ void requestLocalNetworkAccess(); // Permissions.mm
 
 void requestSystemPermissions()
 {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    if (QCoreApplication::instance()) {
+        // The microphone: asked too, so the app appears in Privacy › Microphone (no audio is captured yet)
+        QMicrophonePermission microphone;
+        if (qApp->checkPermission(microphone) == Qt::PermissionStatus::Undetermined)
+            qApp->requestPermission(microphone, qApp, [](const QPermission &) {});
+    }
+#endif
 #if defined(FULSKRIN_HAS_CAMERA) && QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     if (QCoreApplication::instance()) {
         QCameraPermission camera;
