@@ -32,6 +32,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 // ---------------------------------------------------------------------------
 // Accent color
@@ -715,8 +716,50 @@ private:
 };
 } // namespace
 
-NumberBox::NumberBox(QWidget *parent) : QDoubleSpinBox(parent) { new NumberDrag(this, lineEdit()); }
-IntBox::IntBox(QWidget *parent) : QSpinBox(parent) { new NumberDrag(this, lineEdit()); }
+namespace {
+constexpr int kBoxHeight = 20;
+
+void compactBox(QAbstractSpinBox *s)
+{
+    s->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    s->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    s->setFixedHeight(kBoxHeight);
+    s->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    s->setStyleSheet(QStringLiteral("QAbstractSpinBox { background: #232326; border: 1px solid #3a3a40; border-radius: 3px; "
+                                    "padding: 0 4px; } QAbstractSpinBox:focus { border-color: %1; }")
+                         .arg(theme::css()));
+}
+
+QSize boxHint(const QAbstractSpinBox *s, const QString &longest)
+{
+    return QSize(std::max(36, s->fontMetrics().horizontalAdvance(longest) + 14), kBoxHeight);
+}
+} // namespace
+
+NumberBox::NumberBox(QWidget *parent) : QDoubleSpinBox(parent)
+{
+    new NumberDrag(this, lineEdit());
+    compactBox(this);
+}
+
+QSize NumberBox::sizeHint() const
+{
+    const double big = std::max(std::abs(minimum()), std::abs(maximum()));
+    return boxHint(this, prefix() + (minimum() < 0 ? QStringLiteral("-") : QString()) + QString::number(big, 'f', decimals())
+                             + suffix());
+}
+
+IntBox::IntBox(QWidget *parent) : QSpinBox(parent)
+{
+    new NumberDrag(this, lineEdit());
+    compactBox(this);
+}
+
+QSize IntBox::sizeHint() const
+{
+    const long long big = std::max(std::llabs(minimum()), std::llabs(maximum()));
+    return boxHint(this, prefix() + (minimum() < 0 ? QStringLiteral("-") : QString()) + QString::number(big) + suffix());
+}
 
 namespace {
 QColor flagEdge(bool hover, bool enabled)
@@ -942,7 +985,7 @@ bool SearchPicker::eventFilter(QObject *o, QEvent *e)
 // ---------------------------------------------------------------------------
 
 namespace {
-constexpr int kFieldHeight = 24;
+constexpr int kFieldHeight = 20;
 const QColor kTrack(28, 28, 31);
 QColor fillColor(bool on) { QColor c = theme::accent(); c.setAlpha(on ? 210 : 80); return c; }
 const QColor kTick(255, 255, 255, 38), kBorder(0, 0, 0, 90);
@@ -1027,7 +1070,7 @@ void SliderField::resizeEvent(QResizeEvent *)
 
 QRectF SliderField::bar() const { return QRectF(0, 1, width() - m_spin->width() - 4, height() - 2); }
 
-void SliderField::setCompact(bool on) { setFixedHeight(on ? kFieldHeight - 6 : kFieldHeight); }
+void SliderField::setCompact(bool on) { setFixedHeight(on ? kFieldHeight - 4 : kFieldHeight); }
 double SliderField::valueAt(double x) const
 {
     const QRectF r = bar();

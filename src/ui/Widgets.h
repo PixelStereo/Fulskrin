@@ -101,7 +101,7 @@ public:
     void setCompact(bool on);          // a lower bar (the channels of a color)
     double value() const { return m_value; }
     bool isDragging() const { return m_drag; }
-    QSize sizeHint() const override { return QSize(220, 24); }
+    QSize sizeHint() const override { return QSize(220, 20); }
 
 signals:
     void valueEdited(double v);   // continuous while dragging, and on a typed value
@@ -141,7 +141,7 @@ public:
     double low() const { return m_lo; }
     double high() const { return m_hi; }
     bool isDragging() const { return m_drag != 0; }
-    QSize sizeHint() const override { return QSize(260, 24); }
+    QSize sizeHint() const override { return QSize(260, 20); }
 
 signals:
     void edited(bool low, double v); // continuous while dragging
@@ -279,15 +279,21 @@ void lockInputs(QWidget *root, bool locked);
 // The number fields of the application. Press and slide left or right to change the value (one step per pixel;
 // Shift: a tenth; Ctrl / ⌘: ten): no focus, no text cursor, no selection. A click without moving edits the text, all
 // of it selected; once editing, the mouse places the cursor and selects as in any text field.
+// Number fields of the application: compact (no arrows: drag sideways or use the keys; as wide as their largest
+// value)
 class NumberBox : public QDoubleSpinBox
 {
 public:
     explicit NumberBox(QWidget *parent = nullptr);
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override { return sizeHint(); }
 };
 class IntBox : public QSpinBox
 {
 public:
     explicit IntBox(QWidget *parent = nullptr);
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override { return sizeHint(); }
 };
 
 // The application's check box (it replaces QCheckBox everywhere): a small square that fills with the accent when it
