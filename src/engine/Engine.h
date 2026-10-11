@@ -557,6 +557,8 @@ signals:
     void snapshotRecalled(int index);
     void timecodeRoutingChanged(); // timecode / MIDI outputs, their patch, or which layer drives which output
     void interactionsChanged();    // the list of interactions (not their values)
+    // Their values changed by a preset, a snapshot, a timeline, OSC (sent once for many, from the main thread)
+    void interactionValuesChanged();
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI
 
 public:
@@ -783,6 +785,15 @@ private:
     QStringList m_midiInNames;
     QTimer *m_midiScan = nullptr;
     void stepInteractions(double dt); // lock held
+    // Their values as the composition's parameters ("interaction/<id>/master"…): presets, timelines, OSC, other
+    // interactions reach them; made again when the list changes (lock held)
+    std::vector<std::unique_ptr<Parameter>> m_interactionParams;
+    bool m_interactionParamsDirty = true;
+    std::atomic<bool> m_interactionValuesPending{false};
+    void interactionValuesTouched(); // any thread: interactionValuesChanged soon, once
+    void makeInteractionParams();    // lock held
+    QJsonObject captureInteractions() const; // lock held: each one's state, by id
+    void applyInteractions(const QJsonObject &states); // lock held
     void updateMidiInputs();          // main thread
     std::vector<TimecodeOutput> m_tcOutputs;  // under m_mutex
     std::vector<MidiOutput> m_midiOutputs;

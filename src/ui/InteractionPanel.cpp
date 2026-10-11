@@ -1,11 +1,13 @@
 #include "InteractionPanel.h"
 #include "AnimEditor.h"
+#include "PresetEditor.h"
 #include "Engine.h"
 #include "Widgets.h"
 
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDateTime>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -236,6 +238,20 @@ InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *pa
     connect(m_engine, &Engine::interactionsChanged, this, [this] {
         rebuildList();
         if (!m_committing) rebuildSettings(); // undone, opened: the settings shown again
+    });
+    m_valuesTimer = new QTimer(this);
+    m_valuesTimer->setSingleShot(true);
+    m_valuesTimer->setInterval(120);
+    connect(m_valuesTimer, &QTimer::timeout, this, [this] {
+        if (QApplication::mouseButtons() != Qt::NoButton) { // not under a drag: once let go
+            m_valuesTimer->start();
+            return;
+        }
+        rebuildList();
+        rebuildSettings();
+    });
+    connect(m_engine, &Engine::interactionValuesChanged, this, [this] {
+        if (!m_valuesTimer->isActive()) m_valuesTimer->start();
     });
     connect(m_engine, &Engine::layersChanged, this, [this] { // a layer renamed or gone: the targets' names
         QTimer::singleShot(0, this, [this] { rebuildList(); });
@@ -484,6 +500,39 @@ void InteractionPanel::pollLearn()
 // ---------------------------------------------------------------------------
 // The settings of the one selected
 // ---------------------------------------------------------------------------
+void InteractionPanel::attachPreset(std::initializer_list<QWidget *> ws, const QStringList &paths)
+{
+    PresetEditor *pe = PresetEditor::instance();
+    if (!pe || !m_shown) return;
+    QStringList full;
+    for (const QString &p : paths) full << QStringLiteral("interaction/%1/%2").arg(m_shown).arg(p);
+    for (QWidget *w : ws) {
+        if (!w) continue;
+        pe->track(w, 0, full); // Edit mode: underlined, its name puts it in the preset or takes it out
+        w->setProperty("presetPaths", full);
+        w->installEventFilter(this);
+        for (QWidget *c : w->findChildren<QWidget *>()) c->installEventFilter(this);
+    }
+}
+
+bool InteractionPanel::eventFilter(QObject *o, QEvent *e)
+{
+    if (e->type() != QEvent::ContextMenu) return QWidget::eventFilter(o, e);
+    auto *w = qobject_cast<QWidget *>(o);
+    while (w && !w->property("presetPaths").isValid()) w = w->parentWidget();
+    PresetEditor *pe = PresetEditor::instance();
+    if (!w || !pe) return QWidget::eventFilter(o, e);
+    auto *menu = new QMenu(w);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    pe->fillMenu(menu, 0, w->property("presetPaths").toStringList()); // Add to New Preset / to Selected Preset
+    if (menu->isEmpty()) {
+        delete menu;
+        return QWidget::eventFilter(o, e);
+    }
+    menu->popup(static_cast<QContextMenuEvent *>(e)->globalPos());
+    return true;
+}
+
 void InteractionPanel::rebuildSettings()
 {
     const std::optional<Interaction> cur = selected();
@@ -736,11 +785,12 @@ void InteractionPanel::rebuildSettings()
     master->setTicks(10);
     master->setSnaps({0, 100});
     master->setValue(it.master * 100);
-    form->addRow(new ResetLabel(QStringLiteral("Master Level"), [edit, master] {
-                     master->setValue(100);
-                     edit(QStringLiteral("Reset Master Level"), [](Interaction &x) { x.master = 1; });
-                 }),
-                 master);
+    auto *masterLabel = new ResetLabel(QStringLiteral("Master Level"), [edit, master] {
+        master->setValue(100);
+        edit(QStringLiteral("Reset Master Level"), [](Interaction &x) { x.master = 1; });
+    });
+    form->addRow(masterLabel, master);
+    attachPreset({masterLabel, master}, {QStringLiteral("master")});
     connect(master, &SliderField::valueEdited, this, [edit](double v) {
         edit(QStringLiteral("Change Master Level"), [v](Interaction &x) { x.master = v / 100.0; }, QStringLiteral("master"));
     });
@@ -751,7 +801,9 @@ void InteractionPanel::rebuildSettings()
     takeover->setCurrentIndex(it.takeover == Takeover::PickUp ? 0 : 1);
     takeover->setToolTip(QStringLiteral("Pick-up: once the target was moved by something else (a snapshot, the interface), "
                                         "it waits for the controller to meet it · Jump: it sets it at once"));
-    form->addRow(QStringLiteral("Takeover"), takeover);
+    auto *takeoverLabel = new QLabel(QStringLiteral("Takeover"));
+    form->addRow(takeoverLabel, takeover);
+    attachPreset({takeoverLabel, takeover}, {QStringLiteral("takeover")});
     connect(takeover, qOverload<int>(&QComboBox::activated), this, [edit, takeover](int) {
         const Takeover t = Takeover(takeover->currentData().toInt());
         edit(QStringLiteral("Change Takeover"), [t](Interaction &x) { x.takeover = t; });
@@ -761,6 +813,7 @@ void InteractionPanel::rebuildSettings()
     toggle->setChecked(it.toggle);
     toggle->setToolTip(QStringLiteral("Each time the source goes up past the middle, the result flips between 0 and 1"));
     form->addRow(QString(), toggle);
+    attachPreset({toggle}, {QStringLiteral("toggle")});
     connect(toggle, &QCheckBox::toggled, this, [edit](bool on) {
         edit(QStringLiteral("Change Toggle"), [on](Interaction &x) { x.toggle = on; });
     });
@@ -770,14 +823,15 @@ void InteractionPanel::rebuildSettings()
     srcRange->setDecimals(srcHi - srcLo > 10 ? 0 : 2);
     srcRange->setValues(std::min(it.srcMin, it.srcMax), std::max(it.srcMin, it.srcMax));
     srcRange->setToolTip(QStringLiteral("The part of the source's values used: its low end gives 0, its high end 1"));
-    form->addRow(new ResetLabel(QStringLiteral("Source range"), [edit, srcRange, srcLo, srcHi] {
-                     srcRange->setValues(srcLo, srcHi);
-                     edit(QStringLiteral("Reset Source Range"), [srcLo, srcHi](Interaction &x) {
-                         x.srcMin = srcLo;
-                         x.srcMax = srcHi;
-                     });
-                 }),
-                 srcRange);
+    auto *srcLabel = new ResetLabel(QStringLiteral("Source range"), [edit, srcRange, srcLo, srcHi] {
+        srcRange->setValues(srcLo, srcHi);
+        edit(QStringLiteral("Reset Source Range"), [srcLo, srcHi](Interaction &x) {
+            x.srcMin = srcLo;
+            x.srcMax = srcHi;
+        });
+    });
+    form->addRow(srcLabel, srcRange);
+    attachPreset({srcLabel, srcRange}, {QStringLiteral("source/min"), QStringLiteral("source/max")});
     connect(srcRange, &RangeField::edited, this, [edit, srcRange](bool, double) {
         const double lo = srcRange->low(), hi = srcRange->high();
         edit(QStringLiteral("Change Source Range"), [lo, hi](Interaction &x) {
@@ -803,17 +857,18 @@ void InteractionPanel::rebuildSettings()
     dstRow->addWidget(dstRange, 1);
     dstRow->addWidget(invert);
     const double fullLo = numberTarget ? tinfo.min : 0, fullHi = numberTarget ? tinfo.max : 1;
-    form->addRow(new ResetLabel(QStringLiteral("Target range"), [edit, dstRange, invert, fullLo, fullHi] {
-                     dstRange->setValues(fullLo, fullHi);
-                     invert->blockSignals(true);
-                     invert->setChecked(false);
-                     invert->blockSignals(false);
-                     edit(QStringLiteral("Reset Target Range"), [fullLo, fullHi](Interaction &x) {
-                         x.dstMin = fullLo;
-                         x.dstMax = fullHi;
-                     });
-                 }),
-                 dstRow);
+    auto *dstLabel = new ResetLabel(QStringLiteral("Target range"), [edit, dstRange, invert, fullLo, fullHi] {
+        dstRange->setValues(fullLo, fullHi);
+        invert->blockSignals(true);
+        invert->setChecked(false);
+        invert->blockSignals(false);
+        edit(QStringLiteral("Reset Target Range"), [fullLo, fullHi](Interaction &x) {
+            x.dstMin = fullLo;
+            x.dstMax = fullHi;
+        });
+    });
+    form->addRow(dstLabel, dstRow);
+    attachPreset({dstLabel, dstRange, invert}, {QStringLiteral("target/min"), QStringLiteral("target/max")});
     auto setTarget = [edit, dstRange, invert](const QString &merge) {
         const double lo = dstRange->low(), hi = dstRange->high();
         const bool inv = invert->isChecked();
@@ -839,6 +894,8 @@ void InteractionPanel::rebuildSettings()
     filterRow->addWidget(filterOn);
     filterRow->addWidget(filter, 1);
     form->addRow(QString(), filterRow);
+    attachPreset({filterOn}, {QStringLiteral("filter/enable")});
+    attachPreset({filter}, {QStringLiteral("filter/type")});
     connect(filterOn, &QCheckBox::toggled, this, [this, edit](bool on) {
         edit(QStringLiteral("Change Filter"), [on](Interaction &x) { x.filterOn = on; });
         rebuildSettings();
@@ -864,11 +921,12 @@ void InteractionPanel::rebuildSettings()
             f->setSnaps({fs.def});
             f->setValue(which == 0 ? it.filterA : it.filterB);
             const double def = fs.def;
-            form->addRow(new ResetLabel(fs.name, [edit, f, which, def] {
-                             f->setValue(def);
-                             edit(QStringLiteral("Reset Filter"), [which, def](Interaction &x) { (which == 0 ? x.filterA : x.filterB) = def; });
-                         }),
-                         f);
+            auto *fl = new ResetLabel(fs.name, [edit, f, which, def] {
+                f->setValue(def);
+                edit(QStringLiteral("Reset Filter"), [which, def](Interaction &x) { (which == 0 ? x.filterA : x.filterB) = def; });
+            });
+            form->addRow(fl, f);
+            attachPreset({fl, f}, {which == 0 ? QStringLiteral("filter/a") : QStringLiteral("filter/b")});
             connect(f, &SliderField::valueEdited, this, [edit, which](double v) {
                 edit(QStringLiteral("Change Filter"), [which, v](Interaction &x) { (which == 0 ? x.filterA : x.filterB) = v; },
                      QStringLiteral("filter%1").arg(which));
@@ -888,6 +946,7 @@ void InteractionPanel::rebuildSettings()
     curveRow->addStretch();
     curveRow->addWidget(resetCurve);
     form->addRow(QString(), curveRow);
+    attachPreset({curveOn}, {QStringLiteral("curve/enable")});
     connect(curveOn, &QCheckBox::toggled, this, [this, edit](bool on) {
         m_revealCurve = on;
         edit(QStringLiteral("Change Curve"), [on](Interaction &x) { x.curveOn = on; });

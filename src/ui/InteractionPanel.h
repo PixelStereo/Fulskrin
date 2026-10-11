@@ -37,7 +37,12 @@ public:
 signals:
     void edited(); // the list changed: the project is modified
 
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override; // right-click on a value: the preset actions
+
 private:
+    // The widgets of a value of the one shown ("master", "source/min"…): presets can take it (Edit mode, right-click)
+    void attachPreset(std::initializer_list<QWidget *> ws, const QStringList &paths);
     std::optional<InteractionSource> shownKind() const; // the sub-tab's (none: All)
     void rebuildList();
     void rebuildSettings();
@@ -70,6 +75,7 @@ private:
     bool m_revealCurve = false;
     class QScrollArea *m_scroll = nullptr;
     QTimer *m_timer;
+    QTimer *m_valuesTimer = nullptr;
     quint64 m_shown = 0;        // the interaction whose settings are shown
     bool m_committing = false;  // its own edit going to the engine: the settings are not made again
     bool m_filling = false;

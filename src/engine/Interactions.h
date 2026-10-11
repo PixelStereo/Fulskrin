@@ -91,6 +91,10 @@ struct Interaction {
     Takeover takeover = Takeover::Jump;
 
     bool matches(const InteractionEvent &e) const; // the event is from its source
+    QString label() const; // its name, else its source ("Key Space", "MIDI ch 1 CC 7"…)
+    // What a snapshot keeps of it: on / off and its chain (not its source, not its target, not its name)
+    QJsonObject stateJson() const;
+    void applyState(const QJsonObject &state);
     QJsonObject toJson() const;
     static Interaction fromJson(const QJsonObject &o);
     static AnimTrack straightCurve(); // 0 → 0, 1 → 1

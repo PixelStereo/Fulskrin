@@ -372,7 +372,15 @@ void Engine::stepAnimations(double dt)
 
 const std::vector<Parameter *> &Engine::compositionParameters()
 {
-    if (!m_compParamList.empty()) return m_compParamList;
+    if (!m_compParamList.empty() && !m_interactionParamsDirty) return m_compParamList;
+    if (!m_compParams.empty()) { // the interactions changed: their parameters made again, after the composition's own
+        m_compParamList.clear();
+        for (auto &p : m_compParams) m_compParamList.push_back(p.get());
+        makeInteractionParams();
+        for (auto &p : m_interactionParams) m_compParamList.push_back(p.get());
+        m_interactionParamsDirty = false;
+        return m_compParamList;
+    }
     auto add = [this](const QString &path, const QString &label) -> Parameter & {
         m_compParams.push_back(std::make_unique<Parameter>(path, label, Parameter::Type::Float));
         return *m_compParams.back();
@@ -387,6 +395,9 @@ const std::vector<Parameter *> &Engine::compositionParameters()
     add("speed", "Speed").range(0, 10).byDefault(1.0).bind([this] { return QVariant(m_compositionSpeed.load()); },
                                                            [this](const QVariant &v) { setCompositionSpeed(v.toDouble()); });
     for (auto &p : m_compParams) m_compParamList.push_back(p.get());
+    makeInteractionParams();
+    for (auto &p : m_interactionParams) m_compParamList.push_back(p.get());
+    m_interactionParamsDirty = false;
     return m_compParamList;
 }
 

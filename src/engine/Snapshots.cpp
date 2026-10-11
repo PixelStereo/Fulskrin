@@ -490,9 +490,10 @@ bool Engine::isFading() const
 
 QJsonObject Engine::captureComposition() const
 {
-    return QJsonObject{{"included", true},
-                       {"opacity", compositionOpacityTarget()},
-                       {"volume", double(audioVolume())}};
+    QJsonObject c{{"included", true}, {"opacity", compositionOpacityTarget()}, {"volume", double(audioVolume())}};
+    Lock lk(&m_mutex);
+    if (!m_interactions.empty()) c["interactions"] = captureInteractions(); // on / off and the chain of each
+    return c;
 }
 
 void Engine::applyComposition(const QJsonObject &c, double fade)
@@ -513,6 +514,7 @@ void Engine::applyComposition(const QJsonObject &c, double fade)
     if (hasVolume && volumeDur <= 0) setAudioVolume(volume);
     // A value the snapshot holds stops the fade another snapshot gives it; the other one goes on
     Lock lk(&m_mutex);
+    if (c.contains("interactions")) applyInteractions(c.value("interactions").toObject()); // at once
     CompositionFade &f = m_compFade;
     if (hasOpacity) {
         f.opacity = opacityDur > 0;

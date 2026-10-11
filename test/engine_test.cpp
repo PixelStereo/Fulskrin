@@ -4506,6 +4506,76 @@ int main(int argc, char **argv)
               e.interactions()[0].sourceLayer == a && e.interactions()[0].layer == b && e.interactions()[0].dstMin == 1);
         CHECK(e.addInteraction(Interaction::made(InteractionSource::Keyboard)) > e.interactions()[0].id);
     }
+    // In the snapshots and the presets: each interaction's values are the composition's ("interaction/<id>/…")
+    {
+        e.newProject();
+        const quint64 a = e.layerId(e.addLayer("A"));
+        Interaction fader = Interaction::made(InteractionSource::Midi);
+        fader.midiChannel = 1;
+        fader.midiNumber = 7;
+        fader.layer = a;
+        fader.param = "opacity";
+        fader.takeover = Takeover::Jump;
+        const quint64 f = e.addInteraction(fader);
+        const QString master = QStringLiteral("interaction/%1/master").arg(f), on = QStringLiteral("interaction/%1/enable").arg(f);
+        bool listed = false;
+        for (const ParamInfo &p : e.parameters(0)) listed = listed || (p.path == master && p.animatable);
+        CHECK(listed && e.parameterValue(0, master).toDouble() == 1.0 && e.parameterValue(0, on).toBool());
+        auto value = [&](quint64 id) {
+            for (const Interaction &x : e.interactions())
+                if (x.id == id) return x;
+            return Interaction();
+        };
+        // A preset holding its master level
+        CHECK(e.setParameter(0, master, 0.4) && std::abs(value(f).master - 0.4) < 1e-9);
+        Engine::Preset pr;
+        pr.name = "Half";
+        pr.fade = 0;
+        pr.values.push_back(e.presetValue(0, master));
+        pr.values.push_back(e.presetValue(0, QStringLiteral("interaction/%1/target/max").arg(f)));
+        e.addPreset(pr);
+        CHECK(e.setParameter(0, master, 1.0));
+        e.recallPreset(e.presetCount() - 1);
+        CHECK(std::abs(value(f).master - 0.4) < 1e-9);
+        // The master level scales what it sends
+        InteractionEvent ev;
+        ev.source = InteractionSource::Midi;
+        ev.channel = 1;
+        ev.number = 7;
+        ev.value = 1.0;
+        e.feedInteraction(ev);
+        e.renderFrame();
+        CHECK(std::abs(e.parameterValue(a, "opacity").toDouble() - 0.4) < 1e-6);
+        // A snapshot holds them all: off, and another master
+        CHECK(e.setParameter(0, on, false) && e.setParameter(0, master, 0.7));
+        Engine::Snapshot snap;
+        snap.fade = 0;
+        snap.layers = e.captureLayers();
+        snap.composition = e.captureComposition();
+        CHECK(snap.composition.contains("interactions"));
+        e.addSnapshot(snap);
+        CHECK(e.setParameter(0, on, true) && e.setParameter(0, master, 0.1));
+        Interaction later = Interaction::made(InteractionSource::Keyboard); // made after the snapshot: left alone
+        const quint64 k = e.addInteraction(later);
+        e.recallSnapshot(e.snapshotCount() - 1);
+        CHECK(!value(f).enabled && std::abs(value(f).master - 0.7) < 1e-9 && value(k).enabled);
+        CHECK(value(f).midiNumber == 7 && value(f).param == "opacity"); // its source and target stay
+        // Off: the controller moves nothing
+        ev.value = 0.2;
+        e.feedInteraction(ev);
+        e.renderFrame();
+        CHECK(std::abs(e.parameterValue(a, "opacity").toDouble() - 0.4) < 1e-6);
+        // An interaction can drive another's master level (Internal)
+        Interaction link = Interaction::made(InteractionSource::Internal);
+        link.sourceLayer = a;
+        link.sourceParam = "opacity";
+        link.layer = 0;
+        link.param = master;
+        e.addInteraction(link);
+        CHECK(e.setParameter(a, "opacity", 0.25));
+        e.renderFrame();
+        CHECK(std::abs(value(f).master - 0.25) < 1e-6);
+    }
     }
 
     if (area("layersource")) {

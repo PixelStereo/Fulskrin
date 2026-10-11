@@ -83,6 +83,7 @@ void Engine::clearProject()
         m_atc.clear();
         m_interactions.clear();
         m_interactionRun.clear();
+        m_interactionParamsDirty = true;
         m_nextInteractionId = 1;
         m_nextPatchId = 1;
     }
