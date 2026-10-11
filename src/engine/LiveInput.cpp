@@ -41,7 +41,8 @@ QString rest(const QString &uri) { return uri.section(QLatin1Char(':'), 2); } //
 class LatestFrame
 {
 public:
-    // `rows` of `stride` bytes; bgra: blue first (swapped to RGBA here)
+    // `rows` of `stride` bytes, from the top row down; bgra: blue first (swapped to RGBA here). Stored bottom row first,
+    // as the still images and the other textures are (Texture2D expects it), so a live picture is not upside down.
     void put(const uint8_t *data, int w, int h, int stride, bool bgra)
     {
         if (!data || w <= 0 || h <= 0) return;
@@ -50,7 +51,7 @@ public:
         uchar *dst = reinterpret_cast<uchar *>(m_rgba.data());
         for (int y = 0; y < h; ++y) {
             const uint8_t *s = data + qsizetype(y) * stride;
-            uchar *d = dst + qsizetype(y) * w * 4;
+            uchar *d = dst + qsizetype(h - 1 - y) * w * 4;
             if (!bgra) {
                 std::memcpy(d, s, size_t(w) * 4);
             } else {
