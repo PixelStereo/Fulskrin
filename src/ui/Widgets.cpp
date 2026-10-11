@@ -88,6 +88,18 @@ Notifier *notifier()
 
 } // namespace theme
 
+QString theme::tabStyle()
+{
+    return QStringLiteral("QTabBar::tab { background:#1f1f23; color:#9a9aa1; padding:5px 9px; margin-right:2px;"
+                          " border:1px solid #34343a; border-bottom:none;"
+                          " border-top-left-radius:4px; border-top-right-radius:4px; }"
+                          "QTabBar::tab:selected { background:#505058; color:#ffffff; font-weight:bold; border-color:#62626a;"
+                          " border-bottom:3px solid %1; }"
+                          "QTabBar::tab:hover:!selected { background:#2e2e34; color:#e2e2e6; }"
+                          "QTabBar::tab:disabled { color:#55555a; }")
+        .arg(css());
+}
+
 namespace autoselect {
 Notifier *notifier()
 {

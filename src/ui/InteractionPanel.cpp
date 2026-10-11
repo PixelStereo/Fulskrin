@@ -120,6 +120,8 @@ InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *pa
     m_kinds = new QTabBar;
     m_kinds->setDrawBase(false);
     m_kinds->setExpanding(false);
+    m_kinds->setStyleSheet(theme::tabStyle()); // as the inspector's sub-tabs
+    connect(theme::notifier(), &theme::Notifier::changed, m_kinds, [this] { m_kinds->setStyleSheet(theme::tabStyle()); });
     for (InteractionSource k : kKinds) m_kinds->addTab(interactionSourceName(k));
     m_kinds->addTab(QStringLiteral("All"));
     m_kinds->setTabToolTip(3, QStringLiteral("A value of the show driven by another one, with no protocol in between"));

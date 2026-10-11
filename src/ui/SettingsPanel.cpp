@@ -103,6 +103,8 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     root->setContentsMargins(4, 4, 4, 4);
     auto *tabs = new QTabWidget;
     tabs->setDocumentMode(true);
+    tabs->setStyleSheet(theme::tabStyle()); // as the inspector's sub-tabs
+    connect(theme::notifier(), &theme::Notifier::changed, tabs, [tabs] { tabs->setStyleSheet(theme::tabStyle()); });
     root->addWidget(tabs);
     // One page per subject; the page shown is kept from one session to the next
     auto page = [tabs](const QString &title) {

@@ -37,6 +37,9 @@ QColor defaultAccent();
 void setAccent(const QColor &c); // saved, then everything using it is restyled
 QColor onAccent();               // text and icons drawn on the accent: dark or light, whichever reads
 QString css(int alpha = 255);    // "#rrggbb", or "rgba(r, g, b, a)" when alpha < 255
+// Sub-tabs that read as tabs (the inspector's, the interactions', the settings'): the current one lighter, in bold,
+// underlined with the accent; the others darker, apart
+QString tabStyle();
 } // namespace theme
 
 // Magnetism: points and frames dragged in the preview are caught by the edges, centers and corners around
