@@ -3,6 +3,7 @@
 #include "AudioStream.h"
 #include "Gl.h"
 #include "Isf.h"
+#include "LiveInput.h"
 #include "Mapping.h"
 #include "Parameter.h"
 #include "Publish.h"
@@ -26,7 +27,7 @@
 // What feeds a layer's picture. `Layer`: the picture of another layer of the composition, tapped either
 // before or after its effect chain (see LayerTap) — the same picture can be mapped and treated twice.
 // `Text`: rendered text layer with system fonts, word wrapping, and animation.
-enum class SourceType { None, Video, Image, Isf, Audio, Layer, Text };
+enum class SourceType { None, Video, Image, Isf, Audio, Layer, Text, Input };
 
 // The Text generator is built in: the Media Bin lists it under Generators with this (virtual) path, so that it is
 // dragged onto a layer like any media.
@@ -236,8 +237,9 @@ struct Layer {
     float volume = 1.0f; // linear gain, 0..2
     bool muted = false;
 
-    // Video / image: source texture (fed in the render thread)
+    // Video / image / live input: source texture (fed in the render thread)
     Texture2D sourceTex;
+    std::unique_ptr<LiveInput> input; // a live input (its URI in sourcePath): frames come in on its own thread
     QImage pendingImage; // image to upload to the GPU on the next frame
     int srcWidth = 0, srcHeight = 0;
 

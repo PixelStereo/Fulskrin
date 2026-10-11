@@ -1,9 +1,11 @@
 #include "MediaBin.h"
+#include "LiveInput.h"
 #include "Engine.h"
 
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QSet>
+#include <QTimer>
 #include <functional>
 #include <QDir>
 #include <QDragEnterEvent>
@@ -157,6 +159,13 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
         cat->setFirstColumnSpanned(true);
     }
     v->addWidget(m_tree, 1);
+    m_inputs->setToolTip(0, QStringLiteral("Cameras, and the NDI, OMT and Syphon sources found on this machine and the network"));
+    auto *look = new QTimer(this); // the network's sources come and go
+    look->setInterval(3000);
+    connect(look, &QTimer::timeout, this, [this] {
+        if (isVisible()) refreshInputs();
+    });
+    look->start();
 
     auto *buttons = new QHBoxLayout;
     m_relink = new QPushButton(QStringLiteral("Replace…"));
@@ -257,6 +266,7 @@ void MediaBin::refresh()
                                : QStringLiteral("%1 file(s)").arg(nv + ni + na));
     refreshIsf();
     refreshText();
+    refreshInputs();
     if (!selected.isEmpty())
         for (QTreeWidgetItemIterator it(m_tree); *it; ++it) // ISF items are one level deeper (category)
             if ((*it)->data(0, PathRole).toString() == selected) {
@@ -387,6 +397,58 @@ void MediaBin::refreshIsf()
     }
     m_isfGenerators->sortChildren(0, Qt::AscendingOrder);
     m_isfGenerators->setText(0, QStringLiteral("Generators (%1)").arg(total));
+}
+
+// Inputs: the cameras, and the NDI, OMT and Syphon sources announced now (looked for again every few seconds while the
+// Media Bin is shown), with the layers that use them
+void MediaBin::refreshInputs()
+{
+    const std::vector<LiveInputInfo> found = Engine::liveInputs();
+    QHash<QString, QStringList> users;
+    QStringList used; // the inputs the layers use, there or not
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        for (int i = 0; i < m_engine->layerCount(); ++i) {
+            const Layer *l = m_engine->layer(i);
+            if (l->type != SourceType::Input) continue;
+            users[l->sourcePath] << l->name;
+            if (!used.contains(l->sourcePath)) used << l->sourcePath;
+        }
+    }
+    struct Row {
+        QString uri, name, kind;
+        bool present;
+    };
+    std::vector<Row> rows;
+    for (const LiveInputInfo &i : found) rows.push_back({i.uri, i.name, i.kind, true});
+    for (const QString &u : used) {
+        bool there = false;
+        for (const Row &r : rows) there = there || r.uri == u;
+        if (!there) rows.push_back({u, liveInputName(u), liveInputKind(u), false});
+    }
+    QStringList signature;
+    for (const Row &r : rows) signature << r.uri + (r.present ? "+" : "-") + users.value(r.uri).join(',');
+    if (signature == m_inputsSignature && m_inputs->childCount() == int(rows.size())) return; // as it is: no flicker
+    m_inputsSignature = signature;
+    while (m_inputs->childCount()) delete m_inputs->takeChild(0);
+    for (const Row &r : rows) {
+        auto *it = new QTreeWidgetItem(m_inputs);
+        it->setData(0, PathRole, liveInputPath(r.uri));
+        it->setData(0, IsfRole, true); // no file: not relinked
+        it->setData(0, MissingRole, !r.present);
+        it->setData(0, UsedRole, true); // not removable: it is there or it is not
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
+        it->setText(0, r.name);
+        it->setText(1, r.present ? r.kind : r.kind + QStringLiteral(" — not found"));
+        if (!r.present) it->setForeground(1, QColor(255, 110, 95));
+        const QStringList u = users.value(r.uri);
+        it->setText(2, u.isEmpty() ? QStringLiteral("—") : QString::number(u.size()));
+        it->setTextAlignment(2, Qt::AlignCenter);
+        it->setToolTip(0, QStringLiteral("%1 input — drag it onto a layer\n%2").arg(r.kind, r.uri) +
+                              (u.isEmpty() ? QString() : QStringLiteral("\nUsed by: ") + u.join(", ")));
+    }
+    m_inputs->setText(0, QStringLiteral("Inputs (%1)").arg(m_inputs->childCount()));
+    applyFilter();
 }
 
 // Text: the layers that use it

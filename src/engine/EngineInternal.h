@@ -39,6 +39,7 @@ struct Engine::Garbage {
     std::unique_ptr<IsfInstance> generator;
     RenderTarget generatorTarget;
     std::vector<std::unique_ptr<IsfInstance>> effects;
+    std::unique_ptr<LiveInput> input;
     std::unique_ptr<Layer> layer;
 };
 

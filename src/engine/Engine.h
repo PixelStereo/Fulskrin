@@ -187,6 +187,9 @@ public:
 
     // Text layer properties
     bool setLayerText(int i); // the layer's source becomes the Text generator
+    // A live input (LiveInput.h) as the layer's source: a camera, an NDI or OMT source, a Syphon server
+    bool setLayerInput(int i, const QString &uri, QString *err = nullptr);
+    static std::vector<LiveInputInfo> liveInputs(const QString &libraryFolder = QString()) { return listLiveInputs(libraryFolder); }
     void setLayerTextContent(int i, const QString &text);
     void editLayerText(int i, const std::function<void(Layer &)> &edit); // style (bold, outline, shadow…), under the lock
 

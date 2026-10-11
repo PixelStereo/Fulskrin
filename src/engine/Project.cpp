@@ -154,6 +154,10 @@ QJsonObject Engine::layerToJson(Layer &l, const QString &projectDir) const
         src["height"] = l.genHeight;
         break;
     case SourceType::Text: src["type"] = "text"; break;
+    case SourceType::Input:
+        src["type"] = "input";
+        src["uri"] = l.sourcePath;
+        break;
     default: src["type"] = "none"; break;
     }
     if (type == SourceType::Video || type == SourceType::Audio) o["play"] = l.playing;
@@ -263,6 +267,16 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             gen = layer(index)->generator.get();
         }
         if (gen) runGl([gen, src, projectDir] { gen->restore(src, projectDir); });
+    } else if (type == "input") { // a live input: kept even when it is not there now (it may come later)
+        const QString uri = src.value("uri").toString();
+        if (!setLayerInput(index, uri, &err)) {
+            if (warnings) *warnings << name + ": " + err;
+            Lock lk(&m_mutex);
+            Layer *l = layer(index);
+            l->type = SourceType::Input;
+            l->sourcePath = uri;
+            l->error = err;
+        }
     } else if (type == "text") {
         Lock lk(&m_mutex);
         Layer *l = layer(index);

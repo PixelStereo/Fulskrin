@@ -652,6 +652,12 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         name = QFileInfo(s.sourcePath).completeBaseName();
         d << QStringLiteral("%1 × %2").arg(s.genW).arg(s.genH);
         break;
+    case SourceType::Input:
+        kind = liveInputKind(s.sourcePath) + QStringLiteral(" Input");
+        name = liveInputName(s.sourcePath);
+        if (s.srcW > 0) d << QStringLiteral("%1 × %2").arg(s.srcW).arg(s.srcH);
+        else d << QStringLiteral("waiting for its first picture");
+        break;
     case SourceType::Text:
         kind = QStringLiteral("Text");
         name = s.text.content.section('\n', 0, 0).left(40);
