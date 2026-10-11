@@ -35,6 +35,9 @@ public:
     void syncFromEngine();        // composition, sound (after opening a project)
     void refreshStatus();         // level, composition (called periodically)
 
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override; // right-click on a value: presets, OSC address, Learn Interaction
+
 signals:
     void blackoutChanged(bool on);
     void compositionEdited();

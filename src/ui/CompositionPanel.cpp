@@ -2,6 +2,9 @@
 #include "SettingsPanel.h"
 #include "Widgets.h"
 #include "Engine.h"
+#include "InteractionPanel.h"
+#include "PresetEditor.h"
+#include <QContextMenuEvent>
 
 #include <QCheckBox>
 #include <algorithm>
@@ -48,6 +51,14 @@ CompositionPanel::CompositionPanel(Engine *engine, QWidget *parent) : QWidget(pa
     v->addWidget(buildTimecodePatch());
     v->addStretch();
     syncFromEngine();
+    // Its values as any value: presets (Edit mode, right-click), the OSC address, Learn Interaction
+    for (auto [w, path] : {std::pair<QWidget *, const char *>{m_composition, "opacity"}, {m_audioVolume, "volume"}, {m_speed, "speed"}}) {
+        if (!w) continue;
+        if (PresetEditor *pe = PresetEditor::instance()) pe->track(w, 0, {QString::fromLatin1(path)});
+        w->setProperty("valuePaths", QStringList{QString::fromLatin1(path)});
+        w->installEventFilter(this);
+        for (QWidget *c : w->findChildren<QWidget *>()) c->installEventFilter(this);
+    }
     // Long screen or sound card names must not widen the panel beyond its column (they are elided).
     for (QComboBox *c : findChildren<QComboBox *>()) {
         c->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -713,4 +724,23 @@ void CompositionPanel::refreshTimecodeStatus()
             if (label->text() != t) label->setText(t);
             label->setVisible(true);
         }
+}
+
+bool CompositionPanel::eventFilter(QObject *o, QEvent *e)
+{
+    if (e->type() != QEvent::ContextMenu) return QWidget::eventFilter(o, e);
+    auto *w = qobject_cast<QWidget *>(o);
+    while (w && !w->property("valuePaths").isValid()) w = w->parentWidget();
+    if (!w) return QWidget::eventFilter(o, e);
+    const QStringList paths = w->property("valuePaths").toStringList();
+    auto *menu = new QMenu(w);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    if (PresetEditor *pe = PresetEditor::instance()) pe->fillMenu(menu, 0, paths);
+    InteractionPanel::fillValueMenu(menu, m_engine, 0, paths);
+    if (menu->isEmpty()) {
+        delete menu;
+        return QWidget::eventFilter(o, e);
+    }
+    menu->popup(static_cast<QContextMenuEvent *>(e)->globalPos());
+    return true;
 }
