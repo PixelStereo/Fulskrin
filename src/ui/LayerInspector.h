@@ -121,6 +121,7 @@ private:
     bool m_previewing = false;
     QPointer<QProgressBar> m_meter;
     QPointer<QLabel> m_pictureFact; // known once frames are decoded: kept up to date
+    QPointer<QLabel> m_timecodeStatus; // a Timecode generator: where its timecode comes from, kept up to date
     QPointer<SliderField> m_genSpeed; // the generator's speed (above the tabs)
     QPointer<ViewportOutputPanel> m_output;
     QPointer<QTabWidget> m_tabs;
