@@ -252,6 +252,9 @@ bool Engine::initialize(QString *err)
     VideoDecoder::setGpuFormats(m_videoConv.s3tc(), m_videoConv.bptc());
     qInfo().noquote() << "Compressed textures: DXT" << (m_videoConv.s3tc() ? "yes" : "no") << "- BPTC"
                       << (m_videoConv.bptc() ? "yes" : "no (Hap R and Hap HDR decoded on the CPU)");
+    // Hardware-decoded frames sampled where they were decoded (macOS): no copy, no upload
+    VideoDecoder::setZeroCopy(m_videoConv.surfaces());
+    if (m_videoConv.surfaces()) qInfo("Hardware video frames: zero copy");
 
     const unsigned char black[4] = {0, 0, 0, 0};
     f->glGenTextures(1, &m_blackTex);

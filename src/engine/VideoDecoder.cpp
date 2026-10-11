@@ -20,10 +20,31 @@ static constexpr size_t kMaxQueue = 6;
 static constexpr size_t kStagingBudget = size_t(128) << 20; // upload buffers of one stream, at most
 static constexpr size_t kBytePool = 8;
 
-static std::atomic<bool> s_hardware{true}, s_s3tc{true}, s_bptc{false};
+static std::atomic<bool> s_hardware{true}, s_s3tc{true}, s_bptc{false}, s_zeroCopy{false};
 
 void VideoDecoder::setHardwareDecoding(bool on) { s_hardware = on; }
 bool VideoDecoder::hardwareDecoding() { return s_hardware; }
+void VideoDecoder::setZeroCopy(bool on) { s_zeroCopy = on; }
+bool VideoDecoder::zeroCopy() { return s_zeroCopy; }
+
+// Surface formats the GPU refused to sample in place (copied instead)
+static std::mutex s_refusedMutex;
+static std::set<int> s_refusedSurfaces;
+
+static int surfaceFormat(const AVFrame *hw)
+{
+    if (!hw || !hw->hw_frames_ctx) return -1;
+    return int(reinterpret_cast<const AVHWFramesContext *>(hw->hw_frames_ctx->data)->sw_format);
+}
+
+bool VideoDecoder::refuseSurface(const AVFrame *hw)
+{
+    const int fmt = surfaceFormat(hw);
+    std::lock_guard<std::mutex> lk(s_refusedMutex);
+    if (fmt >= 0) return s_refusedSurfaces.insert(fmt).second;
+    const bool was = s_zeroCopy.exchange(false);
+    return was;
+}
 void VideoDecoder::setGpuFormats(bool s3tc, bool bptc)
 {
     s_s3tc = s3tc;
@@ -438,6 +459,47 @@ std::shared_ptr<const VideoLayout> VideoDecoder::layoutFor(const AVFrame *fr)
     return m_layouts[key] = layoutOf(fr);
 }
 
+// A VideoToolbox frame sampled in place: its planes as the copy path describes them (from the surface's format),
+// when each is one or two channels of 8 or 16 bits (NV12, P010, P210, P410, P216, P416…). Others are copied.
+std::shared_ptr<const VideoLayout> VideoDecoder::surfaceLayout(const AVFrame *hw)
+{
+#if defined(__APPLE__)
+    if (!s_zeroCopy || !hw->hw_frames_ctx || hw->format != AV_PIX_FMT_VIDEOTOOLBOX) return nullptr;
+    {
+        std::lock_guard<std::mutex> lk(s_refusedMutex);
+        if (s_refusedSurfaces.count(surfaceFormat(hw))) return nullptr;
+    }
+    const auto *frames = reinterpret_cast<const AVHWFramesContext *>(hw->hw_frames_ctx->data);
+    AVFrame *probe = av_frame_alloc();
+    if (!probe) return nullptr;
+    probe->format = frames->sw_format;
+    probe->width = hw->width;
+    probe->height = hw->height;
+    probe->colorspace = hw->colorspace;
+    probe->color_range = hw->color_range;
+    probe->chroma_location = hw->chroma_location;
+    const std::shared_ptr<const VideoLayout> base = layoutFor(probe);
+    av_frame_free(&probe);
+    if (!base || base->mode != VideoLayout::Mode::Yuv) return nullptr;
+    for (int p = 0; p < base->planeCount; ++p)
+        if (base->plane[p].channels > 2
+            || (base->plane[p].texels != VideoLayout::Texels::U8 && base->plane[p].texels != VideoLayout::Texels::U16))
+            return nullptr;
+    auto &found = m_surfaceLayouts[base.get()];
+    if (!found) {
+        auto L = std::make_shared<VideoLayout>(*base);
+        L->surface = true;
+        L->totalBytes = 0; // nothing to upload
+        L->description += QStringLiteral(" · zero copy");
+        found = L;
+    }
+    return found;
+#else
+    (void)hw;
+    return nullptr;
+#endif
+}
+
 std::shared_ptr<const VideoLayout> VideoDecoder::layoutOf(const AVFrame *fr)
 {
     std::shared_ptr<VideoLayout> L;
@@ -808,6 +870,18 @@ int VideoDecoder::decodeNext(VideoFrame &f, double skipBefore)
             AVFrame *src = m_frame;
             bool mapped = false;
             if (m_hwPixFmt >= 0 && m_frame->format == m_hwPixFmt) {
+                // Sampled by the GPU where it was decoded: the frame itself is handed over
+                if (auto L = surfaceLayout(m_frame)) {
+                    AVFrame *keep = av_frame_alloc();
+                    if (keep && av_frame_ref(keep, m_frame) >= 0) {
+                        f.layout = L;
+                        f.av = keep;
+                        m_hwActive = true;
+                        av_frame_unref(m_frame);
+                        return 1;
+                    }
+                    av_frame_free(&keep);
+                }
                 // The hardware's memory: seen in place, or copied back when it cannot be
                 av_frame_unref(m_swFrame);
                 int mr = av_hwframe_map(m_swFrame, m_frame, AV_HWFRAME_MAP_READ);
@@ -985,14 +1059,26 @@ bool VideoDecoder::toRgba(const VideoFrame &f, std::vector<uint8_t> &out, bool b
 {
     if (!f.layout || f.staging >= 0) return false;
     const VideoLayout &L = *f.layout;
+    // A hardware surface: copied back to memory first
+    struct Freer {
+        AVFrame *f = nullptr;
+        ~Freer() { av_frame_free(&f); }
+    } readBack;
+    const AVFrame *av = f.av;
+    if (L.surface) {
+        if (!f.av) return false;
+        readBack.f = av_frame_alloc();
+        if (!readBack.f || av_hwframe_transfer_data(readBack.f, f.av, 0) < 0) return false;
+        av = readBack.f;
+    }
     const int W = L.width, H = L.height;
     out.assign(size_t(W) * H * 4, 0);
     const uint8_t *base[4] = {};
     size_t stride[4] = {};
     for (int p = 0; p < L.planeCount; ++p) {
-        if (f.av) {
-            base[p] = f.av->data[p];
-            stride[p] = size_t(f.av->linesize[p]);
+        if (av) {
+            base[p] = av->data[p];
+            stride[p] = size_t(av->linesize[p]);
         } else {
             base[p] = f.bytes.data() + L.plane[p].offset;
             stride[p] = L.plane[p].rowBytes;

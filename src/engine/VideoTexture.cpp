@@ -1,12 +1,15 @@
 #include "VideoTexture.h"
 #include "VideoDecoder.h"
+#include "VideoSurface.h"
 
 extern "C" {
 #include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
 }
 
 #include <QOpenGLContext>
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 #ifndef GL_PIXEL_UNPACK_BUFFER
@@ -42,6 +45,9 @@ extern "C" {
 #ifndef GL_COMPRESSED_TEXTURE_FORMATS
 #define GL_COMPRESSED_TEXTURE_FORMATS 0x86A3
 #endif
+#ifndef GL_TEXTURE_RECTANGLE
+#define GL_TEXTURE_RECTANGLE 0x84F5
+#endif
 
 static constexpr GLenum kDxt1 = 0x83F0;  // GL_COMPRESSED_RGB_S3TC_DXT1_EXT
 static constexpr GLenum kDxt5 = 0x83F3;  // GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
@@ -56,9 +62,16 @@ static constexpr GLenum kBc6u = 0x8E8F;  // GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOA
 static const char *kVs = "#version 330 core\nlayout(location=0) in vec2 a_pos; out vec2 v_uv;\n"
                          "void main(){ v_uv = a_pos*0.5+0.5; gl_Position = vec4(a_pos,0.0,1.0); }\n";
 
-// Modes: 0 YUV, 1 RGB, 2 grey; HAP: 3 RGB(A), 4 scaled YCoCg, 5 scaled YCoCg + alpha, 6 alpha only (grey)
-static const char *kFs = R"(#version 330 core
+// Modes: 0 YUV, 1 RGB, 2 grey; HAP: 3 RGB(A), 4 scaled YCoCg, 5 scaled YCoCg + alpha, 6 alpha only (grey).
+// RECT: the planes are rectangle textures (a hardware surface), read in texels.
+static const char *kFs = R"(
+#ifdef RECT
+uniform sampler2DRect u_t0, u_t1, u_t2, u_t3;
+vec4 T(sampler2DRect s, vec2 uv) { return texture(s, uv * vec2(textureSize(s))); }
+#else
 uniform sampler2D u_t0, u_t1, u_t2, u_t3;
+vec4 T(sampler2D s, vec2 uv) { return texture(s, uv); }
+#endif
 uniform vec4 u_sel0, u_sel1, u_sel2, u_sel3; // which channel of the texel
 uniform vec2 u_off0, u_off1, u_off2, u_off3; // chroma siting
 uniform vec4 u_scale;                        // bit depth held in 16 bits
@@ -70,47 +83,62 @@ in vec2 v_uv; out vec4 o;
 void main() {
     vec2 uv = min(vec2(v_uv.x, 1.0 - v_uv.y) * u_crop, u_clamp); // stored top row first
     if (u_mode >= 3) {
-        vec4 c = texture(u_t0, uv);
+        vec4 c = T(u_t0, uv);
         if (u_mode == 3) { o = vec4(clamp(c.rgb, 0.0, 1.0), u_alpha != 0 ? c.a : 1.0); return; }
         if (u_mode == 6) { o = vec4(c.rrr, 1.0); return; }
         float s = c.z * (255.0 / 8.0) + 1.0;
         float co = (c.x - 128.0 / 255.0) / s, cg = (c.y - 128.0 / 255.0) / s;
         vec3 rgb = vec3(c.w + co - cg, c.w + cg, c.w - co - cg);
-        o = vec4(clamp(rgb, 0.0, 1.0), u_mode == 5 ? texture(u_t1, uv).r : 1.0);
+        o = vec4(clamp(rgb, 0.0, 1.0), u_mode == 5 ? T(u_t1, uv).r : 1.0);
         return;
     }
-    float a = dot(texture(u_t0, uv + u_off0), u_sel0) * u_scale.x;
-    float b = dot(texture(u_t1, uv + u_off1), u_sel1) * u_scale.y;
-    float c = dot(texture(u_t2, uv + u_off2), u_sel2) * u_scale.z;
-    float alpha = u_alpha != 0 ? dot(texture(u_t3, uv + u_off3), u_sel3) * u_scale.w : 1.0;
+    float a = dot(T(u_t0, uv + u_off0), u_sel0) * u_scale.x;
+    float b = dot(T(u_t1, uv + u_off1), u_sel1) * u_scale.y;
+    float c = dot(T(u_t2, uv + u_off2), u_sel2) * u_scale.z;
+    float alpha = u_alpha != 0 ? dot(T(u_t3, uv + u_off3), u_sel3) * u_scale.w : 1.0;
     vec3 rgb = u_mode == 0 ? u_matrix * vec3((a - u_range.x) * u_range.y, (b - u_range.z) * u_range.w, (c - u_range.z) * u_range.w)
              : u_mode == 1 ? vec3(a, b, c) : vec3(a);
     o = vec4(clamp(rgb, 0.0, 1.0), clamp(alpha, 0.0, 1.0));
 }
 )";
 
+bool VideoConverter::Program::load(bool rect, QString *log)
+{
+    auto f = gl();
+    const QString fs = QStringLiteral("#version 330 core\n") + (rect ? QStringLiteral("#define RECT\n") : QString())
+                       + QString::fromLatin1(kFs);
+    id = compileProgram(QString::fromLatin1(kVs), fs, log);
+    if (!id) return false;
+    for (int i = 0; i < 4; ++i) {
+        tex[i] = f->glGetUniformLocation(id, QStringLiteral("u_t%1").arg(i).toLatin1().constData());
+        sel[i] = f->glGetUniformLocation(id, QStringLiteral("u_sel%1").arg(i).toLatin1().constData());
+        off[i] = f->glGetUniformLocation(id, QStringLiteral("u_off%1").arg(i).toLatin1().constData());
+    }
+    scale = f->glGetUniformLocation(id, "u_scale");
+    mode = f->glGetUniformLocation(id, "u_mode");
+    alpha = f->glGetUniformLocation(id, "u_alpha");
+    matrix = f->glGetUniformLocation(id, "u_matrix");
+    range = f->glGetUniformLocation(id, "u_range");
+    crop = f->glGetUniformLocation(id, "u_crop");
+    clamp = f->glGetUniformLocation(id, "u_clamp");
+    return true;
+}
+
 bool VideoConverter::init(GLuint quadVao, QString *err)
 {
     auto f = gl();
     QString log;
-    m_program = compileProgram(QString::fromLatin1(kVs), QString::fromLatin1(kFs), &log);
-    if (!m_program) {
+    if (!m_plain.load(false, &log)) {
         if (err) *err = QStringLiteral("Video conversion shader: ") + log;
         return false;
     }
     m_quadVao = quadVao;
-    for (int i = 0; i < 4; ++i) {
-        m_tex[i] = f->glGetUniformLocation(m_program, QStringLiteral("u_t%1").arg(i).toLatin1().constData());
-        m_sel[i] = f->glGetUniformLocation(m_program, QStringLiteral("u_sel%1").arg(i).toLatin1().constData());
-        m_off[i] = f->glGetUniformLocation(m_program, QStringLiteral("u_off%1").arg(i).toLatin1().constData());
-    }
-    m_scale = f->glGetUniformLocation(m_program, "u_scale");
-    m_mode = f->glGetUniformLocation(m_program, "u_mode");
-    m_alpha = f->glGetUniformLocation(m_program, "u_alpha");
-    m_matrix = f->glGetUniformLocation(m_program, "u_matrix");
-    m_range = f->glGetUniformLocation(m_program, "u_range");
-    m_crop = f->glGetUniformLocation(m_program, "u_crop");
-    m_clamp = f->glGetUniformLocation(m_program, "u_clamp");
+    // Hardware surfaces sampled in place: when the context can bind them. Their program is compiled everywhere,
+    // so that every platform's tests check it.
+    QString rectLog;
+    const bool rect = m_rect.load(true, &rectLog);
+    if (!rect) qWarning("Video conversion shader (surfaces): %s", qPrintable(rectLog));
+    m_surfaces = rect && videosurface::available();
 
     // Compressed formats the GPU samples: by extension, or listed by the driver
     QOpenGLContext *ctx = QOpenGLContext::currentContext();
@@ -130,8 +158,11 @@ bool VideoConverter::init(GLuint quadVao, QString *err)
 
 void VideoConverter::release()
 {
-    if (m_program) gl()->glDeleteProgram(m_program);
-    m_program = 0;
+    for (Program *p : {&m_plain, &m_rect}) {
+        if (p->id) gl()->glDeleteProgram(p->id);
+        p->id = 0;
+    }
+    m_surfaces = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -272,11 +303,77 @@ void VideoTexture::uploadPlane(int p, const VideoLayout::Plane &pl, const void *
     m_allocated[p] = true;
 }
 
+// A hardware frame: each plane of its surface bound to a rectangle texture
+bool VideoTexture::bindSurface(const VideoFrame &fr, const VideoLayout &L)
+{
+    auto f = gl();
+    for (int p = 0; p < L.planeCount; ++p) {
+        if (!m_rect[p]) {
+            f->glGenTextures(1, &m_rect[p]);
+            f->glBindTexture(GL_TEXTURE_RECTANGLE, m_rect[p]);
+            f->glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            f->glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            f->glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            f->glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            f->glBindTexture(GL_TEXTURE_RECTANGLE, 0);
+        }
+        GLenum internal, format, type;
+        plainFormat(L.plane[p], &internal, &format, &type);
+        if (!videosurface::bindPlane(fr.av, p, m_rect[p], internal, format, type, L.plane[p].width, L.plane[p].height))
+            return false;
+    }
+    // Kept until the next frame is bound: the GPU reads this surface, which the decoder would otherwise reuse
+    AVFrame *ref = av_frame_clone(fr.av);
+    if (m_held) av_frame_free(&m_held);
+    m_held = ref;
+    return true;
+}
+
+void VideoTexture::uploadFrom(const AVFrame *av, const VideoLayout &L)
+{
+    for (int p = 0; p < L.planeCount; ++p) {
+        const VideoLayout::Plane &pl = L.plane[p];
+        const int line = av->linesize[p];
+        const int texel = int(pl.rowBytes / size_t(std::max(1, pl.width)));
+        if (line > 0 && texel > 0 && line % texel == 0) {
+            uploadPlane(p, pl, av->data[p], line / texel);
+        } else {
+            m_repack.resize(pl.size);
+            for (int y = 0; y < pl.height; ++y)
+                std::memcpy(m_repack.data() + size_t(y) * pl.rowBytes, av->data[p] + ptrdiff_t(y) * line, pl.rowBytes);
+            uploadPlane(p, pl, m_repack.data(), 0);
+        }
+    }
+}
+
 void VideoTexture::upload(VideoFrame &fr, VideoDecoder &dec, const VideoConverter &conv)
 {
     if (!fr.valid()) return;
     const VideoLayout &L = *fr.layout;
     auto f = gl();
+    if (L.surface) {
+        if (fr.av && conv.surfaces() && bindSurface(fr, L)) {
+            convert(L, conv, true);
+            shown();
+            ++m_surfaced;
+            return;
+        }
+        // Refused by the GPU: this frame is copied back and uploaded, and the decoders copy the next ones of
+        // this format
+        if (fr.av && VideoDecoder::refuseSurface(fr.av))
+            qWarning("Video: hardware surfaces of %s cannot be sampled in place: copied instead", qPrintable(L.description));
+        AVFrame *sw = av_frame_alloc();
+        if (sw && fr.av && av_hwframe_transfer_data(sw, fr.av, 0) >= 0) {
+            ensurePlanes(L);
+            f->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            uploadFrom(sw, L);
+            f->glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            convert(L, conv, false);
+            shown();
+        }
+        av_frame_free(&sw);
+        return;
+    }
     ensurePlanes(L);
     f->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     bool ok = true;
@@ -312,19 +409,7 @@ void VideoTexture::upload(VideoFrame &fr, VideoDecoder &dec, const VideoConverte
         fr.staging = -1;
     } else if (fr.av) {
         // Kept by the decoder (no free upload buffer): read in place, rows repacked if need be
-        for (int p = 0; p < L.planeCount; ++p) {
-            const VideoLayout::Plane &pl = L.plane[p];
-            const int line = fr.av->linesize[p];
-            const int texel = int(pl.rowBytes / size_t(std::max(1, pl.width)));
-            if (line > 0 && texel > 0 && line % texel == 0) {
-                uploadPlane(p, pl, fr.av->data[p], line / texel);
-            } else {
-                m_repack.resize(pl.size);
-                for (int y = 0; y < pl.height; ++y)
-                    std::memcpy(m_repack.data() + size_t(y) * pl.rowBytes, fr.av->data[p] + ptrdiff_t(y) * line, pl.rowBytes);
-                uploadPlane(p, pl, m_repack.data(), 0);
-            }
-        }
+        uploadFrom(fr.av, L);
     } else if (!fr.bytes.empty()) {
         for (int p = 0; p < L.planeCount; ++p) uploadPlane(p, L.plane[p], fr.bytes.data() + L.plane[p].offset, 0);
     } else {
@@ -332,17 +417,20 @@ void VideoTexture::upload(VideoFrame &fr, VideoDecoder &dec, const VideoConverte
     }
     f->glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     if (!ok) return;
-    convert(L, conv);
-    ++m_uploads;
+    convert(L, conv, false);
+    shown();
 }
 
-void VideoTexture::convert(const VideoLayout &L, const VideoConverter &conv)
+void VideoTexture::convert(const VideoLayout &L, const VideoConverter &conv, bool surface)
 {
     auto f = gl();
+    const VideoConverter::Program &P = surface ? conv.m_rect : conv.m_plain;
+    const GLenum target = surface ? GLenum(GL_TEXTURE_RECTANGLE) : GLenum(GL_TEXTURE_2D);
+    const GLuint *planes = surface ? m_rect : m_planes;
     m_out.ensure(L.width, L.height);
     m_out.bind();
     f->glDisable(GL_BLEND);
-    f->glUseProgram(conv.m_program);
+    f->glUseProgram(P.id);
     const bool hap = L.mode >= VideoLayout::Mode::HapRgb;
     int mode = 0;
     switch (L.mode) {
@@ -358,37 +446,44 @@ void VideoTexture::convert(const VideoLayout &L, const VideoConverter &conv)
         // HAP: units 0 and 1 are its textures; planes: unit c holds the plane of output channel c
         const int plane = hap ? std::min(c, L.planeCount - 1) : (L.srcPlane[c] >= 0 ? L.srcPlane[c] : 0);
         f->glActiveTexture(GL_TEXTURE0 + GLenum(c));
-        f->glBindTexture(GL_TEXTURE_2D, m_planes[plane]);
-        f->glUniform1i(conv.m_tex[c], c);
+        f->glBindTexture(target, planes[plane]);
+        f->glUniform1i(P.tex[c], c);
         float sel[4] = {0, 0, 0, 0};
         if (!hap && L.srcPlane[c] >= 0) sel[std::clamp(L.srcChannel[c], 0, 3)] = 1;
-        f->glUniform4fv(conv.m_sel[c], 1, sel);
+        f->glUniform4fv(P.sel[c], 1, sel);
         float off[2] = {0, 0};
         if (L.mode == VideoLayout::Mode::Yuv && (c == 1 || c == 2) && L.srcPlane[c] >= 0) {
             const VideoLayout::Plane &pl = L.plane[L.srcPlane[c]];
             off[0] = L.chromaShift[0] / float(std::max(1, pl.width));
             off[1] = L.chromaShift[1] / float(std::max(1, pl.height));
         }
-        f->glUniform2fv(conv.m_off[c], 1, off);
+        f->glUniform2fv(P.off[c], 1, off);
     }
-    f->glUniform4fv(conv.m_scale, 1, L.scale);
-    f->glUniform1i(conv.m_mode, mode);
-    f->glUniform1i(conv.m_alpha, L.alpha ? 1 : 0);
-    f->glUniformMatrix3fv(conv.m_matrix, 1, GL_TRUE, L.matrix);
-    f->glUniform4f(conv.m_range, L.yOffset, L.yScale, L.cOffset, L.cScale);
+    f->glUniform4fv(P.scale, 1, L.scale);
+    f->glUniform1i(P.mode, mode);
+    f->glUniform1i(P.alpha, L.alpha ? 1 : 0);
+    f->glUniformMatrix3fv(P.matrix, 1, GL_TRUE, L.matrix);
+    f->glUniform4f(P.range, L.yOffset, L.yScale, L.cOffset, L.cScale);
     const VideoLayout::Plane &p0 = L.plane[0];
     const float cx = float(L.width) / float(std::max(1, p0.width)), cy = float(L.height) / float(std::max(1, p0.height));
-    f->glUniform2f(conv.m_crop, cx, cy);
+    f->glUniform2f(P.crop, cx, cy);
     // HAP's textures are rounded up to 4: never sampled beyond the picture's last texel center
-    f->glUniform2f(conv.m_clamp, hap ? (float(L.width) - 0.5f) / float(std::max(1, p0.width)) : 1.0f,
+    f->glUniform2f(P.clamp, hap ? (float(L.width) - 0.5f) / float(std::max(1, p0.width)) : 1.0f,
                    hap ? (float(L.height) - 0.5f) / float(std::max(1, p0.height)) : 1.0f);
     f->glBindVertexArray(conv.m_quadVao);
     f->glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     f->glBindVertexArray(0);
     for (int c = 3; c >= 0; --c) {
         f->glActiveTexture(GL_TEXTURE0 + GLenum(c));
-        f->glBindTexture(GL_TEXTURE_2D, 0);
+        f->glBindTexture(target, 0);
     }
+}
+
+void VideoTexture::shown()
+{
+    static std::atomic<uint64_t> serial{0};
+    ++m_uploads;
+    m_serial = ++serial;
 }
 
 void VideoTexture::destroy()
@@ -404,5 +499,11 @@ void VideoTexture::destroy()
             t = 0;
         }
     for (bool &a : m_allocated) a = false;
+    for (GLuint &t : m_rect)
+        if (t) {
+            f->glDeleteTextures(1, &t);
+            t = 0;
+        }
+    if (m_held) av_frame_free(&m_held);
     m_out.destroy();
 }
