@@ -1,4 +1,8 @@
 #include "LayerInspector.h"
+#include "AudioOutput.h"
+#include "DeckLink.h"
+#include "LiveInput.h"
+#include "Midi.h"
 #include "Commands.h"
 #include "Engine.h"
 #include "LayerTable.h"
@@ -979,6 +983,111 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
             }
             offset->setToolTip(QStringLiteral("Added to what is shown and sent: HH:MM:SS:FF, a minus before it to take away"));
             tf->addRow(QStringLiteral("Offset"), offset);
+
+            // Where an external timecode comes from: the devices of its kind, the one chosen kept when it is not here
+            using Src = TimecodeSettings::Source;
+            auto fillDevices = [](QComboBox *box, const QList<QPair<QString, QString>> &items, const QString &current,
+                                  const QString &first) {
+                box->addItem(first, QString());
+                for (const auto &[label, value] : items) box->addItem(label, value);
+                int at = box->findData(current);
+                if (at < 0 && !current.isEmpty()) {
+                    box->addItem(QStringLiteral("%1 (not found)").arg(current), current);
+                    at = box->count() - 1;
+                }
+                box->setCurrentIndex(std::max(0, at));
+            };
+            auto names = [](const QStringList &l) {
+                QList<QPair<QString, QString>> out;
+                for (const QString &n : l) out.append({n, n});
+                return out;
+            };
+            QComboBox *input = nullptr;
+            if (ts.source != Src::Internal) {
+                input = new QComboBox;
+                input->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+                input->setMinimumContentsLength(10);
+                QList<QPair<QString, QString>> items;
+                QString first = QStringLiteral("First one");
+                if (ts.source == Src::Ltc) {
+                    items = names(AudioOutput::captureDeviceNames());
+                    first = QStringLiteral("Default input");
+                } else if (ts.source == Src::Mtc) {
+                    items = names(midi::inputNames());
+                } else if (ts.source == Src::AtcNdi) {
+                    for (const LiveInputInfo &li : listLiveInputs())
+                        if (li.kind == QLatin1String("NDI")) items.append({li.name, li.uri.section(':', 2, -1)});
+                    first = QStringLiteral("(choose a source)");
+                } else {
+                    for (const decklink::Port &p : decklink::inputPorts()) items.append({p.name, p.id});
+                }
+                fillDevices(input, items, ts.input, first);
+                auto *row = new QHBoxLayout;
+                row->addWidget(input, 1);
+                auto *rescan = new QPushButton(QStringLiteral("↻"));
+                rescan->setFixedWidth(28);
+                rescan->setToolTip(QStringLiteral("Look for the devices again (an NDI source takes a moment to be found)"));
+                row->addWidget(rescan);
+                tf->addRow(QStringLiteral("Input"), row);
+                input->setEnabled(!m_locked);
+                connect(rescan, &QPushButton::clicked, this, [this] {
+                    QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+                });
+                connect(input, qOverload<int>(&QComboBox::activated), this, [apply, input](int) {
+                    const QString v = input->currentData().toString();
+                    apply(QStringLiteral("Timecode Input"), [v](TimecodeSettings &t) { t.input = v; });
+                });
+            }
+            // Sent: LTC to an audio output, MTC to a MIDI output, ATC in the viewports' NDI and DeckLink outputs
+            auto *sendLtc = new FlagBox(QStringLiteral("LTC"));
+            sendLtc->setChecked(ts.sendLtc);
+            sendLtc->setToolTip(QStringLiteral("Linear timecode, as audio, on both channels of this output"));
+            auto *ltcOut = new QComboBox;
+            ltcOut->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            ltcOut->setMinimumContentsLength(10);
+            fillDevices(ltcOut, names(AudioOutput::deviceNames()), ts.ltcOutput, QStringLiteral("Default output"));
+            auto *ltcRow = new QHBoxLayout;
+            ltcRow->addWidget(sendLtc);
+            ltcRow->addWidget(ltcOut, 1);
+            tf->addRow(QStringLiteral("Send"), ltcRow);
+            auto *sendMtc = new FlagBox(QStringLiteral("MTC"));
+            sendMtc->setChecked(ts.sendMtc);
+            sendMtc->setToolTip(QStringLiteral("MIDI timecode: quarter frames, a full frame when it jumps"));
+            auto *mtcOut = new QComboBox;
+            mtcOut->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            mtcOut->setMinimumContentsLength(10);
+            fillDevices(mtcOut, names(midi::outputNames()), ts.mtcOutput,
+                        midi::available() ? QStringLiteral("First port") : QStringLiteral("(no MIDI in this build)"));
+            auto *mtcRow = new QHBoxLayout;
+            mtcRow->addWidget(sendMtc);
+            mtcRow->addWidget(mtcOut, 1);
+            tf->addRow(QString(), mtcRow);
+            auto *sendAtc = new FlagBox(QStringLiteral("ATC in the NDI and DeckLink outputs"));
+            sendAtc->setChecked(ts.sendAtc);
+            sendAtc->setToolTip(QStringLiteral("The viewports' NDI frames and DeckLink SDI (RP188, VITC in SD) carry this "
+                                               "timecode. One layer at a time: the first that sends it."));
+            tf->addRow(QString(), sendAtc);
+            for (QWidget *w : {static_cast<QWidget *>(sendLtc), static_cast<QWidget *>(ltcOut), static_cast<QWidget *>(sendMtc),
+                               static_cast<QWidget *>(mtcOut), static_cast<QWidget *>(sendAtc)})
+                w->setEnabled(!m_locked);
+            connect(sendLtc, &QCheckBox::toggled, this, [apply](bool on) {
+                apply(QStringLiteral("Send LTC"), [on](TimecodeSettings &t) { t.sendLtc = on; });
+            });
+            connect(ltcOut, qOverload<int>(&QComboBox::activated), this, [apply, ltcOut](int) {
+                const QString v = ltcOut->currentData().toString();
+                apply(QStringLiteral("LTC Output"), [v](TimecodeSettings &t) { t.ltcOutput = v; });
+            });
+            connect(sendMtc, &QCheckBox::toggled, this, [apply](bool on) {
+                apply(QStringLiteral("Send MTC"), [on](TimecodeSettings &t) { t.sendMtc = on; });
+            });
+            connect(mtcOut, qOverload<int>(&QComboBox::activated), this, [apply, mtcOut](int) {
+                const QString v = mtcOut->currentData().toString();
+                apply(QStringLiteral("MTC Output"), [v](TimecodeSettings &t) { t.mtcOutput = v; });
+            });
+            connect(sendAtc, &QCheckBox::toggled, this, [apply](bool on) {
+                apply(QStringLiteral("Send ATC"), [on](TimecodeSettings &t) { t.sendAtc = on; });
+            });
+
             auto *status = new QLabel;
             status->setWordWrap(true);
             status->setStyleSheet("color:#9ad;");

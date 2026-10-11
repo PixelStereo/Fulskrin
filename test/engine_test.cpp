@@ -29,6 +29,7 @@
 #include <QLineF>
 #include <QSurfaceFormat>
 #include <QThread>
+#include <QTime>
 #include <cmath>
 #include <atomic>
 #include <functional>
@@ -3871,6 +3872,109 @@ int main(int argc, char **argv)
         CHECK(e.layerTimecode(li) && e.layerTimecode(li)->source == TimecodeSettings::Source::Internal);
         CHECK(e.setLayerImage(li, tmp + "/redblue.png", &err) && !e.layerTimecode(li)); // another source: no clock
         CHECK(TimecodeSettings::fromJson(ts.toJson()) == ts);
+        ts.sendAtc = true;
+        ts.sendLtc = true;
+        ts.ltcOutput = "Speakers";
+        CHECK(TimecodeSettings::fromJson(ts.toJson()) == ts && TimecodeSettings::fromJson(QJsonObject()) == TimecodeSettings());
+    }
+    // Sending: the sequence runs on evenly, jumps when the clock does; LTC and MTC as a receiver reads them
+    {
+        TcSequence seq;
+        const Timecode t0{10, 0, 0, 0, TcRate::Fps25};
+        auto at = [&](int64_t n) { return Timecode::fromFrames(t0.toFrames() + n, TcRate::Fps25); };
+        CHECK(seq.next(t0) == t0 && !seq.jumped());
+        CHECK(seq.next(at(2)) == at(1) && !seq.jumped()); // the clock a little ahead: one frame on all the same
+        CHECK(seq.next(at(1)) == at(2));                  // a little behind: on too
+        CHECK(seq.next(at(100)) == at(100) && seq.jumped());
+        CHECK(!seq.next(std::nullopt) && seq.next(t0) == t0 && !seq.jumped()); // after none: a start, not a jump
+        CHECK(TcSequence().next(Timecode{23, 59, 59, 24, TcRate::Fps25}) && [] {
+            TcSequence w;
+            w.next(Timecode{23, 59, 59, 24, TcRate::Fps25});
+            return w.next(Timecode{0, 0, 0, 0, TcRate::Fps25}) == (Timecode{0, 0, 0, 0, TcRate::Fps25}) && !w.jumped();
+        }()); // midnight: on, not a jump
+
+        // LTC: a clock read per frame, generated in blocks of any size, decoded back in order
+        for (TcRate r : {TcRate::Fps25, TcRate::Fps2997Df, TcRate::Fps30}) {
+            ltc::Generator gen(48000);
+            ltc::Decoder dec(48000);
+            dec.setRateHint(r);
+            int64_t reads = 0;
+            const int64_t start = Timecode{1, 0, 0, 0, r}.toFrames();
+            auto clock = [&]() -> std::optional<Timecode> { return Timecode::fromFrames(start + reads++, r); };
+            std::vector<float> st(2 * 997);
+            int got = 0, wrong = 0;
+            int64_t expect = -1;
+            for (int b = 0; b < 200; ++b) {
+                gen.render(st.data(), 997, 2, clock);
+                std::vector<float> mono(997);
+                for (int i = 0; i < 997; ++i) mono[size_t(i)] = st[size_t(2 * i + 1)]; // the right channel too
+                dec.push(mono.data(), mono.size());
+                if (auto t = dec.take()) {
+                    if ((expect >= 0 && t->toFrames() != expect) || t->rate != r) ++wrong;
+                    expect = t->toFrames() + 1;
+                    ++got;
+                }
+            }
+            CHECK(got > 90 && wrong == 0);
+        }
+        // MTC: four ticks a frame; a full frame first, then the pieces read back as the clock (two frames on)
+        {
+            mtc::Sender snd;
+            mtc::Decoder dec;
+            const Timecode s0{2, 30, 0, 0, TcRate::Fps30};
+            int fulls = 0, mismatch = 0, reads = 0;
+            for (int q = 0; q < 4 * 60; ++q) {
+                const Timecode now = Timecode::fromFrames(s0.toFrames() + q / 4, TcRate::Fps30);
+                for (const auto &m : snd.tick(now)) {
+                    fulls += m[0] == 0xF0;
+                    if (dec.push(m.data(), m.size()) && m[0] == 0xF1) {
+                        ++reads;
+                        // read on the last piece of the pair: the frame after the next starts then
+                        if (dec.current()->toFrames() != now.toFrames() + 1) ++mismatch;
+                    }
+                }
+            }
+            CHECK(fulls == 1 && reads >= 29 && mismatch == 0);
+        }
+    }
+    // ATC: the timecode of the layer that sends it goes with the viewports' published pictures
+    {
+        e.newProject();
+        const int li = e.addLayer("TC");
+        TimecodeSettings ts;
+        ts.sendAtc = true;
+        CHECK(e.setLayerTimecode(li, ts));
+        struct Got {
+            std::mutex m;
+            std::optional<Timecode> tc;
+            int frames = 0;
+        };
+        auto got = std::make_shared<Got>();
+        e.setTestTap([got](const CpuFrame &f) {
+            std::lock_guard<std::mutex> lk(got->m);
+            got->tc = f.timecode;
+            ++got->frames;
+        });
+        for (int k = 0; k < 20; ++k) {
+            e.renderFrame();
+            QThread::msleep(10);
+        }
+        {
+            std::lock_guard<std::mutex> lk(got->m);
+            const Timecode wall = Timecode::fromSeconds(QTime::currentTime().msecsSinceStartOfDay() / 1000.0, TcRate::Fps25);
+            CHECK(got->frames > 5 && got->tc && std::llabs(got->tc->toFrames() - wall.toFrames()) < 50);
+        }
+        ts.sendAtc = false;
+        CHECK(e.setLayerTimecode(li, ts));
+        for (int k = 0; k < 6; ++k) {
+            e.renderFrame();
+            QThread::msleep(10);
+        }
+        {
+            std::lock_guard<std::mutex> lk(got->m);
+            CHECK(!got->tc);
+        }
+        e.setTestTap(nullptr);
     }
     }
 

@@ -11,6 +11,8 @@ macOS). macOS, Windows, Linux.
 - **Snapshots, presets and sequences**: every value fades to the snapshot's own way (time and easing per value or group); snapshots in nested groups, reordered by dragging; presets hold only the values put in them; cue lists with waits and auto-follows.
 - **Animations**: any number animated by a waveform or Bézier keys, per layer or in timelines.
 - **Outputs**: fullscreen windows, Syphon, Spout, NDI, OMT, Blackmagic DeckLink / UltraStudio (SDI, HDMI).
+- **Timecode**: a generator layer (time of day, free run, or LTC / MTC / ATC received) that shows it and sends it:
+  LTC on an audio output, MTC on a MIDI port, ATC in the viewports' NDI frames and DeckLink SDI (RP188, VITC in SD).
 - **Control**: OSC and OSCQuery (UDP 1234, TCP 5678, Zeroconf). One address per value everywhere: OSC, project file, snapshots, timelines (`/layer/<name>/position/x`, `…/fx/<fx>/param/<input>`, `…/<param>/anim/play`).
 
 ## Build
@@ -25,7 +27,7 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" && cmake --build b
 
 # Linux (Ubuntu)
 sudo apt install build-essential cmake pkg-config qt6-base-dev libqt6opengl6-dev qt6-multimedia-dev libgl1-mesa-dev \
-  libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev
+  libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev libasound2-dev
 cmake -S . -B build && cmake --build build -j
 ```
 
@@ -45,7 +47,7 @@ play together, per codec, with and without zero copy).
   place with no copy; D3D11VA / VAAPI elsewhere, copied back then uploaded); other codecs on the CPU. HAP is
   decompressed on the CPU and sampled compressed, except Hap R and Hap HDR on macOS (no BPTC in its OpenGL: decoded
   on the CPU, slow in 4K; Hap Q is the fast one there). One stereo audio output.
-- No MIDI/DMX; ISF audio inputs are black. Cameras need Qt Multimedia (without it, none are listed).
+- MIDI for the timecode only (MTC), no DMX; ISF audio inputs are black. Cameras need Qt Multimedia (without it, none are listed).
 - NDI and OMT send a GPU readback (one frame of latency). DeckLink plays the same readback on the card's clock,
   three frames ahead (a new picture is shown at most four frames later; a missing one repeats the last). Its ports
   show up when Blackmagic Desktop Video is installed. A picture of another size than the mode is scaled (nearest):

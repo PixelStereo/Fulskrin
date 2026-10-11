@@ -27,7 +27,9 @@ public:
     // those of a viewport that is gone are stopped. Cheap when nothing changed
     void follow(const std::vector<std::pair<quint64, PublishSettings>> &viewports);
     // NDI, OMT, the tap: the picture read back without waiting, sent by a thread of their own (before the frame's end)
-    void readback(quint64 viewport, const RenderTarget &picture, double fps, quint64 frame);
+    // tc: the timecode the picture carries (ATC), if any
+    void readback(quint64 viewport, const RenderTarget &picture, double fps, quint64 frame,
+                  const std::optional<Timecode> &tc = std::nullopt);
     // Syphon, Spout: their contexts copy the finished picture (after the frame's end)
     void share(quint64 viewport, const RenderTarget &picture);
     bool sharing() const; // a Syphon or Spout publisher is on: the frame must be finished before share()

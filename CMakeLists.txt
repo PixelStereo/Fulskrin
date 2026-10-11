@@ -56,6 +56,7 @@ add_library(fulskrin_engine STATIC
   src/engine/Media.cpp
   src/engine/Publish.cpp
   src/engine/DeckLink.cpp
+  src/engine/Midi.cpp
   src/engine/LiveInput.cpp
   src/engine/Permissions.cpp
   src/engine/AudioStream.cpp
@@ -117,6 +118,42 @@ if(APPLE)
 elseif(UNIX)
   find_package(Threads REQUIRED)
   target_link_libraries(fulskrin_engine PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+endif()
+
+# ---------------------------------------------------------------------------
+# MIDI (the timecode's MTC): RtMidi (MIT), a submodule. CoreMIDI, Windows MM, ALSA (Linux: libasound2-dev; without it,
+# no MIDI port)
+# ---------------------------------------------------------------------------
+fulskrin_submodule(rtmidi RtMidi.cpp)
+set(rtmidi_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/rtmidi")
+set(FULSKRIN_MIDI_API "")
+if(APPLE)
+  set(FULSKRIN_MIDI_API __MACOSX_CORE__)
+  set(FULSKRIN_MIDI_LIBS "-framework CoreMIDI" "-framework CoreAudio" "-framework CoreFoundation")
+elseif(WIN32)
+  set(FULSKRIN_MIDI_API __WINDOWS_MM__)
+  set(FULSKRIN_MIDI_LIBS winmm)
+else()
+  find_package(ALSA QUIET)
+  if(ALSA_FOUND)
+    set(FULSKRIN_MIDI_API __LINUX_ALSA__)
+    set(FULSKRIN_MIDI_LIBS ALSA::ALSA Threads::Threads)
+  else()
+    message(STATUS "ALSA not found: no MIDI ports (sudo apt install libasound2-dev)")
+  endif()
+endif()
+if(FULSKRIN_MIDI_API)
+  add_library(rtmidi_static STATIC "${rtmidi_SOURCE_DIR}/RtMidi.cpp")
+  target_include_directories(rtmidi_static PUBLIC "${rtmidi_SOURCE_DIR}")
+  target_compile_definitions(rtmidi_static PUBLIC ${FULSKRIN_MIDI_API})
+  target_link_libraries(rtmidi_static PUBLIC ${FULSKRIN_MIDI_LIBS})
+  if(MSVC)
+    target_compile_options(rtmidi_static PRIVATE /W0)
+  else()
+    target_compile_options(rtmidi_static PRIVATE -w)
+  endif()
+  target_link_libraries(fulskrin_engine PRIVATE rtmidi_static)
+  target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_MIDI)
 endif()
 
 # ---------------------------------------------------------------------------

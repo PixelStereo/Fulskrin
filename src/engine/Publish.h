@@ -10,6 +10,8 @@
 //
 // This file depends on no OpenGL header (the Syphon / Spout implementations have their own).
 
+#include "Timecode.h"
+
 #include <QJsonObject>
 #include <QString>
 #include <atomic>
@@ -18,6 +20,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -75,6 +78,7 @@ struct CpuFrame {
     int width = 0, height = 0, stride = 0;
     int64_t timestamp100ns = 0;
     int fpsN = 60, fpsD = 1;
+    std::optional<Timecode> timecode; // ATC: the timecode the picture carries (NDI, DeckLink)
 };
 
 class CpuPublisher

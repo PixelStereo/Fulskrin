@@ -27,6 +27,7 @@ struct TimecodeSettings {
     QString ltcOutput;       // an audio output
     bool sendMtc = false;
     QString mtcOutput;       // a MIDI output
+    bool sendAtc = false;    // carried by the viewports' NDI and DeckLink outputs (the first layer that sends it)
 
     static QString sourceName(Source s);
     QJsonObject toJson() const;

@@ -66,6 +66,16 @@ QString decklink::driverVersion() { return {}; }
 std::vector<decklink::Port> decklink::outputPorts() { return {}; }
 std::vector<decklink::Mode> decklink::outputModes(const QString &) { return {}; }
 std::unique_ptr<CpuPublisher> createDeckLinkPublisher() { return nullptr; }
+std::vector<decklink::Port> decklink::inputPorts() { return {}; }
+struct decklink::TimecodeInput::Impl {};
+decklink::TimecodeInput::TimecodeInput() : d(std::make_unique<Impl>()) {}
+decklink::TimecodeInput::~TimecodeInput() = default;
+bool decklink::TimecodeInput::open(const QString &, Callback, QString *err)
+{
+    if (err) *err = QStringLiteral("built without DeckLink");
+    return false;
+}
+QString decklink::TimecodeInput::status() const { return {}; }
 
 #else
 
@@ -205,23 +215,25 @@ static QString portId(IDeckLink *d, const QString &name)
     return name;
 }
 
-static bool playsOut(IDeckLink *d)
+// It plays out (input: it takes a signal in)
+static bool hasDirection(IDeckLink *d, bool input)
 {
     auto attrs = query<IDeckLinkProfileAttributes>(d, IID_IDeckLinkProfileAttributes);
     DlInt io = 0;
-    if (attrs && attrs->GetInt(BMDDeckLinkVideoIOSupport, &io) == S_OK) return (io & bmdDeviceSupportsPlayback) != 0;
-    return bool(query<IDeckLinkOutput>(d, IID_IDeckLinkOutput));
+    if (attrs && attrs->GetInt(BMDDeckLinkVideoIOSupport, &io) == S_OK)
+        return (io & (input ? bmdDeviceSupportsCapture : bmdDeviceSupportsPlayback)) != 0;
+    return input ? bool(query<IDeckLinkInput>(d, IID_IDeckLinkInput)) : bool(query<IDeckLinkOutput>(d, IID_IDeckLinkOutput));
 }
 
-// Every port that plays out, with its name and id (fn: true to stop there, keeping the device)
-static Ref<IDeckLink> eachPort(const std::function<bool(IDeckLink *, const decklink::Port &)> &fn)
+// Every port that plays out (input: that takes in), with its name and id (fn: true to stop there, keeping the device)
+static Ref<IDeckLink> eachPort(const std::function<bool(IDeckLink *, const decklink::Port &)> &fn, bool input = false)
 {
     Ref<IDeckLinkIterator> it(newIterator());
     if (!it) return {};
     IDeckLink *raw = nullptr;
     while (it->Next(&raw) == S_OK) {
         Ref<IDeckLink> d(raw);
-        if (!playsOut(d.p)) continue;
+        if (!hasDirection(d.p, input)) continue;
         DlString s = nullptr;
         QString name = d->GetDisplayName(&s) == S_OK ? takeString(s) : QString();
         if (name.isEmpty()) name = QStringLiteral("DeckLink");
@@ -251,13 +263,27 @@ std::vector<decklink::Port> decklink::outputPorts()
     return out;
 }
 
-static Ref<IDeckLink> findPort(const QString &id, decklink::Port *found)
+std::vector<decklink::Port> decklink::inputPorts()
 {
-    return eachPort([&](IDeckLink *, const decklink::Port &p) {
-        if (!id.isEmpty() && p.id != id && p.name != id) return false; // empty: the first one
-        *found = p;
-        return true;
-    });
+    std::vector<Port> out;
+    eachPort(
+        [&](IDeckLink *, const Port &p) {
+            out.push_back(p);
+            return false;
+        },
+        true);
+    return out;
+}
+
+static Ref<IDeckLink> findPort(const QString &id, decklink::Port *found, bool input = false)
+{
+    return eachPort(
+        [&](IDeckLink *, const decklink::Port &p) {
+            if (!id.isEmpty() && p.id != id && p.name != id) return false; // empty: the first one
+            *found = p;
+            return true;
+        },
+        input);
 }
 
 static bool supports(IDeckLinkOutput *o, BMDDisplayMode m, BMDPixelFormat f)
@@ -389,6 +415,8 @@ public:
         m_picW = f.width;
         m_picH = f.height;
         m_picStride = f.stride;
+        m_picTc = f.timecode;
+        ++m_serial;
     }
 
     bool liveState(PublishState *st) const override
@@ -447,7 +475,10 @@ private:
         BMDTimeValue dur = 0;
         BMDTimeScale scale = 0;
         dm->GetFrameRate(&dur, &scale);
-        if (m_output->EnableVideoOutput(code, bmdVideoOutputFlagDefault) != S_OK) {
+        // With its timecode (ATC): RP188 in HD, VITC in SD; without when the port takes neither
+        m_tcFlags = mode.height >= 720 ? bmdVideoOutputRP188 : bmdVideoOutputVITC;
+        if (m_output->EnableVideoOutput(code, BMDVideoOutputFlags(m_tcFlags)) != S_OK) m_tcFlags = 0;
+        if (!m_tcFlags && m_output->EnableVideoOutput(code, bmdVideoOutputFlagDefault) != S_OK) {
             if (err) *err = QStringLiteral("%1 is in use (another viewport or application?)").arg(m_port.name);
             return false;
         }
@@ -511,6 +542,7 @@ private:
     // The latest picture into a frame of the card's (lock held): at its size, else scaled (nearest); black before any
     void fill(IDeckLinkVideoFrame *frame)
     {
+        stamp(frame);
         void *bytes = nullptr;
         if (frame->GetBytes(&bytes) != S_OK || !bytes) return;
         uint8_t *dst = static_cast<uint8_t *>(bytes);
@@ -547,6 +579,48 @@ private:
         }
     }
 
+    // Its timecode (lock held): the picture's when it is new, else one frame on; above 30 frames a second, each
+    // timecode twice, the second with the field mark (SMPTE 12-1)
+    void stamp(IDeckLinkVideoFrame *frame)
+    {
+        if (!m_tcFlags || !m_picTc) return;
+        IDeckLinkMutableVideoFrame *mut = nullptr;
+        for (auto &f : m_frames)
+            if (static_cast<IDeckLinkVideoFrame *>(f.p) == frame) mut = f.p;
+        if (!mut) return;
+        const bool high = m_mode.fps > 30.5;
+        bool field = false;
+        Timecode tc;
+        if (m_serial != m_outSerial) {
+            tc = *m_picTc;
+            field = high && m_outTc && *m_outTc == tc && !m_outField;
+        } else if (m_outTc) {
+            if (high && !m_outField) {
+                tc = *m_outTc;
+                field = true;
+            } else {
+                tc = Timecode::fromFrames(m_outTc->toFrames() + 1, m_outTc->rate);
+            }
+        } else {
+            return;
+        }
+        m_outSerial = m_serial;
+        m_outTc = tc;
+        m_outField = field;
+        const BMDTimecodeFlags flags = BMDTimecodeFlags((Timecode::dropFrame(tc.rate) ? bmdTimecodeIsDropFrame : 0) |
+                                                        (field ? bmdTimecodeFieldMark : 0));
+        auto set = [&](BMDTimecodeFormat f) {
+            mut->SetTimecodeFromComponents(f, uint8_t(tc.h), uint8_t(tc.m), uint8_t(tc.s), uint8_t(tc.f), flags);
+        };
+        if (m_tcFlags & bmdVideoOutputRP188) {
+            set(bmdTimecodeRP188LTC);
+            set(bmdTimecodeRP188VITC1);
+        } else {
+            set(bmdTimecodeVITC);
+        }
+    }
+
+    bool m_outField = false;
     QString m_wantMode;
     decklink::Port m_port;
     std::vector<decklink::Mode> m_modes;
@@ -565,6 +639,9 @@ private:
     BMDTimeValue m_duration = 1, m_next = 0;
     BMDTimeScale m_scale = 25;
     std::vector<uint8_t> m_picture, m_scaled;
+    std::optional<Timecode> m_picTc, m_outTc; // the picture's timecode, the last one played out
+    uint64_t m_serial = 0, m_outSerial = 0;
+    int m_tcFlags = 0; // the output carries a timecode (RP188 or VITC)
     int m_picW = 0, m_picH = 0, m_picStride = 0;
     int m_late = 0;
 };
@@ -585,5 +662,130 @@ void Callback::detach()
 } // namespace
 
 std::unique_ptr<CpuPublisher> createDeckLinkPublisher() { return std::make_unique<DeckLinkPublisher>(); }
+
+// ---------------------------------------------------------------------------
+// Timecode in: an input's RP188 (else VITC), in whatever mode comes in (format detection)
+// ---------------------------------------------------------------------------
+namespace {
+TcRate rateOf(IDeckLinkDisplayMode *m, bool drop)
+{
+    BMDTimeValue dur = 0;
+    BMDTimeScale scale = 0;
+    double fps = 25;
+    if (m && m->GetFrameRate(&dur, &scale) == S_OK && dur > 0) fps = double(scale) / double(dur);
+    while (fps > 31) fps /= 2; // 50p, 59.94p, 60p: the timecode counts pairs of frames
+    if (fps < 24.5) return TcRate::Fps24;
+    if (fps < 27.5) return TcRate::Fps25;
+    return drop || std::abs(fps - 29.97) < 0.01 ? (drop ? TcRate::Fps2997Df : TcRate::Fps30) : TcRate::Fps30;
+}
+} // namespace
+
+struct decklink::TimecodeInput::Impl : public IDeckLinkInputCallback {
+    std::mutex mutex;
+    Callback cb;
+    Ref<IDeckLink> device;
+    Ref<IDeckLinkInput> input;
+    Port port;
+    TcRate rate = TcRate::Fps25;
+    QString status;
+    std::atomic<ULONG> refs{1};
+    bool started = false;
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, LPVOID *ppv) override
+    {
+        if (std::memcmp(&iid, &IID_IDeckLinkInputCallback, 16) == 0) {
+            *ppv = static_cast<IDeckLinkInputCallback *>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+    ULONG STDMETHODCALLTYPE Release() override { return --refs; } // owned by TimecodeInput, not by the SDK
+    HRESULT STDMETHODCALLTYPE VideoInputFormatChanged(BMDVideoInputFormatChangedEvents, IDeckLinkDisplayMode *mode,
+                                                      BMDDetectedVideoInputFormatFlags flags) override
+    {
+        if (!mode || !input) return S_OK;
+        const BMDPixelFormat f = (flags & bmdDetectedVideoInputRGB444) ? bmdFormat8BitBGRA : bmdFormat8BitYUV;
+        input->PauseStreams();
+        input->EnableVideoInput(mode->GetDisplayMode(), f, bmdVideoInputEnableFormatDetection);
+        input->FlushStreams();
+        input->StartStreams();
+        std::lock_guard<std::mutex> lk(mutex);
+        rate = rateOf(mode, false);
+        DlString s = nullptr;
+        status = QStringLiteral("%1: %2").arg(port.name, mode->GetName(&s) == S_OK ? takeString(s) : QString());
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE VideoInputFrameArrived(IDeckLinkVideoInputFrame *frame, IDeckLinkAudioInputPacket *) override
+    {
+        if (!frame) return S_OK;
+        IDeckLinkTimecode *t = nullptr;
+        if (frame->GetTimecode(bmdTimecodeRP188Any, &t) != S_OK || !t)
+            if (frame->GetTimecode(bmdTimecodeVITC, &t) != S_OK || !t) return S_OK;
+        uint8_t h = 0, m = 0, sec = 0, f = 0;
+        const bool ok = t->GetComponents(&h, &m, &sec, &f) == S_OK;
+        const bool drop = (t->GetFlags() & bmdTimecodeIsDropFrame) != 0;
+        t->Release();
+        if (!ok) return S_OK;
+        Callback fn;
+        Timecode tc;
+        {
+            std::lock_guard<std::mutex> lk(mutex);
+            fn = cb;
+            tc = Timecode{h, m, sec, f, drop ? TcRate::Fps2997Df : rate};
+        }
+        if (tc.f >= Timecode::nominalFps(tc.rate)) tc.f /= 2;
+        if (fn && tc.valid()) fn(tc);
+        return S_OK;
+    }
+};
+
+decklink::TimecodeInput::TimecodeInput() : d(std::make_unique<Impl>()) {}
+
+decklink::TimecodeInput::~TimecodeInput()
+{
+    if (d->input) {
+        if (d->started) d->input->StopStreams();
+        d->input->SetCallback(nullptr);
+        d->input->DisableVideoInput();
+    }
+}
+
+bool decklink::TimecodeInput::open(const QString &port, Callback cb, QString *err)
+{
+    comInit();
+    d->device = findPort(port, &d->port, true);
+    d->input = query<IDeckLinkInput>(d->device.p, IID_IDeckLinkInput);
+    if (!d->input) {
+        if (err) *err = port.isEmpty() ? QStringLiteral("no DeckLink input") : QStringLiteral("DeckLink input not found");
+        return false;
+    }
+    d->cb = std::move(cb);
+    d->input->SetCallback(d.get());
+    // Any mode to begin with: the format detection switches to the one that comes in
+    if (d->input->EnableVideoInput(bmdModeHD1080i50, bmdFormat8BitYUV, bmdVideoInputEnableFormatDetection) != S_OK &&
+        d->input->EnableVideoInput(bmdModeHD1080i50, bmdFormat8BitYUV, bmdVideoInputFlagDefault) != S_OK) {
+        if (err) *err = QStringLiteral("%1 is in use").arg(d->port.name);
+        d->input->SetCallback(nullptr);
+        return false;
+    }
+    if (d->input->StartStreams() != S_OK) {
+        if (err) *err = QStringLiteral("%1 did not start").arg(d->port.name);
+        d->input->SetCallback(nullptr);
+        d->input->DisableVideoInput();
+        return false;
+    }
+    d->started = true;
+    d->status = d->port.name;
+    return true;
+}
+
+QString decklink::TimecodeInput::status() const
+{
+    std::lock_guard<std::mutex> lk(d->mutex);
+    return d->status;
+}
 
 #endif // FULSKRIN_HAS_DECKLINK

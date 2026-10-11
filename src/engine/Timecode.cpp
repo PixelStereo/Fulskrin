@@ -92,10 +92,49 @@ std::optional<Timecode> Timecode::parse(const QString &str, TcRate r)
     return t;
 }
 
+std::optional<Timecode> TcSequence::next(const std::optional<Timecode> &clock, int step)
+{
+    m_jumped = false;
+    if (!clock) {
+        m_last.reset();
+        return std::nullopt;
+    }
+    if (m_last && m_last->rate == clock->rate) {
+        const Timecode on = Timecode::fromFrames(m_last->toFrames() + step, m_last->rate);
+        // Within a frame or two of the clock (its reading and this one's ticks are not in step): it goes on
+        int64_t d = clock->toFrames() - on.toFrames();
+        const int64_t day = Timecode::fromFrames(-1, clock->rate).toFrames() + 1; // frames in a day
+        if (d > day / 2) d -= day;
+        if (d < -day / 2) d += day;
+        if (d >= -2 && d <= 2) {
+            m_last = on;
+            return on;
+        }
+    }
+    m_jumped = bool(m_last);
+    m_last = clock;
+    return clock;
+}
+
 // ---------------------------------------------------------------------------
 // LTC
 // ---------------------------------------------------------------------------
 namespace ltc {
+
+void Generator::render(float *out, int frames, int channels, const std::function<std::optional<Timecode>()> &clock)
+{
+    for (int i = 0; i < frames; ++i) {
+        if (m_pos >= m_buf.size()) { // the next frame's samples
+            m_buf.clear();
+            m_pos = 0;
+            const std::optional<Timecode> tc = m_seq.next(clock());
+            if (tc) m_enc.frame(*tc, m_buf);
+            else m_buf.assign(size_t(m_rate / 25), 0.0f); // silence, a 25th of a second at a time
+        }
+        const float v = m_buf[m_pos++];
+        for (int c = 0; c < channels; ++c) out[i * channels + c] = v;
+    }
+}
 
 static const uint8_t kSync[16] = {0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1}; // bits 64 to 79
 
@@ -234,6 +273,24 @@ std::optional<Timecode> Decoder::take()
 // MTC
 // ---------------------------------------------------------------------------
 namespace mtc {
+
+std::vector<std::vector<uint8_t>> Sender::tick(const std::optional<Timecode> &clock)
+{
+    std::vector<std::vector<uint8_t>> out;
+    if (m_piece == 0) { // a new timecode, two frames after the last one
+        const std::optional<Timecode> tc = m_seq.next(clock, 2);
+        if (!tc) {
+            m_current.reset();
+            return out;
+        }
+        if (!m_current || m_seq.jumped()) out.push_back(fullFrame(*tc));
+        m_current = tc;
+    }
+    if (!m_current) return out;
+    out.push_back({0xF1, quarterFrame(*m_current, m_piece)});
+    m_piece = (m_piece + 1) % 8;
+    return out;
+}
 
 uint8_t quarterFrame(const Timecode &tc, int piece)
 {

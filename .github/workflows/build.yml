@@ -42,7 +42,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config qt6-base-dev libqt6opengl6-dev qt6-multimedia-dev \
             libgl1-mesa-dev libgl1-mesa-dri libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev \
-            ffmpeg xvfb
+            libasound2-dev ffmpeg xvfb
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

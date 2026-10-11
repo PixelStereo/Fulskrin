@@ -34,6 +34,7 @@ QJsonObject TimecodeSettings::toJson() const
     if (!ltcOutput.isEmpty()) o["ltc_output"] = ltcOutput;
     o["send_mtc"] = sendMtc;
     if (!mtcOutput.isEmpty()) o["mtc_output"] = mtcOutput;
+    o["send_atc"] = sendAtc;
     return o;
 }
 
@@ -53,13 +54,14 @@ TimecodeSettings TimecodeSettings::fromJson(const QJsonObject &o)
     s.ltcOutput = o.value("ltc_output").toString();
     s.sendMtc = o.value("send_mtc").toBool(false);
     s.mtcOutput = o.value("mtc_output").toString();
+    s.sendAtc = o.value("send_atc").toBool(false);
     return s;
 }
 
 bool TimecodeSettings::operator==(const TimecodeSettings &o) const
 {
     return source == o.source && internal == o.internal && rate == o.rate && offset == o.offset && input == o.input
-           && sendLtc == o.sendLtc && ltcOutput == o.ltcOutput && sendMtc == o.sendMtc && mtcOutput == o.mtcOutput;
+           && sendLtc == o.sendLtc && ltcOutput == o.ltcOutput && sendMtc == o.sendMtc && mtcOutput == o.mtcOutput && sendAtc == o.sendAtc;
 }
 
 // ---------------------------------------------------------------------------

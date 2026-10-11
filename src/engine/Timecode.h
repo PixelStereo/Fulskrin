@@ -8,6 +8,7 @@
 #include <QString>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -34,6 +35,20 @@ struct Timecode {
     bool operator!=(const Timecode &o) const { return !(*this == o); }
 };
 
+// What to send next: `step` frames after the last one sent, unless the clock is elsewhere (a jump, another rate): then
+// the clock's. Sent timecode runs on evenly while the clock's own reading jitters.
+class TcSequence
+{
+public:
+    std::optional<Timecode> next(const std::optional<Timecode> &clock, int step = 1);
+    bool jumped() const { return m_jumped; } // the last next() did not follow on
+    void reset() { m_last.reset(); }
+
+private:
+    std::optional<Timecode> m_last;
+    bool m_jumped = false;
+};
+
 namespace ltc {
 
 // The 80 bits of a frame, bit 0 first (as sent): BCD digits, flags, user bits at 0, the sync word, the polarity bit
@@ -53,6 +68,22 @@ private:
     int m_rate;
     float m_amp, m_level = 1.0f;
     double m_phase = 0; // fraction of a sample carried over (29.97 fps)
+};
+
+// A clock's timecode as LTC audio, frame after frame (silence while it has none)
+class Generator
+{
+public:
+    explicit Generator(int sampleRate) : m_rate(sampleRate), m_enc(sampleRate) {}
+    // `frames` samples on each of `channels` (interleaved); clock: called once per LTC frame
+    void render(float *out, int frames, int channels, const std::function<std::optional<Timecode>()> &clock);
+
+private:
+    int m_rate;
+    Encoder m_enc;
+    TcSequence m_seq;
+    std::vector<float> m_buf;
+    size_t m_pos = 0;
 };
 
 class Decoder
@@ -85,6 +116,19 @@ namespace mtc {
 uint8_t quarterFrame(const Timecode &tc, int piece);
 // Full frame SysEx: F0 7F 7F 01 01 hh mm ss ff F7
 std::vector<uint8_t> fullFrame(const Timecode &tc);
+
+// MTC out, one quarter frame at a time: tick() four times a frame (rate: the timecode's) gives what to send then: a
+// full frame first and on a jump, then the eight quarter frames of each timecode, which takes two frames
+class Sender
+{
+public:
+    std::vector<std::vector<uint8_t>> tick(const std::optional<Timecode> &clock);
+
+private:
+    TcSequence m_seq;
+    std::optional<Timecode> m_current; // the one the pieces say
+    int m_piece = 0;
+};
 
 class Decoder
 {
