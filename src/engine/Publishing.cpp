@@ -132,7 +132,8 @@ void Publishing::apply(Publication &pub, const PublishSettings &s)
         const PublishTarget &want = s.targets[ki];
         const PublishTarget &had = pub.applied.targets[ki];
         const bool optionsChanged = s.libraryFolder != pub.applied.libraryFolder
-                                    || (k == PublishKind::Omt && s.omtQuality != pub.applied.omtQuality);
+                                    || (k == PublishKind::Omt && s.omtQuality != pub.applied.omtQuality)
+                                    || (k == PublishKind::DeckLink && s.decklinkMode != pub.applied.decklinkMode);
         if (!first && want == had && !(want.enabled && optionsChanged)) continue;
 
         if (isGpuKind(k)) {
@@ -148,8 +149,9 @@ void Publishing::apply(Publication &pub, const PublishSettings &s)
         if (!publishCompiledIn(k)) {
             setState(pub, k,
                      {PublishState::Unavailable,
-                      k == PublishKind::Syphon ? QStringLiteral("Syphon is only available on macOS")
-                                               : QStringLiteral("Spout is only available on Windows"),
+                      k == PublishKind::Syphon   ? QStringLiteral("Syphon is only available on macOS")
+                      : k == PublishKind::Spout  ? QStringLiteral("Spout is only available on Windows")
+                                                 : QStringLiteral("Built without DeckLink support"),
                       -1});
             continue;
         }
@@ -163,11 +165,15 @@ void Publishing::apply(Publication &pub, const PublishSettings &s)
                 setState(pub, k, {PublishState::Error, err.isEmpty() ? QStringLiteral("Failed to start") : err, -1});
             }
         } else {
-            std::shared_ptr<CpuPublisher> p(k == PublishKind::Ndi ? createNdiPublisher() : createOmtPublisher());
-            if (p->start(want.name, s, &err)) {
+            std::shared_ptr<CpuPublisher> p(k == PublishKind::Ndi   ? createNdiPublisher()
+                                            : k == PublishKind::Omt ? createOmtPublisher()
+                                                                    : createDeckLinkPublisher());
+            if (p && p->start(want.name, s, &err)) {
                 pub.cpu[ki] = p;
                 cpuChanged = true;
-                setState(pub, k, {PublishState::Ok, QStringLiteral("Active: \"%1\"").arg(want.name), 0});
+                PublishState st{PublishState::Ok, QStringLiteral("Active: \"%1\"").arg(want.name), 0};
+                p->liveState(&st);
+                setState(pub, k, st);
             } else {
                 setState(pub, k, {PublishState::Error, err, -1});
             }
@@ -238,6 +244,7 @@ void Publishing::readback(quint64 viewport, const RenderTarget &out, double fps,
     if ((frame % 30) == 0) {
         std::lock_guard<std::mutex> lk(m_stateMutex);
         for (int ki = 0; ki < kPublishKindCount; ++ki) {
+            if (pub.cpu[ki] && pub.cpu[ki]->liveState(&pub.states[ki])) continue; // it tells how it goes
             if (pub.states[ki].level != PublishState::Ok) continue;
             if (pub.cpu[ki]) pub.states[ki].receivers = pub.cpu[ki]->receivers();
             else if (pub.gpu[ki]) pub.states[ki].receivers = pub.gpu[ki]->receivers();
