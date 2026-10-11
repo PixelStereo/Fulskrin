@@ -390,7 +390,7 @@ void ColorEditor::build(const QString &title)
 {
     auto *v = new QVBoxLayout(this);
     v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(4);
+    v->setSpacing(2);
     auto *head = new QHBoxLayout;
     m_switch = new FlagBox;
     m_switch->setChecked(true);
@@ -400,9 +400,10 @@ void ColorEditor::build(const QString &title)
     auto *name = new ResetLabel(QStringLiteral("<b>%1</b>").arg(title), [this] { apply(m_default, true); });
     name->setToolTip(QStringLiteral("Click to reset the color"));
     m_swatch = new QLabel;
-    m_swatch->setFixedSize(46, 18);
+    m_swatch->setFixedSize(36, 16);
     m_hex = new QLineEdit;
-    m_hex->setMaximumWidth(80);
+    m_hex->setMaximumWidth(72);
+    m_hex->setFixedHeight(20);
     m_hex->setToolTip(QStringLiteral("Hexadecimal value (#RRGGBB)"));
     head->addWidget(name);
     head->addStretch();
@@ -419,11 +420,11 @@ void ColorEditor::build(const QString &title)
     for (int g = 0; g < 4; ++g) {
         auto *box = new QWidget;
         auto *grid = new QGridLayout(box);
-        grid->setContentsMargins(0, 2, 0, 2);
+        grid->setContentsMargins(0, 1, 0, 1);
         grid->setHorizontalSpacing(6);
-        grid->setVerticalSpacing(2);
+        grid->setVerticalSpacing(1);
         auto *cap = new QLabel(QString::fromUtf8(kGroups[g]));
-        cap->setStyleSheet("color:#888; font-size:11px;");
+        cap->setStyleSheet("color:#888; font-size:10px;");
         grid->addWidget(cap, 0, 0, 1, 3);
         m_groups[g] = box;
         v->addWidget(box);
@@ -480,8 +481,10 @@ void ColorEditor::addChannel(int model, int index, const QString &name, double m
         m_l = lk;
         setChannel(model, index, def);
     });
-    label->setMinimumWidth(64);
+    label->setMinimumWidth(58);
+    label->setStyleSheet("font-size:11px;");
     ch.bar = new SliderField;
+    ch.bar->setCompact(true);
     ch.bar->setRange(0, max);
     ch.bar->setDecimals(max >= 255 ? 0 : 1);
     ch.bar->setSuffix(suffix);
@@ -1017,11 +1020,14 @@ void SliderField::setValue(double v)
 void SliderField::resizeEvent(QResizeEvent *)
 {
     const int w = fieldWidth(m_spin);
-    m_spin->setGeometry(width() - w, 1, w, kFieldHeight - 2);
+    m_spin->setFixedHeight(height() - 2);
+    m_spin->setGeometry(width() - w, 1, w, height() - 2);
     update();
 }
 
-QRectF SliderField::bar() const { return QRectF(0, 1, width() - m_spin->width() - 4, kFieldHeight - 2); }
+QRectF SliderField::bar() const { return QRectF(0, 1, width() - m_spin->width() - 4, height() - 2); }
+
+void SliderField::setCompact(bool on) { setFixedHeight(on ? kFieldHeight - 6 : kFieldHeight); }
 double SliderField::valueAt(double x) const
 {
     const QRectF r = bar();
