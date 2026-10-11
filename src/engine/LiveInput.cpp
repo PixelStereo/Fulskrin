@@ -11,6 +11,7 @@
 #include <QMutex>
 #include <QThread>
 #include <QUrl>
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <thread>
@@ -18,6 +19,7 @@
 #ifdef FULSKRIN_HAS_CAMERA
 #include <QCamera>
 #include <QCameraDevice>
+#include <QCameraFormat>
 #include <QMediaCaptureSession>
 #include <QMediaDevices>
 #include <QVideoFrame>
@@ -223,6 +225,28 @@ std::vector<LiveInputInfo> omtSources(const QString &folder)
 }
 
 #ifdef FULSKRIN_HAS_CAMERA
+// The format a camera is opened in. Left to itself, the system may pick a square one (the cameras with Center
+// Stage, the iPhone's Continuity Camera offer them): the whole picture is wanted, so a wide format (not square),
+// at least 24 fps, as large as possible up to 4K, then the highest rate up to 60.
+static QCameraFormat bestCameraFormat(const QCameraDevice &device)
+{
+    QCameraFormat best;
+    double bestScore = -1;
+    for (const QCameraFormat &f : device.videoFormats()) {
+        const QSize s = f.resolution();
+        if (s.isEmpty()) continue;
+        const bool wide = double(s.width()) / double(s.height()) > 1.2;
+        const double fps = std::min(double(f.maxFrameRate()), 60.0);
+        const double area = std::min(double(s.width()) * double(s.height()), 3840.0 * 2160.0);
+        const double score = (wide ? 1e15 : 0) + (fps >= 24 ? 1e14 : 0) + area * 100 + fps;
+        if (score > bestScore) {
+            bestScore = score;
+            best = f;
+        }
+    }
+    return best;
+}
+
 // --- A camera: Qt Multimedia, in the application's thread; each frame converted to RGBA there
 class CameraInput : public LiveInput
 {
@@ -235,6 +259,12 @@ public:
         auto status = m_status;
         auto start = [holder, device, frame, status] {
             auto *camera = new QCamera(device, holder);
+            const QCameraFormat format = bestCameraFormat(device);
+            if (!format.isNull()) {
+                camera->setCameraFormat(format);
+                qInfo("Camera %s: %dx%d, %.0f fps", qPrintable(device.description()), format.resolution().width(),
+                      format.resolution().height(), double(format.maxFrameRate()));
+            }
             auto *session = new QMediaCaptureSession(holder);
             auto *sink = new QVideoSink(holder);
             session->setCamera(camera);
