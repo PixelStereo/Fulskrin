@@ -807,11 +807,21 @@ void Engine::frame(double dt)
 
     auto f = gl();
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    // One wait per frame. Other contexts read these pictures: the interface preview, the output windows, Syphon
-    // and Spout. Another context only sees a texture whole once the commands that drew it are complete (OpenGL
-    // spec; glFlush is enough on macOS, not everywhere). Without it the last viewport's picture, last in the queue,
-    // was copied before it was drawn: Syphon sent black, or the frame before, depending on how full the queue was.
-    f->glFinish();
+    // Other contexts read these pictures: the output windows and the interface wait for this fence on the GPU
+    // (waitForFrame), the CPU goes on. A texture drawn in one context is only seen whole by another once the commands
+    // that drew it are complete (OpenGL spec). Syphon and Spout copy the picture through contexts of their own that
+    // cannot wait for it: while one of them is on, the frame is finished here (without it, the last viewport was
+    // sent black or a frame late).
+    bool shared = false;
+    for (auto &[pub, out] : outs)
+        for (int ki : {int(PublishKind::Syphon), int(PublishKind::Spout)}) shared = shared || pub->gpu[ki];
+    {
+        std::lock_guard<std::mutex> lk(m_fenceMutex);
+        if (m_frameFence) f->glDeleteSync(m_frameFence);
+        m_frameFence = f->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
+    if (shared) f->glFinish();
+    else f->glFlush(); // the fence reaches the GPU before another context waits for it
     for (auto &[pub, out] : outs) publishShared(*pub, *out);
     m_published = m_back;
     m_back = 1 - m_back;
@@ -826,39 +836,62 @@ void Engine::frame(double dt)
     ++m_frameCount;
 }
 
+// The source preview, a few times per second. Read back without waiting: the picture asked for at one tick is
+// collected at the next one (a quarter of a second later at most), long finished by then.
 void Engine::readSourcePreview()
 {
     if (!m_previewId || (m_previewTick++ % 4) != 0) return; // a few times per second is enough
+    auto f = gl();
+    if (m_previewPboId) {
+        QImage img(m_previewPboW, m_previewPboH, QImage::Format_RGBA8888);
+        f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_previewPbo);
+        const GLsizeiptr bytes = GLsizeiptr(m_previewPboW) * m_previewPboH * 4;
+        if (const void *p = f->glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT)) {
+            memcpy(img.bits(), p, size_t(bytes));
+            f->glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            std::lock_guard<std::mutex> lk(m_previewMutex);
+            m_previewImage = img.mirrored(false, true);
+            m_previewImageId = m_previewPboId;
+        }
+        f->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        m_previewPboId = 0;
+    }
     const Layer *l = nullptr;
     for (auto &x : m_layers)
         if (x->id == m_previewId) l = x.get();
-    QImage img;
-    if (l && l->rawTex && l->rawW > 0 && l->rawH > 0) {
-        const double k = std::min(1.0, double(m_previewSide) / std::max(l->rawW, l->rawH));
-        const int w = std::max(1, int(std::lround(l->rawW * k))), h = std::max(1, int(std::lround(l->rawH * k)));
-        m_previewTarget.ensure(w, h);
-        auto f = gl();
-        m_previewTarget.bind();
-        f->glDisable(GL_BLEND);
-        f->glUseProgram(m_prepProgram); // unpremultiplied (groups), no roi, no color
-        f->glActiveTexture(GL_TEXTURE0);
-        f->glBindTexture(GL_TEXTURE_2D, l->rawTex);
-        f->glUniform1i(m_prepTexLoc, 0);
-        f->glUniform4f(m_prepRoiLoc, 0, 0, 1, 1);
-        f->glUniform3f(m_prepAddLoc, 0, 0, 0);
-        f->glUniform3f(m_prepRemoveLoc, 0, 0, 0);
-        f->glUniform3f(m_prepBalanceLoc, 1, 1, 1);
-        f->glUniform1i(m_prepUnpremulLoc, l->isGroup || l->isViewport ? 1 : 0);
-        f->glUniform1i(m_prepMaskModeLoc, 0);
-        drawQuad();
-        img = QImage(w, h, QImage::Format_RGBA8888);
-        f->glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        f->glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
-        img = img.mirrored(false, true);
+    if (!l || !l->rawTex || l->rawW <= 0 || l->rawH <= 0) {
+        std::lock_guard<std::mutex> lk(m_previewMutex);
+        m_previewImage = QImage();
+        m_previewImageId = m_previewId;
+        return;
     }
-    std::lock_guard<std::mutex> lk(m_previewMutex);
-    m_previewImage = img;
-    m_previewImageId = m_previewId;
+    const double k = std::min(1.0, double(m_previewSide) / std::max(l->rawW, l->rawH));
+    const int w = std::max(1, int(std::lround(l->rawW * k))), h = std::max(1, int(std::lround(l->rawH * k)));
+    m_previewTarget.ensure(w, h);
+    m_previewTarget.bind();
+    f->glDisable(GL_BLEND);
+    f->glUseProgram(m_prepProgram); // unpremultiplied (groups), no roi, no color
+    f->glActiveTexture(GL_TEXTURE0);
+    f->glBindTexture(GL_TEXTURE_2D, l->rawTex);
+    f->glUniform1i(m_prepTexLoc, 0);
+    f->glUniform4f(m_prepRoiLoc, 0, 0, 1, 1);
+    f->glUniform3f(m_prepAddLoc, 0, 0, 0);
+    f->glUniform3f(m_prepRemoveLoc, 0, 0, 0);
+    f->glUniform3f(m_prepBalanceLoc, 1, 1, 1);
+    f->glUniform1i(m_prepUnpremulLoc, l->isGroup || l->isViewport ? 1 : 0);
+    f->glUniform1i(m_prepMaskModeLoc, 0);
+    drawQuad();
+    if (!m_previewPbo) f->glGenBuffers(1, &m_previewPbo);
+    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_previewPbo);
+    if (w != m_previewPboW || h != m_previewPboH) {
+        f->glBufferData(GL_PIXEL_PACK_BUFFER, GLsizeiptr(w) * h * 4, nullptr, GL_STREAM_READ);
+        m_previewPboW = w;
+        m_previewPboH = h;
+    }
+    f->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    f->glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    m_previewPboId = l->id;
 }
 
 void Engine::renderFrame()

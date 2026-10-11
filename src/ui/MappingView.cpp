@@ -472,6 +472,7 @@ void MappingView::paintScene()
     // The OpenGL viewport origin is at the bottom left.
     f->glViewport(int(std::round(r.left() * dpr)), int(std::round((height() - r.bottom()) * dpr)),
                   int(std::round(r.width() * dpr)), int(std::round(r.height() * dpr)));
+    m_engine->waitForFrame(f);
     m_draw.drawTexture(m_engine->outputTexture());
     f->glViewport(0, 0, int(width() * dpr), int(height() * dpr));
 

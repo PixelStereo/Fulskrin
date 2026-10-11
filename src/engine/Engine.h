@@ -465,11 +465,13 @@ public:
     quint64 windowFrames(quint64 viewport); // pictures the viewport's window was given (tests)
     void setViewportWindow(quint64 viewport, QWindow *w);
     void setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize);
-    GLuint viewportTexture(quint64 viewport) const; // last finished picture of a viewport (shared context)
 
     // --- Rendering
     void renderFrame();                  // manual mode only
     GLuint outputTexture() const;        // last published frame (readable from a shared context)
+    // Another context reading the published pictures calls this first, with itself current: its GPU waits for the
+    // frame to be drawn (the CPU does not)
+    void waitForFrame(QOpenGLExtraFunctions *f) const;
     double fps() const { return m_fps.load(); }
     QImage grabOutput();                 // the whole composition (interface preview)
     QImage grabViewport(quint64 viewport);
@@ -635,9 +637,16 @@ private:
     quint64 m_previewId = 0;
     int m_previewSide = 360, m_previewTick = 0;
     RenderTarget m_previewTarget;
+    GLuint m_previewPbo = 0; // read back without waiting: mapped at the next preview tick
+    int m_previewPboW = 0, m_previewPboH = 0;
+    quint64 m_previewPboId = 0; // the layer the buffer holds (0: nothing pending)
     mutable std::mutex m_previewMutex;
     QImage m_previewImage;
     quint64 m_previewImageId = 0;
+
+    // The frame's end, for the other contexts (output windows, interface)
+    GLsync m_frameFence = nullptr;
+    mutable std::mutex m_fenceMutex;
 
     QElapsedTimer m_clock;
     qint64 m_lastNs = 0;
