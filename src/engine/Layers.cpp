@@ -503,7 +503,7 @@ int Engine::partOf(const QString &path)
         under("remove/") || path == "mask/invert")
         return PartColor;
     if (path == "rotation" || path == "width" || path == "height" || under("pivot/") || under("position/") ||
-        under("scale/") || under("corner/") || under("soft_edge/"))
+        under("scale/") || under("corner/"))
         return PartSpatial;
     if (under("fx/")) return PartEffects;
     if (path == "opacity" || path == "blend_mode") return PartCompositing;

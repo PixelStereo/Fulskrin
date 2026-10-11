@@ -229,14 +229,6 @@ void Mapping::fitAspect(double srcAspect, double compAspect)
     ++revision;
 }
 
-bool SoftEdge::operator==(const SoftEdge &o) const
-{
-    if (enabled != o.enabled) return false;
-    for (int i = 0; i < 4; ++i)
-        if (width[i] != o.width[i] || power[i] != o.power[i]) return false;
-    return true;
-}
-
 // Its mesh (the other values are its layer's parameters): the grid and the points pulled from it
 QJsonObject Mapping::meshJson() const
 {
@@ -260,7 +252,7 @@ void Mapping::setMeshJson(const QJsonObject &o)
 bool Mapping::operator==(const Mapping &o) const
 {
     if (position != o.position || size != o.size || rotation != o.rotation || pivot != o.pivot || cols != o.cols ||
-        rows != o.rows || offsets != o.offsets || meshMode != o.meshMode || !(soft == o.soft))
+        rows != o.rows || offsets != o.offsets || meshMode != o.meshMode)
         return false;
     for (int k = 0; k < 4; ++k)
         if (pins[k] != o.pins[k]) return false;

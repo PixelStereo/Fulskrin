@@ -202,6 +202,16 @@ static QWidget *separator()
     return line;
 }
 
+// Thin rule in the interface's accent color
+static QWidget *accentSeparator()
+{
+    auto *line = new QFrame;
+    line->setFrameShape(QFrame::NoFrame);
+    line->setFixedHeight(1);
+    line->setStyleSheet(QStringLiteral("background:%1;").arg(theme::css()));
+    return line;
+}
+
 static QLabel *errorLabel(const QString &text)
 {
     auto *l = new QLabel(text);
@@ -555,6 +565,7 @@ void LayerInspector::rebuild()
     connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int i) {
         if (tabs->isTabEnabled(i)) m_subTab = tabs->tabText(i).section(' ', 0, 0);
     });
+    v->addWidget(separator()); // above the tabs
     v->addWidget(tabs, 1);
     if (!m_revealAnim.isEmpty()) {
         m_anims->reveal(m_revealAnim);
@@ -1969,68 +1980,6 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         editMapping(QStringLiteral("Flatten Mesh"), [](Mapping &m) { m.resetMesh(m.cols, m.rows); });
     });
 
-    // Soft edge: the picture fades out towards each side (to blend overlapping projections)
-    {
-        const SoftEdge se = cmd::SetMapping::read(m_engine, m_layer).soft;
-        auto *box = new QGroupBox(QStringLiteral("Soft Edge"));
-        box->setCheckable(true);
-        box->setChecked(se.enabled);
-        m_softBox = box;
-        box->setToolTip(QStringLiteral("Fades the picture to transparent towards each side. Width: how far the fade "
-                                       "reaches, in % of the layer. Power: shape of the fade (1 linear, above 1 "
-                                       "stays dark longer, below 1 brightens sooner)."));
-        auto *grid = new QGridLayout(box);
-        grid->setColumnStretch(1, 1);
-        grid->setColumnStretch(3, 1);
-        grid->addWidget(new QLabel(QStringLiteral("Width")), 0, 1);
-        grid->addWidget(new QLabel(QStringLiteral("Power")), 0, 3);
-        static const char *names[4] = {"Left", "Right", "Top", "Bottom"};
-        for (int side = 0; side < 4; ++side) {
-            auto *width = new SliderField;
-            width->setRange(0, 50);
-            width->setDecimals(1);
-            width->setSuffix(QStringLiteral(" %"));
-            width->setSingleStep(0.5);
-            width->setSnaps({0});
-            width->setValue(se.width[side] * 100.0);
-            auto *power = new SliderField;
-            power->setRange(0.1, 4);
-            power->setTypedRange(0.1, 8);
-            power->setDecimals(2);
-            power->setSuffix(QStringLiteral(" ×"));
-            power->setSingleStep(0.05);
-            power->setSnaps({1});
-            power->setValue(se.power[side]);
-            m_softWidth[side] = width;
-            m_softPower[side] = power;
-            auto *name = new ResetLabel(QString::fromLatin1(names[side]), [width, power] {
-                width->setValue(10.0);
-                power->setValue(1.0);
-                emit width->valueEdited(10.0);
-                emit power->valueEdited(1.0);
-            });
-            grid->addWidget(name, side + 1, 0);
-            const QString base = QStringLiteral("soft_edge/%1/").arg(QString::fromLatin1(names[side]).toLower());
-            m_animate->attach(name, {base + "width", base + "power"});
-            m_animate->attach(width, {base + "width"});
-            m_animate->attach(power, {base + "power"});
-            grid->addWidget(width, side + 1, 1);
-            grid->addWidget(power, side + 1, 3);
-            connect(width, &SliderField::valueEdited, this, [this, side](double v) {
-                editMapping(QStringLiteral("Soft Edge Width"), [&](Mapping &m) { m.soft.width[side] = std::clamp(v / 100.0, 0.0, 0.5); },
-                            true);
-            });
-            connect(power, &SliderField::valueEdited, this, [this, side](double v) {
-                editMapping(QStringLiteral("Soft Edge Power"), [&](Mapping &m) { m.soft.power[side] = std::clamp(v, 0.1, 8.0); },
-                            true);
-            });
-        }
-        connect(box, &QGroupBox::toggled, this, [this](bool on) {
-            editMapping(on ? QStringLiteral("Soft Edge On") : QStringLiteral("Soft Edge Off"),
-                        [on](Mapping &m) { m.soft.enabled = on; });
-        });
-        v->addWidget(box);
-    }
     return g;
 }
 
@@ -2201,6 +2150,32 @@ void LayerInspector::showEffectParams()
     lay->addWidget(new QLabel(QStringLiteral("<b>%1</b>").arg(name.toHtmlEscaped())));
     if (!error.isEmpty()) lay->addWidget(errorLabel(error));
 
+    // Its speed (the pace of its TIME), above its mask
+    if (valid) {
+        const QString path = m_engine->shaderPrefix(m_layerId, m_selectedEffect) + QStringLiteral("speed");
+        auto *speed = new SliderField;
+        speed->setRange(0, 10);
+        speed->setDecimals(2);
+        speed->setSingleStep(0.05);
+        speed->setTicks(10);
+        speed->setSnaps({1});
+        speed->setValue(m_engine->parameterValue(m_layerId, path).toDouble(1.0));
+        speed->setToolTip(QStringLiteral("Speed of the FX's time (1 = normal, 0 = stopped)"));
+        m_fxSpeed = speed;
+        m_fxSpeedPath = path;
+        auto *label = new ResetLabel(QStringLiteral("Speed"), [this, speed, path] {
+            speed->setValue(1);
+            setValue(path, 1.0, QStringLiteral("Change Speed"));
+        });
+        connect(speed, &SliderField::valueEdited, this,
+                [this, path](double x) { setValue(path, x, QStringLiteral("Change Speed")); });
+        m_animate->attach({label, speed}, {path});
+        auto *row = new QHBoxLayout;
+        row->addWidget(label);
+        row->addWidget(speed, 1);
+        lay->addLayout(row);
+    }
+
     // Mask: where the effect applies, from another layer's picture stretched over this one
     {
         auto *row = new QHBoxLayout;
@@ -2260,7 +2235,8 @@ void LayerInspector::showEffectParams()
         });
     }
     if (valid) {
-        auto *params = new ParamPanel(m_engine, m_undo, m_layer, m_selectedEffect);
+        lay->addWidget(accentSeparator());
+        auto *params = new ParamPanel(m_engine, m_undo, m_layer, m_selectedEffect, ParamPanel::NoSpeed);
         m_effectParams = params;
         params->attachAnimate(m_animate);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
@@ -2331,21 +2307,15 @@ void LayerInspector::refreshDynamic()
         if (m_colorRemove) m_colorRemove->setColor(remove);
     }
     if (follow) {
-        SoftEdge soft;
         float opacity = 1, volume = 1;
         std::vector<float> routes;
         {
             Engine::Lock lk(&m_engine->mutex());
             Layer *l = m_engine->layer(m_layer);
             if (!l) return;
-            soft = l->mapping.soft;
             opacity = l->opacity;
             volume = l->volume;
             for (const RouteField &r : m_routeFields) routes.push_back(l->opacityIn(r.viewport));
-        }
-        if (m_softBox && m_softBox->isChecked() != soft.enabled) {
-            QSignalBlocker blk(m_softBox);
-            m_softBox->setChecked(soft.enabled);
         }
         auto show = [](SliderField *f, double value) {
             if (f && !f->isDragging() && std::abs(f->value() - value) > 1e-3) f->setValue(value);
@@ -2363,10 +2333,7 @@ void LayerInspector::refreshDynamic()
             show(m_genSpeed, gs);
         }
         if (m_effectParams) m_effectParams->refresh();
-        for (int side = 0; side < 4; ++side) {
-            show(m_softWidth[side], soft.width[side] * 100.0);
-            show(m_softPower[side], soft.power[side]);
-        }
+        if (m_fxSpeed) show(m_fxSpeed, m_engine->parameterValue(m_layerId, m_fxSpeedPath).toDouble(1.0));
         for (size_t k = 0; k < m_routeFields.size(); ++k) {
             const RouteField &r = m_routeFields[k];
             if (!r.field || r.field->isDragging()) continue;

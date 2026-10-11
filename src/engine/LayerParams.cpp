@@ -154,20 +154,6 @@ const std::vector<Parameter *> &Layer::parameters()
                         .step(0.01);
                 }
         }
-        // Soft edge: the picture fades out towards each side
-        flag("soft_edge/enable", "Spatial › Soft Edge", false, &mapping.soft.enabled);
-        static const char *const kSides[] = {"left", "right", "top", "bottom"}; // the order of SoftEdge's arrays
-        static const char *const kSideNames[] = {"Left", "Right", "Top", "Bottom"};
-        for (int k = 0; k < 4; ++k) {
-            const QString base = QStringLiteral("soft_edge/%1/").arg(QLatin1String(kSides[k]));
-            const QString name = QStringLiteral("Spatial › Soft Edge %1 ").arg(QLatin1String(kSideNames[k]));
-            num(base + "width", name + "Width", 0, 0.5, SoftEdge().width[k], [self, k] { return self->mapping.soft.width[k]; },
-                [self, k](double v) { self->mapping.soft.width[k] = v; })
-                .step(0.001);
-            num(base + "power", name + "Power", 0.1, 8, 1.0, [self, k] { return self->mapping.soft.power[k]; },
-                [self, k](double v) { self->mapping.soft.power[k] = v; });
-        }
-
         // ROI: the part of the source used (normalized, origin top left); its sides never cross
         static const char *const kRoi[] = {"left", "top", "right", "bottom"};
         static const char *const kRoiNames[] = {"Left", "Top", "Right", "Bottom"};

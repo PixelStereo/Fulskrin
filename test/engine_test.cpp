@@ -1092,29 +1092,28 @@ int main(int argc, char **argv)
                 e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
             }
-            // Soft edge (crop) and per-viewport opacity: stored, recalled, and faded
+            // Rotation and per-viewport opacity: stored, recalled, and faded
             {
                 const quint64 vp = 4242;
                 L()->enabled = true;
-                L()->mapping.soft.enabled = true;
-                L()->mapping.soft.width[0] = 0.4;
+                L()->mapping.rotation = 40;
                 L()->viewportOpacity[vp] = 0.2f;
                 QJsonObject s2 = e.layerJson(e.indexOfId(tid));
                 s2.remove("timing");
-                L()->mapping.soft.enabled = false;
-                L()->mapping.soft.width[0] = 0.0;
+                L()->mapping.rotation = 0;
                 L()->viewportOpacity.clear();
                 e.applyLayers(QJsonArray{s2}, 0.0); // a cut
-                CHECK(L()->mapping.soft.enabled && std::abs(L()->mapping.soft.width[0] - 0.4) < 1e-6);
+                CHECK(std::abs(L()->mapping.rotation - 40) < 1e-6);
                 CHECK(L()->viewportOpacity.count(vp) && std::abs(L()->viewportOpacity.at(vp) - 0.2f) < 1e-6);
-                L()->mapping.soft.width[0] = 0.0;
+                L()->mapping.rotation = 0;
                 L()->viewportOpacity.clear();
                 e.applyLayers(QJsonArray{s2}, 1.0); // a fade
                 e.advanceFades(0.5);
-                CHECK(L()->mapping.soft.width[0] > 0.01 && L()->mapping.soft.width[0] < 0.39);
+                CHECK(L()->mapping.rotation > 1 && L()->mapping.rotation < 39);
                 CHECK(L()->viewportOpacity.count(vp) && L()->viewportOpacity.at(vp) > 0.21f && L()->viewportOpacity.at(vp) < 0.99f);
                 e.advanceFades(0.6);
-                CHECK(std::abs(L()->mapping.soft.width[0] - 0.4) < 1e-6 && std::abs(L()->viewportOpacity.at(vp) - 0.2f) < 1e-6);
+                CHECK(std::abs(L()->mapping.rotation - 40) < 1e-6 && std::abs(L()->viewportOpacity.at(vp) - 0.2f) < 1e-6);
+                L()->mapping.rotation = 0;
             }
             e.removeLayer(e.indexOfId(tid));
         }
@@ -1777,7 +1776,7 @@ int main(int argc, char **argv)
                 Engine::Lock lk(&e.mutex());
                 QStringList paths;
                 for (const Parameter *p : L()->parameters()) paths << p->path();
-                CHECK(paths.contains("opacity") && paths.contains("soft_edge/left/width") && paths.contains("roi/left") &&
+                CHECK(paths.contains("opacity") && paths.contains("rotation") && !paths.contains("soft_edge/left/width") && paths.contains("roi/left") &&
                       !paths.contains("volume") && !paths.contains("width")); // no sound, not a viewport
                 Parameter *op = L()->parameter("opacity");
                 CHECK(op && op->setNumber(2) && op->number() == 1.0); // kept within its limits
@@ -1897,7 +1896,6 @@ int main(int argc, char **argv)
                 CHECK(server.handleMessage({"/layer/Wave/add", "fff", {0.1, 0.2, 0.3}}) &&
                       server.handleMessage({"/layer/Wave/add/g", "f", {0.5}}) && near(L()->color.add[0], 0.1) &&
                       near(L()->color.add[1], 0.5));
-                CHECK(server.handleMessage({"/layer/Wave/soft_edge/left/width", "f", {0.9}}) && near(L()->mapping.soft.width[0], 0.5));
                 CHECK(server.handleMessage({"/layer/Wave/blend_mode", "s", {QStringLiteral("difference")}}) &&
                       L()->blend == BlendMode::Difference);
                 int status = 0;
@@ -1905,7 +1903,6 @@ int main(int argc, char **argv)
                 CHECK(status == 200 && op.value("RANGE").toArray().at(0).toObject().value("MAX").toDouble() == 1 &&
                       op.value("TYPE").toString() == "f");
                 L()->blend = BlendMode::Normal;
-                L()->mapping.soft.width[0] = 0;
                 L()->color.add[0] = L()->color.add[1] = L()->color.add[2] = 0;
             }
             // Saved with the layer: duplicated with it (on the copy), and back when the project is opened
@@ -2188,62 +2185,6 @@ int main(int argc, char **argv)
     } // masks
 
     if (area("rendering")) {
-    // 4d''. Soft edge: the picture fades out towards the sides it is set on
-    {
-        e.newProject();
-        e.fadeCompositionOpacity(1.0, 0);
-        e.setBlackout(false, 0);
-        e.setCompositionSize(QSize(40, 40));
-        QImage white(40, 40, QImage::Format_RGB32);
-        white.fill(qRgb(255, 255, 255));
-        white.save(tmp + "/se_white.png");
-        const int li = e.addLayer("Soft");
-        const quint64 id = e.layerId(li);
-        CHECK(e.setLayerImage(li, tmp + "/se_white.png", &err));
-        {
-            Engine::Lock lk(&e.mutex());
-            e.layer(li)->mapping.resetCorners();
-        }
-        for (int k = 0; k < 2; ++k) e.renderFrame();
-        CHECK(e.grabOutput().pixelColor(0, 20).red() > 250); // off: untouched
-        {
-            Engine::Lock lk(&e.mutex());
-            SoftEdge &se = e.layer(li)->mapping.soft;
-            se.enabled = true;
-            se.width[SoftEdge::Left] = 0.5; // fades in from the left side only
-            se.width[SoftEdge::Right] = se.width[SoftEdge::Top] = se.width[SoftEdge::Bottom] = 0;
-        }
-        for (int k = 0; k < 2; ++k) e.renderFrame();
-        QImage g = e.grabOutput();
-        CHECK(g.pixelColor(1, 20).red() < 40);                                      // dark at the left side
-        CHECK(std::abs(g.pixelColor(10, 20).red() - 134) < 24);                     // about half way: 10.5 px of 20
-        CHECK(g.pixelColor(30, 20).red() > 250 && g.pixelColor(30, 1).red() > 250); // nothing elsewhere
-        {
-            Engine::Lock lk(&e.mutex());
-            SoftEdge &se = e.layer(li)->mapping.soft;
-            se.width[SoftEdge::Left] = 0;
-            se.width[SoftEdge::Top] = 0.5; // the top of the picture is the top of the output
-            se.power[SoftEdge::Top] = 2;
-        }
-        for (int k = 0; k < 2; ++k) e.renderFrame();
-        g = e.grabOutput();
-        CHECK(g.pixelColor(20, 1).red() < 40 && g.pixelColor(20, 38).red() > 250);
-        CHECK(std::abs(g.pixelColor(20, 10).red() - 70) < 24); // (10.5/20)^2 of 255
-        // The picture's own top: a red top half is at the top of the output, and the fade follows it
-        QImage two(40, 40, QImage::Format_RGB32);
-        for (int y = 0; y < 40; ++y)
-            for (int x = 0; x < 40; ++x) two.setPixel(x, y, y < 20 ? qRgb(255, 0, 0) : qRgb(0, 0, 255));
-        two.save(tmp + "/se_two.png");
-        CHECK(e.setLayerImage(e.indexOfId(id), tmp + "/se_two.png", &err));
-        for (int k = 0; k < 2; ++k) e.renderFrame();
-        g = e.grabOutput();
-        CHECK(g.pixelColor(20, 19).red() > 100 && g.pixelColor(20, 35).blue() > 250);
-        // Saved and loaded
-        const QJsonObject saved = e.layerJson(e.indexOfId(id));
-        CHECK(paramOf(saved, "soft_edge/enable").toBool() && paramOf(saved, "soft_edge/top/width").toDouble() == 0.5 &&
-              paramOf(saved, "soft_edge/top/power").toDouble() == 2);
-    }
-
     // 4d'. Blend modes that take away: Subtract and Difference (against what is drawn below)
     {
         e.newProject();

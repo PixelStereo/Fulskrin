@@ -236,7 +236,7 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     auto *follow = new FlagBox(QStringLiteral("Fields follow the values during snapshot fades"));
     follow->setChecked(followFades());
     lookForm->addRow(follow);
-    lookForm->addRow(note(QStringLiteral("On: the inspector's sliders and fields (opacity, viewports, color, soft edge, "
+    lookForm->addRow(note(QStringLiteral("On: the inspector's sliders and fields (opacity, viewports, color, "
                                          "position, volume, speed, ISF parameters…) move with the values while a snapshot "
                                          "fades them. Off: they stay still and show the snapshot's values once the fade is "
                                          "over. A field being edited is never moved.")));

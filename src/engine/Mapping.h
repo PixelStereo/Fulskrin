@@ -13,18 +13,6 @@ struct Homography {
     QPointF map(double u, double v) const;
 };
 
-// Soft edge (like MadMapper's): the picture fades to transparent towards each side, to blend overlapping
-// projections. Widths are fractions of the layer's own width (left, right) or height (top, bottom);
-// power bends the fade (1 linear; above 1 darker towards the edge, below 1 lighter).
-struct SoftEdge {
-    enum Side { Left, Right, Top, Bottom };
-    bool enabled = false;
-    double width[4] = {0.1, 0.1, 0.1, 0.1}; // 0 to 0.5
-    double power[4] = {1, 1, 1, 1};         // 0.1 to 8
-    bool active() const { return enabled && (width[0] > 0 || width[1] > 0 || width[2] > 0 || width[3] > 0); }
-    bool operator==(const SoftEdge &o) const;
-};
-
 // Where a layer's picture goes on the composition (normalized: (0,0) top left, (1,1) bottom right). Stored as values
 // that each mean one thing — so that each one can be set, faded and animated on its own:
 //  - its transform: the center of its rectangle (position), its size (a fraction of the composition), its rotation
@@ -48,7 +36,6 @@ public:
     std::vector<QPointF> offsets;    // cols * rows, in its own frame
     bool meshMode = false;           // editing mode in the UI
     unsigned revision = 1;           // incremented on every change
-    SoftEdge soft;                   // fades the picture towards its sides
     double aspect = 16.0 / 9.0;      // the composition's width / height (its rotation is in pixels): set by the engine
 
     void resetMesh(int c, int r);
