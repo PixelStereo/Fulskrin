@@ -61,15 +61,28 @@ QIcon toolIcon(Mask::Shape shape)
     return QIcon(pm);
 }
 
-QIcon swatch()
+// A mask's sign in the list: a disc with its mode (+ − ∩ × ⊕); a ring when it is inverted
+QIcon swatch(Mask::Mode mode, bool invert)
 {
-    QPixmap pm(28, 28);
+    QPixmap pm(32, 32);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(Qt::NoPen);
-    p.setBrush(kMaskColor);
-    p.drawRoundedRect(QRectF(3, 3, 22, 22), 4, 4);
+    const QRectF disc(2, 2, 28, 28);
+    if (invert) {
+        p.setPen(QPen(kMaskColor, 3));
+        p.setBrush(Qt::NoBrush);
+    } else {
+        p.setPen(Qt::NoPen);
+        p.setBrush(kMaskColor);
+    }
+    p.drawEllipse(disc.adjusted(1.5, 1.5, -1.5, -1.5));
+    QFont f = p.font();
+    f.setPixelSize(22);
+    f.setBold(true);
+    p.setFont(f);
+    p.setPen(invert ? kMaskColor : QColor(10, 40, 48));
+    p.drawText(disc, Qt::AlignCenter, masks::modeSymbol(mode));
     return QIcon(pm);
 }
 
@@ -142,7 +155,11 @@ MaskPanel::MaskPanel(Engine *engine, QUndoStack *undo, quint64 layer, bool viewp
     m_list = list;
     m_list->setMinimumHeight(110);
     m_list->setMaximumHeight(170);
-    m_list->setIconSize(QSize(14, 14));
+    m_list->setIconSize(QSize(16, 16));
+    if (!locked) { // dragged into another order: they combine from the top down
+        m_list->setDragDropMode(QAbstractItemView::InternalMove);
+        m_list->setDefaultDropAction(Qt::MoveAction);
+    }
     m_list->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     m_list->setToolTip(QStringLiteral("Its masks: the ones not inverted keep the picture inside them, the inverted ones "
                                       "cut it out · double-click to rename · the box turns one off · Delete removes it"));
@@ -163,9 +180,17 @@ MaskPanel::MaskPanel(Engine *engine, QUndoStack *undo, quint64 layer, bool viewp
     auto *sf = new QFormLayout(m_settings);
     sf->setContentsMargins(0, 0, 0, 0);
     sf->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_combine = new QComboBox;
+    for (int i = 0; i < 5; ++i)
+        m_combine->addItem(masks::modeSymbol(Mask::Mode(i)) + QStringLiteral("   ") + masks::modeName(Mask::Mode(i)));
+    m_combine->setToolTip(QStringLiteral("How it combines with the masks above it in the list (as DaVinci's Mask window, "
+                                         "Fusion's paint modes): Add the shapes together, Subtract it from them, "
+                                         "Intersect (only where both are), Multiply, Difference (where one or the other, "
+                                         "not both). A list whose first mask does not add starts from the whole picture."));
+    sf->addRow(QStringLiteral("Combine"), m_combine);
     m_invert = new QPushButton(QStringLiteral("Invert Mask"));
     m_invert->setCheckable(true);
-    m_invert->setToolTip(QStringLiteral("Inverted: the mask cuts the picture out instead of keeping it"));
+    m_invert->setToolTip(QStringLiteral("Inverted: the shape inside out (what is outside it), before it combines"));
     m_invert->setStyleSheet(QStringLiteral("QPushButton:checked { background:#0b5c69; color:white; }"));
     sf->addRow(QString(), m_invert);
     m_feather = new SliderField;
@@ -227,8 +252,15 @@ MaskPanel::MaskPanel(Engine *engine, QUndoStack *undo, quint64 layer, bool viewp
         emit edited();
     });
     connect(m_remove, &QPushButton::clicked, this, &MaskPanel::remove);
+    connect(m_combine, qOverload<int>(&QComboBox::activated), this, [this](int i) {
+        change([i](Mask &k) { k.mode = Mask::Mode(i); }, QStringLiteral("Combine Mask"));
+        refresh(); // its sign in the list
+    });
+    connect(m_list->model(), &QAbstractItemModel::rowsMoved, this, &MaskPanel::reordered);
     connect(m_invert, &QPushButton::toggled, this, [this](bool on) {
-        if (!m_syncing) change([on](Mask &k) { k.invert = on; }, QStringLiteral("Invert Mask"));
+        if (m_syncing) return;
+        change([on](Mask &k) { k.invert = on; }, QStringLiteral("Invert Mask"));
+        refresh();
     });
     connect(m_feather, &SliderField::valueEdited, this, [this](double pc) {
         if (!m_syncing) changeLive([pc](Mask &k) { k.feather = pc / 100.0; });
@@ -267,14 +299,17 @@ void MaskPanel::refresh()
     if (m_list->count() != int(m.size())) {
         m_list->clear();
         for (const Mask &k : m) {
-            auto *it = new QListWidgetItem(swatch(), k.name);
-            it->setFlags(it->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
+            auto *it = new QListWidgetItem(k.name);
+            it->setFlags(it->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable | Qt::ItemIsDragEnabled);
             m_list->addItem(it);
         }
     }
     for (int i = 0; i < int(m.size()); ++i) {
         QListWidgetItem *it = m_list->item(i);
         if (it->text() != m[size_t(i)].name) it->setText(m[size_t(i)].name);
+        it->setIcon(swatch(m[size_t(i)].mode, m[size_t(i)].invert));
+        it->setData(Qt::UserRole, i); // its place in the masks (read back when the list is reordered)
+        it->setToolTip(masks::modeName(m[size_t(i)].mode) + (m[size_t(i)].invert ? QStringLiteral(", inverted") : QString()));
         const Qt::CheckState st = m[size_t(i)].enabled ? Qt::Checked : Qt::Unchecked;
         if (it->checkState() != st) it->setCheckState(st);
         if (m_locked) it->setFlags(it->flags() & ~(Qt::ItemIsEditable | Qt::ItemIsUserCheckable));
@@ -296,6 +331,7 @@ void MaskPanel::showCurrent()
     const Mask &k = m[size_t(i)];
     m_syncing = true;
     m_invert->setChecked(k.invert);
+    m_combine->setCurrentIndex(int(k.mode));
     m_feather->setValue(k.feather * 100.0);
     m_mode->setCurrentIndex(int(k.featherMode));
     m_attach->setCurrentIndex(int(k.attach));
@@ -346,6 +382,26 @@ void MaskPanel::endLive(const QString &text)
     m_live = false;
     const std::vector<Mask> after = masks();
     if (after != m_liveBefore) m_undo->push(new cmd::SetMasks(m_engine, m_layer, m_liveBefore, after, text));
+}
+
+void MaskPanel::reordered()
+{
+    if (m_syncing || m_locked) return;
+    const std::vector<Mask> before = masks();
+    std::vector<Mask> after;
+    int moved = -1;
+    for (int row = 0; row < m_list->count(); ++row) {
+        const int from = m_list->item(row)->data(Qt::UserRole).toInt();
+        if (from < 0 || from >= int(before.size())) return refresh(); // out of step: shown again as it is
+        after.push_back(before[size_t(from)]);
+        if (m_list->item(row) == m_list->currentItem()) moved = row;
+    }
+    if (after.size() != before.size() || after == before) return;
+    m_undo->push(new cmd::SetMasks(m_engine, m_layer, before, after, QStringLiteral("Reorder Masks")));
+    refresh();
+    if (moved >= 0) select(moved);
+    emit currentChanged(m_list->currentRow());
+    emit edited();
 }
 
 void MaskPanel::remove()

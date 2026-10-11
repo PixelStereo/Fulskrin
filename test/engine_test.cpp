@@ -2193,9 +2193,35 @@ int main(int argc, char **argv)
         a = masks::raster({r, Mask::rectangle(QRectF(0.4, 0.4, 0.2, 0.2))}, Mask::Attach::Surface, QSize(100, 100));
         CHECK(gray(a, 50, 50) == 255); // added
         std::vector<Mask> hole = {r, Mask::rectangle(QRectF(0.4, 0.4, 0.2, 0.2))};
-        hole[1].invert = true;
+        hole[1].mode = Mask::Mode::Subtract;
         a = masks::raster(hole, Mask::Attach::Surface, QSize(100, 100));
-        CHECK(gray(a, 50, 50) == 0 && gray(a, 30, 30) == 255); // a hole in it
+        CHECK(gray(a, 50, 50) == 0 && gray(a, 30, 30) == 255 && gray(a, 5, 5) == 0); // a hole in it
+        // Combine modes, in the list's order: a first Subtract starts from the whole picture
+        Mask cut = Mask::rectangle(QRectF(0.4, 0.4, 0.2, 0.2));
+        cut.mode = Mask::Mode::Subtract;
+        a = masks::raster({cut}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 50, 50) == 0 && gray(a, 5, 5) == 255);
+        Mask left = Mask::rectangle(QRectF(0.2, 0.2, 0.4, 0.6)), right = Mask::rectangle(QRectF(0.4, 0.2, 0.4, 0.6));
+        right.mode = Mask::Mode::Intersect;
+        a = masks::raster({left, right}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 30, 50) == 0 && gray(a, 50, 50) == 255 && gray(a, 70, 50) == 0); // only where both are
+        right.mode = Mask::Mode::Multiply;
+        a = masks::raster({left, right}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 30, 50) == 0 && gray(a, 50, 50) == 255);
+        right.mode = Mask::Mode::Difference;
+        a = masks::raster({left, right}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 30, 50) == 255 && gray(a, 50, 50) == 0 && gray(a, 70, 50) == 255); // one or the other
+        right.mode = Mask::Mode::Add;
+        right.invert = true; // inside out, then added: all but what is right of the left one's
+        a = masks::raster({left, right}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 5, 5) == 255 && gray(a, 70, 50) == 0);
+        right.invert = false;
+        right.mode = Mask::Mode::Subtract;
+        left.enabled = false; // off: the list starts with the cut
+        a = masks::raster({left, right}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 30, 50) == 255 && gray(a, 50, 50) == 0);
+        left.enabled = true;
+        CHECK(masks::modeName(Mask::Mode::Intersect) == "Intersect" && masks::modeSymbol(Mask::Mode::Subtract) == QString(QChar(0x2212)));
         Mask soft = r;
         soft.feather = 0.2; // 20 px over 100
         a = masks::raster({soft}, Mask::Attach::Surface, QSize(100, 100));
@@ -2212,6 +2238,7 @@ int main(int argc, char **argv)
 
         // JSON and names
         soft.name = "Soft";
+        soft.mode = Mask::Mode::Difference;
         const std::vector<Mask> back = masks::fromJson(masks::toJson({r, soft, e2}));
         CHECK(back.size() == 3 && back[0] == r && back[1] == soft && back[2] == e2);
         CHECK(masks::uniqueName({r}) == "Mask-1");
@@ -2224,7 +2251,8 @@ int main(int argc, char **argv)
         const std::vector<Mask> svgBack = masks::fromSvg(masks::toSvg({r, soft, e2}, QSize(640, 360)).toUtf8(), &note);
         CHECK(svgBack.size() == 3 && note.isEmpty());
         if (svgBack.size() == 3) {
-            CHECK(svgBack[1].name == "Soft" && std::abs(svgBack[1].feather - 0.2) < 1e-6 && svgBack[1].featherMode == Mask::Feather::Outer);
+            CHECK(svgBack[1].name == "Soft" && std::abs(svgBack[1].feather - 0.2) < 1e-6 && svgBack[1].featherMode == Mask::Feather::Outer &&
+                  svgBack[1].mode == Mask::Mode::Difference);
             bool same = svgBack[2].nodes.size() == e2.nodes.size();
             for (size_t i = 0; same && i < e2.nodes.size(); ++i)
                 same = (svgBack[2].nodes[i].p - e2.nodes[i].p).manhattanLength() < 1e-3
