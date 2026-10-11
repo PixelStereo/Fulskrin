@@ -334,6 +334,8 @@ QString OscNamespace::signature() const
     }
     for (int i = 0; i < m_e->snapshotCount(); ++i) s += QStringLiteral("snapshot:") + m_e->snapshot(i).name + '\n';
     for (int i = 0; i < m_e->presetCount(); ++i) s += QStringLiteral("preset:") + m_e->preset(i).name + '\n';
+    for (const Interaction &it : m_e->interactions()) // their names, and which filter settings they have
+        s += QStringLiteral("interaction:%1:%2:%3\n").arg(it.id).arg(it.name).arg(int(it.filter));
     for (int i = 0; i < m_e->animationCount(); ++i) s += QStringLiteral("timeline:") + m_e->animation(i).name + '\n';
     return s;
 }
@@ -387,6 +389,8 @@ OscNode &OscNamespace::add(const QString &path, const QString &type, int access,
 void OscNamespace::build()
 {
     m_nodes.clear();
+    m_prefixOf.clear();
+    m_interactionPrefix.clear();
     m_nodes["/"].path = "/";
     Engine *e = m_e;
 
@@ -623,9 +627,66 @@ void OscNamespace::build()
         if (int n = used.value(key)) seg += QStringLiteral("_%1").arg(n + 1);
         used[key] += 1;
         prefixOf[it.id] = base + '/' + seg;
+        m_prefixOf[it.id] = base + '/' + seg;
         addLayer(base + '/' + seg, it.id);
         m_nodes[base + '/' + seg].description = it.name; // real name (spaces included) for the clients that show names
     }
+
+    // --- Interactions, by their names: their values (on / off, master level, ranges, filter, curve)
+    add("/interaction", QString(), 0, "Interactions");
+    const std::vector<Interaction> interactions = e->interactions();
+    QStringList names;
+    for (const Interaction &it : interactions) names << it.name;
+    const QStringList segs = osc::uniqueSegments(names);
+    for (size_t k = 0; k < interactions.size(); ++k) {
+        const Interaction &it = interactions[k];
+        const QString P = QStringLiteral("/interaction/") + segs[int(k)];
+        m_interactionPrefix[it.id] = P;
+        m_nodes[P].description = it.name;
+        const QString prefix = QStringLiteral("interaction/%1/").arg(it.id);
+        for (const QString &key : Engine::interactionKeys()) {
+            ParamInfo info;
+            if (!e->parameterInfo(0, prefix + key, &info)) continue;
+            const QString type = info.type == ParamInfo::Type::Bool ? QStringLiteral("T")
+                                 : info.type == ParamInfo::Type::Choice ? QStringLiteral("s")
+                                                                        : QStringLiteral("f");
+            OscNode &n = add(P + '/' + key, type, 3, info.name());
+            n.range = {info.type == ParamInfo::Type::Choice ? vals(info.choices) : minMax(info.min, info.max)};
+            const QString path = prefix + key;
+            n.get = [e, path] {
+                const QJsonValue v = e->parameterValue(0, path);
+                return v.isUndefined() ? QVariantList() : QVariantList{v.toVariant()};
+            };
+            n.set = [e, path, type](const QVariantList &a) {
+                if (a.isEmpty()) return false;
+                const QJsonValue v = type == QLatin1String("T") ? QJsonValue(a[0].toBool())
+                                     : type == QLatin1String("s") ? QJsonValue(a[0].toString())
+                                                                  : QJsonValue(a[0].toDouble());
+                return e->setParameter(0, path, v);
+            };
+        }
+    }
+}
+
+QString OscNamespace::addressOf(quint64 layer, const QString &path) const
+{
+    QString addr;
+    if (!layer && path.startsWith(QLatin1String("interaction/"))) {
+        const QString p = m_interactionPrefix.value(path.section('/', 1, 1).toULongLong());
+        if (!p.isEmpty()) addr = p + '/' + path.section('/', 2);
+    } else if (!layer) {
+        addr = QStringLiteral("/composition/") + path;
+    } else if (m_prefixOf.contains(layer)) {
+        addr = m_prefixOf.value(layer) + '/' + path;
+    }
+    return m_nodes.count(addr) ? addr : QString();
+}
+
+QString OscNamespace::addressOf(Engine *e, quint64 layer, const QString &path)
+{
+    OscNamespace ns(e);
+    ns.refresh();
+    return ns.addressOf(layer, path);
 }
 
 namespace {

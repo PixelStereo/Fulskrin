@@ -863,6 +863,7 @@ void Engine::frame(double dt)
     if (!m_fadesManual) {
         const double k = timeScale(); // paused or slowed: the fades, transitions and timelines move at that pace
         stepFade(m_realDt * k);
+        stepInteractionFades(m_realDt * k);
         stepTransitions(m_realDt * k);
         stepTypewriters(m_realDt * k);
         stepCompositionFade(m_realDt); // the output level keeps its real time: a blackout works while paused

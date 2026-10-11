@@ -352,8 +352,31 @@ void Engine::recallPreset(int i)
             for (const char *k : {"opacity", "volume"})
                 if (params.contains(k)) c.insert(k, params.value(k));
             applyComposition(c, fade);
-            for (auto it = params.begin(); it != params.end(); ++it)
+            // An interaction's values ("interaction/<id>/…"): faded in the preset's time, each one's own if it has one
+            std::map<quint64, QJsonObject> byInteraction;
+            for (auto it = params.begin(); it != params.end(); ++it) {
+                if (it.key().startsWith(QLatin1String("interaction/"))) {
+                    byInteraction[it.key().section('/', 1, 1).toULongLong()].insert(it.key(), it.value());
+                    continue;
+                }
                 if (it.key() != "opacity" && it.key() != "volume") setParameter(0, it.key(), it.value());
+            }
+            if (!byInteraction.empty()) {
+                {
+                    Lock lk(&m_mutex);
+                    for (const auto &[id, vals] : byInteraction) {
+                        QJsonObject t, ez;
+                        const QString prefix = QStringLiteral("interaction/%1/").arg(id);
+                        for (auto x = vals.begin(); x != vals.end(); ++x) { // their times under their short keys
+                            const QString key = x.key().mid(prefix.size());
+                            if (timing.contains(x.key())) t.insert(key, timing.value(x.key()));
+                            if (easing.contains(x.key())) ez.insert(key, easing.value(x.key()));
+                        }
+                        applyInteractionValues(id, vals, t, ez, fade);
+                    }
+                }
+                interactionValuesTouched();
+            }
             continue;
         }
         const int idx = indexOfId(layerId);
@@ -490,10 +513,7 @@ bool Engine::isFading() const
 
 QJsonObject Engine::captureComposition() const
 {
-    QJsonObject c{{"included", true}, {"opacity", compositionOpacityTarget()}, {"volume", double(audioVolume())}};
-    Lock lk(&m_mutex);
-    if (!m_interactions.empty()) c["interactions"] = captureInteractions(); // on / off and the chain of each
-    return c;
+    return QJsonObject{{"included", true}, {"opacity", compositionOpacityTarget()}, {"volume", double(audioVolume())}};
 }
 
 void Engine::applyComposition(const QJsonObject &c, double fade)
@@ -514,7 +534,6 @@ void Engine::applyComposition(const QJsonObject &c, double fade)
     if (hasVolume && volumeDur <= 0) setAudioVolume(volume);
     // A value the snapshot holds stops the fade another snapshot gives it; the other one goes on
     Lock lk(&m_mutex);
-    if (c.contains("interactions")) applyInteractions(c.value("interactions").toObject()); // at once
     CompositionFade &f = m_compFade;
     if (hasOpacity) {
         f.opacity = opacityDur > 0;
@@ -556,9 +575,10 @@ void Engine::stepCompositionFade(double dt)
 void Engine::recallSnapshot(int i)
 {
     const Snapshot m = snapshot(i);
-    if (m.layers.isEmpty() && m.composition.isEmpty()) return;
+    if (m.layers.isEmpty() && m.composition.isEmpty() && m.interactions.isEmpty()) return;
     if (!m.layers.isEmpty()) applyLayers(m.layers, m.fade, true);
     applyComposition(m.composition, m.fade);
+    applyInteractions(m.interactions, m.fade);
     {
         Lock lk(&m_mutex);
         m_recalledSnapshot = m.id;
@@ -568,6 +588,8 @@ void Engine::recallSnapshot(int i)
         for (const auto &[id, t] : m_transitions) total = std::max(total, t->duration - t->elapsed);
         if (m_compFade.opacity && m_compFade.opacityElapsed <= 0) total = std::max(total, m_compFade.opacityDur);
         if (m_compFade.volume && m_compFade.volumeElapsed <= 0) total = std::max(total, m_compFade.volumeDur);
+        for (const InteractionFade &f : m_interactionFades)
+            if (f.elapsed <= 0) total = std::max(total, f.time);
         m_recallTotal = total;
     }
     emit snapshotRecalled(i);
@@ -830,6 +852,7 @@ void Engine::advanceFades(double dt)
 {
     Lock lk(&m_mutex);
     stepFade(dt);
+    stepInteractionFades(dt);
     stepTransitions(dt);
     stepTypewriters(dt);
     stepCompositionFade(dt);
@@ -968,6 +991,7 @@ QJsonObject Engine::snapshotToJson(const Snapshot &m, const QString &dir) const
     }
     QJsonObject out{{"id", QString::number(m.id)}, {"name", m.name}, {"fade", m.fade}, {"layers", layers}};
     if (!m.composition.isEmpty()) out["composition"] = m.composition;
+    if (!m.interactions.isEmpty()) out["interactions"] = m.interactions;
     if (!m.thumbnail.isNull()) {
         QByteArray png;
         QBuffer buf(&png);
@@ -986,6 +1010,7 @@ Engine::Snapshot Engine::snapshotFromJson(const QJsonObject &o, const QString &d
     m.fade = std::clamp(o.value("fade").toDouble(1.0), 0.0, 600.0);
     m.thumbnail.loadFromData(QByteArray::fromBase64(o.value("thumbnail").toString().toLatin1()), "PNG");
     m.composition = o.value("composition").toObject();
+    m.interactions = o.value("interactions").toArray();
     for (const QJsonValue &v : o.value("layers").toArray()) {
         QJsonObject l = v.toObject();
         auto resolve = [&](QJsonObject x) {
@@ -1025,4 +1050,94 @@ double Engine::snapshotDuration(quint64 id) const
     if (!m->composition.isEmpty() && m->composition.value("included").toBool(true))
         scan(m->composition.value("timing").toObject());
     return d;
+}
+
+// ---------------------------------------------------------------------------
+// The interactions in the snapshots and the presets: their values fade as a layer's
+
+QStringList Engine::interactionKeys()
+{
+    return {QStringLiteral("enable"),       QStringLiteral("master"),      QStringLiteral("toggle"),
+            QStringLiteral("source/min"),   QStringLiteral("source/max"),  QStringLiteral("target/min"),
+            QStringLiteral("target/max"),   QStringLiteral("takeover"),    QStringLiteral("filter/enable"),
+            QStringLiteral("filter/type"),  QStringLiteral("filter/a"),    QStringLiteral("filter/b"),
+            QStringLiteral("curve/enable")};
+}
+
+QJsonArray Engine::captureInteractions() const
+{
+    Lock lk(&m_mutex);
+    auto *self = const_cast<Engine *>(this);
+    QJsonArray out;
+    for (const Interaction &it : m_interactions) {
+        QJsonObject params;
+        const QString prefix = QStringLiteral("interaction/%1/").arg(it.id);
+        for (const QString &k : interactionKeys())
+            if (const Parameter *p = self->findParameter(0, prefix + k); p && p->isStored()) params.insert(k, p->json());
+        out.append(QJsonObject{{"id", QString::number(it.id)}, {"name", it.name}, {"included", true}, {"params", params}});
+    }
+    return out;
+}
+
+void Engine::applyInteractions(const QJsonArray &states, double fade)
+{
+    {
+        Lock lk(&m_mutex);
+        for (const QJsonValue &v : states) {
+            const QJsonObject o = v.toObject();
+            if (!o.value("included").toBool(true)) continue;
+            applyInteractionValues(o.value("id").toString().toULongLong(), o.value("params").toObject(),
+                                   o.value("timing").toObject(), o.value("easing").toObject(), fade);
+        }
+    }
+    interactionValuesTouched();
+}
+
+void Engine::applyInteractionValues(quint64 id, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,
+                                    double fade)
+{
+    const QString prefix = QStringLiteral("interaction/%1/").arg(id);
+    if (std::none_of(m_interactions.begin(), m_interactions.end(), [id](const Interaction &x) { return x.id == id; }))
+        return; // gone since: left alone
+    for (auto it = params.begin(); it != params.end(); ++it) {
+        const QString key = it.key().startsWith(prefix) ? it.key().mid(prefix.size()) : it.key();
+        const QString path = prefix + key;
+        Parameter *p = findParameter(0, path);
+        if (!p) continue;
+        // A value given anew: the fade still running on it lets go
+        m_interactionFades.erase(std::remove_if(m_interactionFades.begin(), m_interactionFades.end(),
+                                                [&](const InteractionFade &f) { return f.path == path; }),
+                                 m_interactionFades.end());
+        const ParamInfo info = p->info();
+        const double t = timeOf(timing, key, fade);
+        if (p->isNumber() && info.ramp != ParamInfo::Ramp::Cut && t > 0 && it.value().isDouble()) {
+            InteractionFade f;
+            f.path = path;
+            f.from = p->number();
+            f.to = it.value().toDouble();
+            f.time = t;
+            f.curve = int(easingOf(easing, key));
+            if (std::abs(f.to - f.from) > 1e-12) m_interactionFades.push_back(f);
+            else p->setNumber(f.to);
+        } else {
+            p->setJson(it.value());
+        }
+    }
+}
+
+void Engine::stepInteractionFades(double dt)
+{
+    if (m_interactionFades.empty()) return;
+    for (auto it = m_interactionFades.begin(); it != m_interactionFades.end();) {
+        it->elapsed += std::max(0.0, dt);
+        Parameter *p = findParameter(0, it->path);
+        if (!p) {
+            it = m_interactionFades.erase(it);
+            continue;
+        }
+        const double k = progress(it->elapsed, it->time, EasingCurve(it->curve));
+        p->setNumber(mixd(it->from, it->to, k));
+        it = it->elapsed >= it->time ? m_interactionFades.erase(it) : it + 1;
+    }
+    interactionValuesTouched();
 }

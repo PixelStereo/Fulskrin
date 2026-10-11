@@ -189,6 +189,7 @@ public:
     {
         m_e->applyLayers(m_before, 0);
         m_e->applyComposition(m_beforeComposition, 0);
+        m_e->applyInteractions(m_beforeInteractions, 0);
     }
     void redo() override;
 
@@ -197,6 +198,7 @@ private:
     int m_snapshot;
     QJsonArray m_before;
     QJsonObject m_beforeComposition;
+    QJsonArray m_beforeInteractions;
     bool m_first = true;
 };
 

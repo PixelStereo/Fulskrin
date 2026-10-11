@@ -2,8 +2,28 @@
 #include "EngineInternal.h"
 #include "Midi.h"
 
+#include <QSet>
 #include <QTimer>
 #include <cmath>
+
+// Each one has a name of its own (its address in OSC, its name in the presets and the snapshots): an empty one is
+// given "Interaction N", one taken gets a number after it
+static void nameInteractions(std::vector<Interaction> &list)
+{
+    QSet<QString> taken;
+    int next = 1;
+    for (Interaction &it : list) {
+        QString base = it.name.trimmed();
+        if (base.isEmpty()) {
+            while (taken.contains(QStringLiteral("Interaction %1").arg(next))) ++next;
+            base = QStringLiteral("Interaction %1").arg(next);
+        }
+        QString n = base;
+        for (int k = 2; taken.contains(n); ++k) n = QStringLiteral("%1 %2").arg(base).arg(k);
+        it.name = n;
+        taken.insert(n);
+    }
+}
 
 std::vector<Interaction> Engine::interactions() const
 {
@@ -16,6 +36,7 @@ void Engine::setInteractions(const std::vector<Interaction> &list)
     {
         Lock lk(&m_mutex);
         m_interactions = list;
+        nameInteractions(m_interactions);
         for (const Interaction &it : m_interactions) m_nextInteractionId = std::max(m_nextInteractionId, it.id + 1);
         for (Interaction &it : m_interactions)
             if (!it.id) it.id = m_nextInteractionId++;
@@ -38,6 +59,7 @@ quint64 Engine::addInteraction(const Interaction &it)
         Interaction n = it;
         n.id = id = m_nextInteractionId++;
         m_interactions.push_back(n);
+        nameInteractions(m_interactions);
         m_interactionParamsDirty = true;
     }
     updateMidiInputs();
@@ -55,6 +77,7 @@ bool Engine::setInteraction(const Interaction &it)
                                    f->filter != it.filter || f->layer != it.layer || f->param != it.param ||
                                    f->sourceLayer != it.sourceLayer || f->sourceParam != it.sourceParam;
         *f = it;
+        nameInteractions(m_interactions);
         m_interactionParamsDirty = true;
         if (sourceChanged) m_interactionRun.erase(it.id); // starts again from what comes next
     }
@@ -93,25 +116,42 @@ void Engine::feedInteraction(const InteractionEvent &e)
 {
     std::lock_guard<std::mutex> lk(m_interactionEventsMutex);
     if (m_interactionEvents.size() < 8192) m_interactionEvents.push_back(e); // a flood is cut, not kept forever
-    if (m_interactionLearn && (e.source != InteractionSource::Keyboard || e.value > 0.5)) m_learned = e; // a key: pressed
+    if (!m_interactionLearn || (m_learnKind && e.source != *m_learnKind)) return;
+    if (e.source == InteractionSource::Keyboard && e.value < 0.5) return; // a key: when pressed
+    for (InteractionEvent &x : m_learned)
+        if (x.source == e.source && x.address == e.address && x.port == e.port && x.channel == e.channel &&
+            x.message == e.message && x.number == e.number && x.argument == e.argument) {
+            x.value = e.value; // the same source again
+            return;
+        }
+    if (m_learned.empty()) m_learnClock.start();
+    if (m_learned.size() < 32) m_learned.push_back(e);
 }
 
-void Engine::setInteractionLearn(bool on)
+void Engine::setInteractionLearn(bool on, std::optional<InteractionSource> kind)
 {
     {
         std::lock_guard<std::mutex> lk(m_interactionEventsMutex);
         m_interactionLearn = on;
-        m_learned.reset();
+        m_learnKind = kind;
+        m_learned.clear();
     }
     updateMidiInputs(); // a controller is listened to while learning
 }
 
-std::optional<InteractionEvent> Engine::takeLearnedInteraction()
+bool Engine::interactionLearning() const
+{
+    std::lock_guard<std::mutex> lk(const_cast<Engine *>(this)->m_interactionEventsMutex);
+    return m_interactionLearn;
+}
+
+std::vector<InteractionEvent> Engine::takeLearnedInteractions(int settleMs)
 {
     std::lock_guard<std::mutex> lk(m_interactionEventsMutex);
-    std::optional<InteractionEvent> e = m_learned;
-    m_learned.reset();
-    return e;
+    if (m_learned.empty() || m_learnClock.elapsed() < settleMs) return {};
+    std::vector<InteractionEvent> out;
+    out.swap(m_learned);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +340,7 @@ void Engine::makeInteractionParams()
     for (const Interaction &it : m_interactions) {
         const quint64 id = it.id;
         const QString prefix = QStringLiteral("interaction/%1/").arg(id);
-        const QString cat = QStringLiteral("Interactions › %1 › ").arg(it.label());
+        const QString cat = QStringLiteral("Interactions › %1 › ").arg(it.name);
         // Read and written in the interaction of that id (the lock held by the caller); a write tells the interface
         auto find = [this, id]() -> Interaction * {
             for (Interaction &x : m_interactions)
@@ -417,30 +457,5 @@ void Engine::makeInteractionParams()
             number(QStringLiteral("filter/b"), QStringLiteral("Filter ") + fb.name, fb.min, fb.max, fb.def,
                    [](Interaction &x) -> double & { return x.filterB; });
         flag(QStringLiteral("curve/enable"), QStringLiteral("Curve"), false, [](Interaction &x) -> bool & { return x.curveOn; });
-    }
-}
-
-QJsonObject Engine::captureInteractions() const
-{
-    QJsonObject o;
-    for (const Interaction &it : m_interactions) o.insert(QString::number(it.id), it.stateJson());
-    return o;
-}
-
-void Engine::applyInteractions(const QJsonObject &states)
-{
-    bool any = false;
-    for (Interaction &it : m_interactions) {
-        const auto s = states.constFind(QString::number(it.id));
-        if (s == states.constEnd()) continue; // made since: left as it is
-        const Interaction before = it;
-        it.applyState(s.value().toObject());
-        if (before.toggle != it.toggle || before.filterOn != it.filterOn || before.filter != it.filter)
-            m_interactionRun.erase(it.id); // another chain: starts again from what comes next
-        any = true;
-    }
-    if (any) {
-        m_interactionParamsDirty = true; // a filter's settings may be others
-        interactionValuesTouched();
     }
 }

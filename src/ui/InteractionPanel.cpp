@@ -1,12 +1,16 @@
 #include "InteractionPanel.h"
 #include "AnimEditor.h"
 #include "PresetEditor.h"
+#include "Osc.h"
 #include "Engine.h"
 #include "Widgets.h"
 
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QListWidget>
 #include <QContextMenuEvent>
 #include <QDateTime>
 #include <QFormLayout>
@@ -113,6 +117,7 @@ void applyChain(Interaction &it, const QJsonObject &chain)
 InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     : QWidget(parent), m_engine(engine), m_undo(undo)
 {
+    s_instance = this;
     auto *v = new QVBoxLayout(this);
     v->setContentsMargins(4, 4, 4, 4);
     v->setSpacing(6);
@@ -149,13 +154,16 @@ InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *pa
     v->addLayout(bar);
 
     m_list = new QTreeWidget;
-    m_list->setColumnCount(3);
-    m_list->setHeaderLabels({QStringLiteral("Source"), QStringLiteral("Target"), QStringLiteral("Value")});
+    m_list->setColumnCount(4);
+    m_list->setHeaderLabels({QStringLiteral("Name"), QStringLiteral("Source"), QStringLiteral("Target"), QStringLiteral("Value")});
     m_list->setRootIsDecorated(false);
     m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    m_list->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_list->header()->setSectionResizeMode(0, QHeaderView::Interactive);
     m_list->header()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_list->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_list->header()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_list->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_list->setColumnWidth(0, 110);
+    m_list->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed); // its name, in place
 
     auto *settingsBox = new QWidget;
     auto *sv = new QVBoxLayout(settingsBox);
@@ -202,7 +210,10 @@ InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *pa
         menu.exec(addButton->mapToGlobal(QPoint(0, addButton->height())));
     });
     connect(m_remove, &QPushButton::clicked, this, &InteractionPanel::removeSelected);
-    connect(m_learn, &QToolButton::toggled, this, [this](bool on) { m_engine->setInteractionLearn(on); });
+    connect(m_learn, &QToolButton::toggled, this, [this](bool on) {
+        m_engine->setInteractionLearn(on, on ? m_learnKind : std::nullopt);
+        if (!on) m_learnKind.reset(); // the next Learn: of any kind
+    });
     connect(m_list, &QTreeWidget::itemSelectionChanged, this, [this] {
         m_remove->setEnabled(!m_list->selectedItems().isEmpty());
         if (selectedId() != m_shown) rebuildSettings();
@@ -210,11 +221,17 @@ InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *pa
     connect(m_list, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item, int col) {
         if (m_filling || col != 0) return;
         const quint64 id = item->data(0, Qt::UserRole).toULongLong();
-        for (Interaction it : m_engine->interactions())
+        for (Interaction it : m_engine->interactions()) {
+            if (it.id == id && !item->text(0).trimmed().isEmpty() && it.name != item->text(0).trimmed()) { // renamed
+                it.name = item->text(0).trimmed();
+                commit(it, QStringLiteral("Rename Interaction"));
+                return;
+            }
             if (it.id == id && it.enabled != (item->checkState(0) == Qt::Checked)) {
                 it.enabled = item->checkState(0) == Qt::Checked;
                 commit(it, it.enabled ? QStringLiteral("Enable Interaction") : QStringLiteral("Disable Interaction"));
             }
+        }
     });
     connect(copy, &QPushButton::clicked, this, [this] {
         const std::optional<Interaction> it = selected();
@@ -335,7 +352,6 @@ QString InteractionPanel::targetLabel(quint64 layer, const QString &param) const
 
 QString InteractionPanel::describe(const Interaction &it) const
 {
-    if (!it.name.isEmpty()) return it.name;
     switch (it.source) {
     case InteractionSource::Keyboard: return it.key.isEmpty() ? QStringLiteral("Key (none)") : QStringLiteral("Key %1").arg(it.key);
     case InteractionSource::Midi: {
@@ -366,13 +382,15 @@ void InteractionPanel::rebuildList()
     for (const Interaction &it : m_engine->interactions()) {
         if (kind && it.source != *kind) continue;
         const QString src = describe(it), dst = targetLabel(it.layer, it.param);
-        if (!search.isEmpty() && !src.contains(search, Qt::CaseInsensitive) && !dst.contains(search, Qt::CaseInsensitive))
+        if (!search.isEmpty() && !it.name.contains(search, Qt::CaseInsensitive) && !src.contains(search, Qt::CaseInsensitive) &&
+            !dst.contains(search, Qt::CaseInsensitive))
             continue;
-        auto *item = new QTreeWidgetItem(m_list, {kind ? src : interactionSourceName(it.source) + QStringLiteral(" · ") + src, dst, QString()});
+        auto *item = new QTreeWidgetItem(m_list, {it.name, kind ? src : interactionSourceName(it.source) + QStringLiteral(" · ") + src, dst, QString()});
         item->setData(0, Qt::UserRole, QVariant::fromValue<quint64>(it.id));
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEditable);
+        item->setToolTip(0, QStringLiteral("On / off · its name (double-click to rename): its address in OSC "
+                                           "(/interaction/<name>/…), in the presets and the snapshots"));
         item->setCheckState(0, it.enabled ? Qt::Checked : Qt::Unchecked);
-        item->setToolTip(0, QStringLiteral("On / off"));
         if (keepAll.contains(it.id)) item->setSelected(true);
         if (it.id == keep) current = item;
     }
@@ -442,7 +460,11 @@ void InteractionPanel::refreshLevels()
         double level = 0, out = 0;
         const bool has = m_engine->interactionLevels(item->data(0, Qt::UserRole).toULongLong(), &level, &out);
         const QString text = has ? QStringLiteral("%1 %").arg(std::lround(out * 100)) : QStringLiteral("—");
-        if (item->text(2) != text) item->setText(2, text);
+        if (item->text(3) != text) {
+            m_filling = true;
+            item->setText(3, text);
+            m_filling = false;
+        }
     }
     double level = 0, out = 0, curveIn = 0;
     const bool has = m_shown && m_engine->interactionLevels(m_shown, &level, &out, &curveIn);
@@ -457,16 +479,36 @@ void InteractionPanel::refreshLevels()
 void InteractionPanel::pollLearn()
 {
     if (!m_learn->isChecked()) return;
-    const std::optional<InteractionEvent> e = m_engine->takeLearnedInteraction();
-    if (!e) return;
-    m_learn->setChecked(false);
+    std::vector<InteractionEvent> heard = m_engine->takeLearnedInteractions();
+    if (heard.empty()) return;
+    m_learn->setChecked(false); // learning stops: what came in is chosen from
+    InteractionEvent chosen = heard.front();
+    if (heard.size() > 1) { // several moved together: which one?
+        QDialog dialog(this);
+        dialog.setWindowTitle(QStringLiteral("Learn"));
+        auto *v = new QVBoxLayout(&dialog);
+        v->addWidget(new QLabel(QStringLiteral("Several sources came in at the same time. Which one?")));
+        auto *list = new QListWidget;
+        for (const InteractionEvent &e : heard) list->addItem(e.describe() + (e.port.isEmpty() ? QString() : QStringLiteral(" · ") + e.port));
+        list->setCurrentRow(0);
+        v->addWidget(list);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+        v->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        connect(list, &QListWidget::itemDoubleClicked, &dialog, &QDialog::accept);
+        if (dialog.exec() != QDialog::Accepted || list->currentRow() < 0) return;
+        chosen = heard[size_t(list->currentRow())];
+    }
+    applyLearned(chosen);
+}
+
+void InteractionPanel::applyLearned(const InteractionEvent &ev)
+{
+    const InteractionEvent *e = &ev;
     std::optional<Interaction> sel = selected();
     Interaction it = sel ? *sel : Interaction::made(e->source);
-    if (sel && sel->source != e->source) { // another kind of source: its chain kept, the defaults of that kind
-        const Interaction fresh = Interaction::made(e->source);
-        it.source = e->source;
-        it.takeover = fresh.takeover;
-    }
+    if (sel && sel->source != e->source) it.takeover = Interaction::made(e->source).takeover; // that kind's
     it.source = e->source;
     switch (e->source) {
     case InteractionSource::Keyboard: it.key = e->address; break;
@@ -484,6 +526,7 @@ void InteractionPanel::pollLearn()
     }
     if (sel) {
         commit(it, QStringLiteral("Learn Interaction Source"));
+        if (shownKind() && *shownKind() != it.source) m_kinds->setCurrentIndex(int(it.source));
     } else {
         std::vector<Interaction> list = m_engine->interactions();
         quint64 id = 1;
@@ -492,11 +535,76 @@ void InteractionPanel::pollLearn()
         list.push_back(it);
         commitList(list, QStringLiteral("Learn Interaction"));
         if (shownKind() && *shownKind() != it.source) m_kinds->setCurrentIndex(int(it.source));
-        rebuildList();
-        for (int i = 0; i < m_list->topLevelItemCount(); ++i)
-            if (m_list->topLevelItem(i)->data(0, Qt::UserRole).toULongLong() == id) m_list->setCurrentItem(m_list->topLevelItem(i));
+        select(id);
     }
+    rebuildList();
+    select(it.id);
     rebuildSettings();
+}
+
+void InteractionPanel::select(quint64 id)
+{
+    for (int i = 0; i < m_list->topLevelItemCount(); ++i)
+        if (m_list->topLevelItem(i)->data(0, Qt::UserRole).toULongLong() == id) {
+            m_list->clearSelection();
+            m_list->setCurrentItem(m_list->topLevelItem(i));
+        }
+}
+
+// From a value anywhere (its right-click): a new interaction driving it, its source learnt (of that kind), or chosen
+// in its settings (Internal)
+void InteractionPanel::learnFor(quint64 layer, const QString &path, InteractionSource kind)
+{
+    std::vector<Interaction> list = m_engine->interactions();
+    Interaction it = Interaction::made(kind);
+    quint64 id = 1;
+    for (const Interaction &x : list) id = std::max(id, x.id + 1);
+    it.id = id;
+    it.layer = layer;
+    it.param = path;
+    ParamInfo info;
+    if (m_engine->parameterInfo(layer, path, &info) && info.isNumber()) { // its whole range
+        it.dstMin = info.min;
+        it.dstMax = info.max;
+    }
+    list.push_back(it);
+    commitList(list, QStringLiteral("New Interaction"));
+    emit showRequested();
+    m_kinds->setCurrentIndex(int(kind));
+    rebuildList();
+    select(id);
+    rebuildSettings();
+    if (kind != InteractionSource::Internal) {
+        m_learnKind = kind;
+        m_learn->setChecked(true); // the next source of that kind becomes its
+    }
+}
+
+InteractionPanel *InteractionPanel::s_instance = nullptr;
+
+void InteractionPanel::fillValueMenu(QMenu *menu, Engine *e, quint64 layer, const QStringList &paths)
+{
+    if (paths.isEmpty()) return;
+    auto one = [e, layer](QMenu *into, const QString &path) {
+        const QString addr = OscNamespace::addressOf(e, layer, path);
+        if (!addr.isEmpty())
+            into->addAction(QStringLiteral("Copy OSC Address  %1").arg(addr), into, [addr] { QApplication::clipboard()->setText(addr); });
+        InteractionPanel *panel = instance();
+        if (!panel) return;
+        QMenu *learn = into->addMenu(QStringLiteral("Learn Interaction"));
+        for (InteractionSource k : kKinds)
+            learn->addAction(interactionSourceName(k), panel, [panel, layer, path, k] { panel->learnFor(layer, path, k); });
+    };
+    if (!menu->isEmpty()) menu->addSeparator();
+    if (paths.size() == 1) {
+        one(menu, paths.front());
+        return;
+    }
+    for (const QString &path : paths) { // a sub-menu for each number (x, y…)
+        ParamInfo info;
+        const QString name = e->parameterInfo(layer, path, &info) ? info.name() : path.section('/', -1);
+        one(menu->addMenu(name), path);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +635,7 @@ bool InteractionPanel::eventFilter(QObject *o, QEvent *e)
     auto *menu = new QMenu(w);
     menu->setAttribute(Qt::WA_DeleteOnClose);
     pe->fillMenu(menu, 0, w->property("presetPaths").toStringList()); // Add to New Preset / to Selected Preset
+    fillValueMenu(menu, m_engine, 0, w->property("presetPaths").toStringList());
     if (menu->isEmpty()) {
         delete menu;
         return QWidget::eventFilter(o, e);

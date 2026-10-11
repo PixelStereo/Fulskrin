@@ -1,5 +1,6 @@
 #include "ParamAnimPanel.h"
 #include "PresetEditor.h"
+#include "InteractionPanel.h"
 #include "Commands.h"
 #include "Widgets.h"
 
@@ -305,6 +306,7 @@ bool AnimateMenu::eventFilter(QObject *o, QEvent *e)
         }
     }
     if (PresetEditor *pe = PresetEditor::instance()) pe->fillMenu(menu, m_layer, values);
+    InteractionPanel::fillValueMenu(menu, m_e, m_layer, values); // its OSC address, Learn Interaction
     if (menu->isEmpty()) {
         delete menu;
         return false;

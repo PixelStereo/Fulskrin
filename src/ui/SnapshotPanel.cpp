@@ -1328,6 +1328,7 @@ void SnapshotPanel::store()
     m.name = QStringLiteral("Snapshot %1").arg(m_engine->snapshotCount() + 1);
     m.layers = m_engine->captureLayers();
     m.composition = m_engine->captureComposition();
+    m.interactions = m_engine->captureInteractions();
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     const int sel = selected();
     const int i = m_engine->addSnapshot(m, sel >= 0 ? sel + 1 : -1); // after the selected one, in its group
@@ -1374,6 +1375,23 @@ void SnapshotPanel::updateSnapshot(int i)
         if (m.composition.contains("easing")) comp["easing"] = m.composition.value("easing");
     }
     m.composition = comp;
+    // The interactions: those left out stay out, the times given to their values are kept
+    {
+        QHash<QString, QJsonObject> before;
+        for (const QJsonValue &v : m.interactions) before.insert(v.toObject().value("id").toString(), v.toObject());
+        QJsonArray now = m_engine->captureInteractions();
+        for (int k = 0; k < now.size(); ++k) {
+            QJsonObject o = now[k].toObject();
+            const auto b = before.constFind(o.value("id").toString());
+            if (b != before.constEnd()) {
+                o["included"] = b->value("included").toBool(true);
+                if (b->contains("timing")) o["timing"] = b->value("timing");
+                if (b->contains("easing")) o["easing"] = b->value("easing");
+            }
+            now[k] = o;
+        }
+        m.interactions = now;
+    }
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     m_engine->setSnapshot(i, m);
     emit edited();

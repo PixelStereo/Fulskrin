@@ -243,9 +243,12 @@ public:
     // curveIn: what enters its curve (after the filter)
     bool interactionLevels(quint64 id, double *level, double *output, double *curveIn = nullptr) const;
     void feedInteraction(const InteractionEvent &e); // a source's value (any thread)
-    // Learn: the next event from a source is kept, for the interface to take (the interactions go on meanwhile)
-    void setInteractionLearn(bool on);
-    std::optional<InteractionEvent> takeLearnedInteraction();
+    // Learn: the sources that come in are kept (of one kind, when given), for the interface to take once they have
+    // settled — several moved together (a controller sending two messages): it asks which one. The interactions go on
+    void setInteractionLearn(bool on, std::optional<InteractionSource> kind = std::nullopt);
+    bool interactionLearning() const;
+    // The distinct sources heard, once `settleMs` have passed since the first (none yet: empty); taken, they are cleared
+    std::vector<InteractionEvent> takeLearnedInteractions(int settleMs = 300);
 
     // The hardware of this machine to patch to (looked up on each call)
     static QStringList midiPorts();        // MIDI outputs
@@ -276,9 +279,22 @@ public:
         // The composition: its opacity and the sound volume, with "included" and "timing" as a layer's
         // (empty: a snapshot stored before it was kept, left alone by the recall)
         QJsonObject composition;
+        // The interactions: each one's values (on / off, master level, ranges, filter, curve), by its id, with its
+        // name, "included", "timing" and "easing" as a layer's: [{"id", "name", "included", "params", "timing",
+        // "easing"}] (empty: stored before they were kept)
+        QJsonArray interactions;
     };
     QJsonObject captureComposition() const;
     void applyComposition(const QJsonObject &c, double fade); // the recall's part for the composition
+    QJsonArray captureInteractions() const; // every interaction's values, all included
+    // The recall's part for the interactions: the numbers (master level, ranges, a filter's settings) fade in their
+    // time, the rest is set at once; one made since, or left out, is left alone
+    void applyInteractions(const QJsonArray &states, double fade);
+    // Values of one interaction (keys: "master", "enable"… — or their whole address "interaction/<id>/master"), faded
+    // as a snapshot's (lock held)
+    void applyInteractionValues(quint64 id, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,
+                                double fade);
+    static QStringList interactionKeys(); // the keys of an interaction's values, in their order
     int snapshotCount() const;
     Snapshot snapshot(int i) const;
     void setSnapshot(int i, const Snapshot &m);
@@ -780,7 +796,9 @@ private:
     std::mutex m_interactionEventsMutex;
     std::vector<InteractionEvent> m_interactionEvents; // since the last frame
     bool m_interactionLearn = false;
-    std::optional<InteractionEvent> m_learned;
+    std::optional<InteractionSource> m_learnKind;
+    std::vector<InteractionEvent> m_learned; // distinct sources, the first one first
+    QElapsedTimer m_learnClock;              // since the first
     std::vector<std::unique_ptr<midi::Input>> m_midiIns; // every MIDI input, open while a MIDI interaction is there
     QStringList m_midiInNames;
     QTimer *m_midiScan = nullptr;
@@ -792,8 +810,14 @@ private:
     std::atomic<bool> m_interactionValuesPending{false};
     void interactionValuesTouched(); // any thread: interactionValuesChanged soon, once
     void makeInteractionParams();    // lock held
-    QJsonObject captureInteractions() const; // lock held: each one's state, by id
-    void applyInteractions(const QJsonObject &states); // lock held
+    const std::vector<std::unique_ptr<Parameter>> &interactionParams(); // made again when needed (lock held)
+    struct InteractionFade {
+        QString path; // "interaction/<id>/master"
+        double from = 0, to = 0, time = 0, elapsed = 0;
+        int curve = 0;
+    };
+    std::vector<InteractionFade> m_interactionFades; // render thread (lock held)
+    void stepInteractionFades(double dt);
     void updateMidiInputs();          // main thread
     std::vector<TimecodeOutput> m_tcOutputs;  // under m_mutex
     std::vector<MidiOutput> m_midiOutputs;
