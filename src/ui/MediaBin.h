@@ -43,7 +43,7 @@ private:
 
     Engine *m_engine;
     QTreeWidget *m_tree;
-    QTreeWidgetItem *m_videos, *m_images, *m_audios, *m_text, *m_inputs, *m_isf, *m_isfGenerators;
+    QTreeWidgetItem *m_videos, *m_images, *m_audios, *m_generators, *m_text, *m_timecode, *m_inputs, *m_isf, *m_isfGenerators;
     QPushButton *m_relink, *m_remove, *m_reveal;
     QLabel *m_summary;
     QLineEdit *m_search = nullptr;

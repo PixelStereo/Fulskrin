@@ -3726,6 +3726,92 @@ int main(int argc, char **argv)
     e.renderFrame(); // back to manual mode
     CHECK(!e.grabOutput().isNull());
 
+    if (area("timecode")) {
+    // Timecode: numbers and drop frame, LTC frames through audio (each rate, two sample rates, inverted, quieter), MTC
+    {
+        const Timecode a{0, 1, 0, 2, TcRate::Fps2997Df};
+        CHECK(a.valid() && a.toFrames() == 1800 && Timecode::fromFrames(1800, TcRate::Fps2997Df) == a);
+        CHECK(!(Timecode{0, 1, 0, 0, TcRate::Fps2997Df}.valid()) && (Timecode{0, 10, 0, 0, TcRate::Fps2997Df}.valid()));
+        CHECK(Timecode::fromFrames(17982, TcRate::Fps2997Df) == (Timecode{0, 10, 0, 0, TcRate::Fps2997Df}));
+        bool round = true;
+        for (int64_t n = 0; n < 200000 && round; n += 7) {
+            const Timecode t = Timecode::fromFrames(n, TcRate::Fps2997Df);
+            round = t.valid() && t.toFrames() == n;
+        }
+        CHECK(round);
+        CHECK(Timecode::fromFrames(-1, TcRate::Fps25) == (Timecode{23, 59, 59, 24, TcRate::Fps25}));
+        CHECK((Timecode{1, 2, 3, 4, TcRate::Fps2997Df}.toString()) == "01:02:03;04");
+        CHECK(Timecode::parse("10:00:00:12", TcRate::Fps25) == (Timecode{10, 0, 0, 12, TcRate::Fps25}) &&
+              !Timecode::parse("10:00:00:25", TcRate::Fps25));
+        for (TcRate r : {TcRate::Fps24, TcRate::Fps25, TcRate::Fps2997Df, TcRate::Fps30})
+            for (int sr : {48000, 44100})
+                for (float gain : {1.0f, -0.3f}) {
+                    ltc::Encoder enc(sr);
+                    ltc::Decoder dec(sr);
+                    std::vector<float> audio;
+                    const int64_t s0 = Timecode{10, 59, 58, 0, r}.toFrames();
+                    int got = 0, wrong = 0;
+                    int64_t expect = -1;
+                    for (int k = 0; k < 120; ++k) {
+                        audio.clear();
+                        enc.frame(Timecode::fromFrames(s0 + k, r), audio);
+                        for (float &x : audio) x *= gain;
+                        dec.push(audio.data(), audio.size());
+                        if (auto t = dec.take()) {
+                            ++got;
+                            if ((expect >= 0 && t->toFrames() != expect) || t->rate != r) ++wrong;
+                            expect = t->toFrames() + 1;
+                        }
+                    }
+                    CHECK(got >= 115 && wrong == 0);
+                }
+        mtc::Decoder md;
+        const Timecode q{1, 2, 3, 4, TcRate::Fps25};
+        bool changed = false;
+        for (int p = 0; p < 8; ++p) {
+            const uint8_t msg[2] = {0xF1, mtc::quarterFrame(q, p)};
+            changed = md.push(msg, 2);
+        }
+        CHECK(changed && md.current() && *md.current() == (Timecode{1, 2, 3, 6, TcRate::Fps25})); // two frames on
+        const std::vector<uint8_t> ff = mtc::fullFrame(Timecode{23, 59, 59, 29, TcRate::Fps30});
+        CHECK(md.push(ff.data(), ff.size()) && *md.current() == (Timecode{23, 59, 59, 29, TcRate::Fps30}));
+    }
+    // The Timecode generator: a text layer showing its clock; saved, restored, its settings changed
+    {
+        e.newProject();
+        const int li = e.addLayer("TC");
+        TimecodeSettings ts;
+        ts.internal = TimecodeSettings::Internal::FreeRun;
+        ts.offset = Timecode{1, 0, 0, 0, TcRate::Fps25}.toFrames();
+        CHECK(e.setLayerTimecode(li, ts));
+        CHECK(e.layerTimecode(li) && *e.layerTimecode(li) == ts);
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(li);
+            CHECK(l->type == SourceType::Text && l->tcClock && l->text.width == 1600);
+            const QString shown = l->tcClock->display();
+            CHECK(shown.startsWith("01:00:0") && shown.size() == 11);
+        }
+        for (int k = 0; k < 3; ++k) e.renderFrame();
+        CHECK(e.layerTimecodeStatus(li).startsWith("Free run"));
+        const QJsonObject j = e.layerJson(li);
+        CHECK(j.value("source").toObject().value("timecode").toObject().value("internal") == "free_run");
+        ts.source = TimecodeSettings::Source::Mtc;
+        CHECK(e.setLayerTimecode(li, ts) && e.layerTimecodeStatus(li).startsWith("No MTC"));
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(li);
+            CHECK(l->text.width == 1600 && l->tcClock->display() == "--:--:--:--"); // its style kept; nothing received
+            l->tcClock->received(Timecode{10, 0, 0, 0, TcRate::Fps25});
+            CHECK(l->tcClock->display().startsWith("11:00:00")); // with its offset
+        }
+        e.replaceLayerJson(li, j); // back as it was saved
+        CHECK(e.layerTimecode(li) && e.layerTimecode(li)->source == TimecodeSettings::Source::Internal);
+        CHECK(e.setLayerImage(li, tmp + "/redblue.png", &err) && !e.layerTimecode(li)); // another source: no clock
+        CHECK(TimecodeSettings::fromJson(ts.toJson()) == ts);
+    }
+    }
+
     if (area("layersource")) {
     // 12. Copy / paste of layer parameters, and a layer used as the source of another (pre-FX / post-FX)
     {

@@ -154,7 +154,10 @@ QJsonObject Engine::layerToJson(Layer &l, const QString &projectDir) const
         src["width"] = l.genWidth;
         src["height"] = l.genHeight;
         break;
-    case SourceType::Text: src["type"] = "text"; break;
+    case SourceType::Text:
+        src["type"] = "text";
+        if (l.timecode) src["timecode"] = l.timecode->toJson();
+        break;
     case SourceType::Input:
         src["type"] = "input";
         src["uri"] = l.sourcePath;
@@ -281,10 +284,20 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             l->error = err;
         }
     } else if (type == "text") {
-        Lock lk(&m_mutex);
-        Layer *l = layer(index);
-        l->type = SourceType::Text;
-        l->text = TextSource{};
+        {
+            Lock lk(&m_mutex);
+            Layer *l = layer(index);
+            l->type = SourceType::Text;
+            l->text = TextSource{};
+        }
+        if (src.contains("timecode")) { // a Timecode generator: its clock (its text style comes with the values)
+            const TimecodeSettings ts = TimecodeSettings::fromJson(src.value("timecode").toObject());
+            auto clock = std::make_shared<TimecodeClock>(ts);
+            Lock lk(&m_mutex);
+            Layer *l = layer(index);
+            l->timecode = ts;
+            l->tcClock = clock;
+        }
     }
 
     for (const QJsonValue &v : o.value("fx").toArray()) {

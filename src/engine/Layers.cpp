@@ -2,6 +2,7 @@
 // layer), transport, effect chain, and the copy of parameters from one layer to another.
 #include "EngineInternal.h"
 
+#include <QFontDatabase>
 #include <QDir>
 #include <QFileInfo>
 #include <QImage>
@@ -672,6 +673,8 @@ std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
     l.text.stopTyping();
     g->generator = std::move(l.generator);
     g->input = std::move(l.input);
+    g->timecode = std::move(l.tcClock);
+    l.timecode.reset();
     g->generatorTarget = l.generatorTarget;
     l.generatorTarget = RenderTarget{};
     l.pendingImage = QImage();
@@ -1114,6 +1117,66 @@ bool Engine::setLayerText(int i)
     }
     releaseGarbage(g);
     return true;
+}
+
+bool Engine::setLayerTimecode(int i, const TimecodeSettings &s)
+{
+    bool already = false;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || l->isGroup || l->isViewport) return false;
+        already = l->type == SourceType::Text && l->timecode;
+        if (already && *l->timecode == s) return true;
+    }
+    if (!already) { // a text source first, in a style that suits a timecode
+        if (!setLayerText(i)) return false;
+        Lock lk(&m_mutex);
+        if (Layer *l = layer(i)) {
+            l->text.font = QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
+            l->text.size = 220;
+            l->text.bold = true;
+            l->text.width = 1600;
+            l->text.height = 320;
+            l->srcWidth = l->text.width;
+            l->srcHeight = l->text.height;
+        }
+    }
+    auto clock = std::make_shared<TimecodeClock>(s); // it may open devices: outside the lock
+    std::shared_ptr<TimecodeClock> old;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || l->type != SourceType::Text) return false;
+        old = std::move(l->tcClock);
+        l->timecode = s;
+        l->tcClock = clock;
+    }
+    old.reset(); // its devices closed outside the lock too
+    return true;
+}
+
+std::optional<TimecodeSettings> Engine::layerTimecode(int i) const
+{
+    Lock lk(&m_mutex);
+    if (i < 0 || i >= int(m_layers.size())) return std::nullopt;
+    return m_layers[size_t(i)]->timecode;
+}
+
+QString Engine::layerTimecodeStatus(int i) const
+{
+    std::shared_ptr<TimecodeClock> c;
+    {
+        Lock lk(&m_mutex);
+        if (i >= 0 && i < int(m_layers.size())) c = m_layers[size_t(i)]->tcClock;
+    }
+    return c ? c->status() : QString();
+}
+
+void Engine::restartLayerTimecode(int i)
+{
+    Lock lk(&m_mutex);
+    if (i >= 0 && i < int(m_layers.size()) && m_layers[size_t(i)]->tcClock) m_layers[size_t(i)]->tcClock->restart();
 }
 
 void Engine::setLayerTextContent(int i, const QString &text)

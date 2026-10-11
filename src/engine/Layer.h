@@ -6,6 +6,7 @@
 #include "LiveInput.h"
 #include "Mapping.h"
 #include "Masks.h"
+#include "TimecodeClock.h"
 #include "Parameter.h"
 #include "Publish.h"
 #include "VideoDecoder.h"
@@ -34,6 +35,9 @@ enum class SourceType { None, Video, Image, Isf, Audio, Layer, Text, Input };
 // dragged onto a layer like any media.
 inline const QString kTextGeneratorPath = QStringLiteral("/Fulskrin/Generators/Text");
 inline bool isTextGeneratorPath(const QString &p) { return QString(p).replace('\\', '/').endsWith(kTextGeneratorPath); }
+// The Timecode generator: a text layer that shows a timecode (TimecodeClock.h), from the Media Bin like a file
+inline const QString kTimecodeGeneratorPath = QStringLiteral("/Fulskrin/Generators/Timecode");
+inline bool isTimecodeGeneratorPath(const QString &p) { return QString(p).replace('\\', '/').endsWith(kTimecodeGeneratorPath); }
 // Where the picture of a layer used as a source is taken
 enum class LayerTap {
     PreFx = 0,  // after its ROI and color, before its effect chain
@@ -275,6 +279,9 @@ struct Layer {
     RenderTarget prepTarget;  // roi + color
     // Its masks (Masks.h): edited by the interface, drawn by the render thread when their revision changes
     std::vector<Mask> masks;
+    // A Timecode generator (a text source showing its clock): its settings and its clock
+    std::optional<TimecodeSettings> timecode;
+    std::shared_ptr<TimecodeClock> tcClock;
     unsigned masksRevision = 1;
     Texture2D shapeMaskSurface, shapeMaskComp; // their alpha, in its picture and in the composition
     unsigned shapeMaskSurfaceRev = 0, shapeMaskCompRev = 0;

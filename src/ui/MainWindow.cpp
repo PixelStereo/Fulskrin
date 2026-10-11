@@ -901,6 +901,28 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
         return false;
     }
     if (refuseLocked(i)) return false;
+    if (isTimecodeGeneratorPath(path)) { // the built-in Timecode generator, dragged from the Media Bin
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(i);
+            if (l && (l->isGroup || l->isViewport)) {
+                lk.unlock();
+                statusBar()->showMessage(QStringLiteral("A group or a viewport has no source: drop the timecode onto a layer."), 6000);
+                return false;
+            }
+        }
+        const QJsonObject before = m_engine->layerJson(i);
+        if (!m_engine->setLayerTimecode(i, TimecodeSettings{})) return false;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(i);
+            if (l && l->name.startsWith(QStringLiteral("Layer "))) l->name = QStringLiteral("Timecode");
+        }
+        m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Load Timecode Generator")));
+        selectLayer(i);
+        refreshAll();
+        return true;
+    }
     if (isTextGeneratorPath(path)) { // the built-in Text generator, dragged from the Media Bin
         {
             Engine::Lock lk(&m_engine->mutex());
@@ -1008,7 +1030,7 @@ void MainWindow::loadDropped(int layer, const QStringList &paths)
     for (const QString &p : paths) {
         const QString ext = QFileInfo(p).suffix().toLower();
         const bool effect = kIsfExt.contains(ext) && IsfInstance::readHeader(p).isFilter;
-        if (isTextGeneratorPath(p) || !liveInputUriOfPath(p).isEmpty()) { // built in, or live: never imported into the Media Bin
+        if (isTextGeneratorPath(p) || isTimecodeGeneratorPath(p) || !liveInputUriOfPath(p).isEmpty()) { // built in, or live: never imported into the Media Bin
             if (!sourceLoaded) sourceLoaded = loadIntoLayer(layer, p);
         } else if (effect) {
             loadIntoLayer(layer, p);
