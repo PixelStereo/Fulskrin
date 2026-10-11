@@ -213,7 +213,9 @@ public:
     void setSnapshot(int i, const Snapshot &m);
     int addSnapshot(const Snapshot &m, int at = -1);
     void removeSnapshot(int i);
-    QJsonArray captureLayers() const; // state of every layer, all included
+    // State of every layer, all included; for a snapshot, without the values their animations drive (the
+    // animations, held with their state, give them); withAnimated: every value (the undo of a recall)
+    QJsonArray captureLayers(bool withAnimated = false) const;
     // Applies layer states (those not excluded): opacity, volume, roi, color, mapping and ISF numbers fade in
     // `fade` seconds, or in the time a state gives them ("timing": key → seconds, 0 a cut); sources and effect chains change at once; a layer that became visible fades in from 0,
     // one that becomes hidden fades out; layers removed since are recreated. Other layers are left alone, or with

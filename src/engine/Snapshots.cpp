@@ -257,13 +257,20 @@ void Engine::removeSnapshot(int i)
     emit snapshotsChanged();
 }
 
-QJsonArray Engine::captureLayers() const
+QJsonArray Engine::captureLayers(bool withAnimated) const
 {
     Lock lk(&m_mutex);
     QJsonArray a;
     for (int i = 0; i < int(m_layers.size()); ++i) {
         if (m_layers[size_t(i)]->isViewport) continue; // a viewport has one state, not one per snapshot
         QJsonObject o = layerJson(i);
+        // A value an animation of the layer drives is not held: the animation (held, with its state) gives it
+        if (!withAnimated) {
+            QJsonObject params = o.value("params").toObject();
+            for (const Animation &an : m_layers[size_t(i)]->anims)
+                for (const AnimTrack &t : an.tracks) params.remove(t.param);
+            o["params"] = params;
+        }
         o["included"] = true;
         a.append(o);
     }
