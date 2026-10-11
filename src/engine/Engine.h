@@ -24,6 +24,7 @@
 #include "Publish.h"
 #include "Publishing.h"
 #include "TimecodeOutputs.h"
+#include "Interactions.h"
 
 #include <QColor>
 #include <QElapsedTimer>
@@ -49,6 +50,10 @@ class QSurface;
 class QThread;
 class QWindow;
 class QTimer;
+
+namespace midi {
+class Input;
+}
 
 class Engine : public QObject
 {
@@ -227,6 +232,20 @@ public:
     bool setAudioChannelOutput(const AudioChannelOutput &o);
     void removeAudioChannelOutput(quint64 id);                 // and the routes to it
     QString audioChannelOutputStatus(quint64 id) const;        // "Sending LTC", "Channel 3: … has 2"…
+    // --- Interactions (Interactions.h): values of the show driven by a key, a MIDI controller, an OSC message, or
+    // another value of the show. Run each frame after the animations (they win over the snapshots' fades)
+    std::vector<Interaction> interactions() const;
+    void setInteractions(const std::vector<Interaction> &list); // the whole list (undo); ids 0 are given one
+    quint64 addInteraction(const Interaction &it);              // its id
+    bool setInteraction(const Interaction &it);                 // by its id
+    void removeInteraction(quint64 id);
+    // What it does now (shown): its source after the range and the toggle, and its result (0..1); false: nothing yet
+    bool interactionLevels(quint64 id, double *level, double *output) const;
+    void feedInteraction(const InteractionEvent &e); // a source's value (any thread)
+    // Learn: the next event from a source is kept, for the interface to take (the interactions go on meanwhile)
+    void setInteractionLearn(bool on);
+    std::optional<InteractionEvent> takeLearnedInteraction();
+
     // The hardware of this machine to patch to (looked up on each call)
     static QStringList midiPorts();        // MIDI outputs
     static QStringList midiInputPorts();   // MIDI inputs (MTC in)
@@ -536,6 +555,7 @@ signals:
     void layerAnimsChanged(quint64 layer); // the animations of a layer's numbers (their contents, not their transport)
     void snapshotRecalled(int index);
     void timecodeRoutingChanged(); // timecode / MIDI outputs, their patch, or which layer drives which output
+    void interactionsChanged();    // the list of interactions (not their values)
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI
 
 public:
@@ -741,6 +761,28 @@ private:
     std::atomic<quint64> m_frameCount{0};
     bool m_initialized = false;
 
+    // Interactions
+    std::vector<Interaction> m_interactions; // under m_mutex
+    quint64 m_nextInteractionId = 1;
+    struct InteractionRun {
+        InteractionProcessor proc;
+        InteractionTargetState target;
+        std::optional<double> lastOut;
+        double lastInternal = std::numeric_limits<double>::quiet_NaN();
+        bool choiceSet = false;
+        int lastChoice = -1;
+        bool lastBool = false;
+    };
+    std::map<quint64, InteractionRun> m_interactionRun; // render thread (m_mutex held)
+    std::mutex m_interactionEventsMutex;
+    std::vector<InteractionEvent> m_interactionEvents; // since the last frame
+    bool m_interactionLearn = false;
+    std::optional<InteractionEvent> m_learned;
+    std::vector<std::unique_ptr<midi::Input>> m_midiIns; // every MIDI input, open while a MIDI interaction is there
+    QStringList m_midiInNames;
+    QTimer *m_midiScan = nullptr;
+    void stepInteractions(double dt); // lock held
+    void updateMidiInputs();          // main thread
     std::vector<TimecodeOutput> m_tcOutputs;  // under m_mutex
     std::vector<MidiOutput> m_midiOutputs;
     std::vector<AudioChannelOutput> m_audioOutputs;

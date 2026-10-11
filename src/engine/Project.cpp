@@ -81,6 +81,9 @@ void Engine::clearProject()
         m_midiOutputs.clear();
         m_audioOutputs.clear();
         m_atc.clear();
+        m_interactions.clear();
+        m_interactionRun.clear();
+        m_nextInteractionId = 1;
         m_nextPatchId = 1;
     }
     for (auto &l : old) {
@@ -96,6 +99,8 @@ void Engine::clearProject()
     emit presetsChanged();
     emit animationsChanged();
     emit timecodeRoutingChanged();
+    emit interactionsChanged();
+    updateMidiInputs();
 }
 
 QString Engine::resolvePath(const QJsonObject &o, const QString &projectDir) const
@@ -378,6 +383,9 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         QJsonArray audioOutputs;
         for (const AudioChannelOutput &a : m_audioOutputs) audioOutputs.append(a.toJson());
         root["audio_channel_outputs"] = audioOutputs;
+        QJsonArray interactions;
+        for (const Interaction &it : m_interactions) interactions.append(it.toJson());
+        root["interactions"] = interactions;
         root["sequences"] = m_sequencer->toJson();
         root["current_sequence"] = m_sequencer->current();
     }
@@ -512,6 +520,16 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     emit m_sequencer->positionChanged();
     if (uiState) *uiState = root.value("ui").toObject();
     setProjectPath(QFileInfo(path).absoluteFilePath());
+    {
+        std::vector<Interaction> interactions;
+        for (const QJsonValue &v : root.value("interactions").toArray()) {
+            Interaction it = Interaction::fromJson(v.toObject());
+            if (std::any_of(interactions.begin(), interactions.end(), [&](const Interaction &x) { return x.id == it.id; }))
+                it.id = 0; // given one
+            interactions.push_back(it);
+        }
+        setInteractions(interactions);
+    }
     emit layersChanged();
     emit timecodeRoutingChanged();
     if (!warnings.isEmpty() && err) *err = warnings.join('\n');

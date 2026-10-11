@@ -1258,6 +1258,20 @@ int OscServer::handlePacket(const QByteArray &packet)
 
 bool OscServer::handleMessage(const osc::Message &m)
 {
+    // Every number it carries is also an interaction's source (Interactions.h), the show's own addresses included
+    for (int k = 0; k < m.args.size(); ++k) {
+        const QVariant &a = m.args[k];
+        const int t = a.typeId();
+        if (t != QMetaType::Int && t != QMetaType::Double && t != QMetaType::Float && t != QMetaType::Bool &&
+            t != QMetaType::LongLong)
+            continue;
+        InteractionEvent e;
+        e.source = InteractionSource::Osc;
+        e.address = m.address;
+        e.argument = k;
+        e.value = a.typeId() == QMetaType::Bool ? (a.toBool() ? 1.0 : 0.0) : a.toDouble();
+        m_e->feedInteraction(e);
+    }
     m_ns.refresh();
     static const QString kPattern = QStringLiteral("*?[]{}");
     bool pattern = false;
