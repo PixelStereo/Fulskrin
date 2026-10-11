@@ -27,6 +27,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <cmath>
+#include <memory>
 
 static QLabel *note(const QString &t)
 {
@@ -401,12 +402,19 @@ QWidget *CompositionPanel::buildTimecodePatch()
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(10);
     // Made again when the patch, a layer's name or the viewports change (not while a field of it is being typed in)
+    // (not while a field of it is being dragged: once the mouse is let go)
     auto later = [this] {
-        QTimer::singleShot(0, this, [this] {
+        auto attempt = std::make_shared<std::function<void()>>();
+        *attempt = [this, attempt] {
             if (timecodePatchKey() == m_tcPatchKey) return;
             if (QWidget *f = QApplication::focusWidget(); f && m_tcPatch->isAncestorOf(f) && qobject_cast<QLineEdit *>(f)) return;
+            if (QApplication::mouseButtons() != Qt::NoButton) {
+                QTimer::singleShot(150, this, *attempt);
+                return;
+            }
             rebuildTimecodePatch();
-        });
+        };
+        QTimer::singleShot(0, this, *attempt);
     };
     connect(m_engine, &Engine::timecodeRoutingChanged, this, later);
     connect(m_engine, &Engine::layersChanged, this, later);
@@ -664,8 +672,8 @@ void CompositionPanel::rebuildTimecodePatch()
                 const QString d = device->currentData().toString();
                 change([d](AudioChannelOutput &x) { x.device = d; });
             });
-            connect(channel, &QSpinBox::editingFinished, this, [channel, change] {
-                const int c = channel->value() - 1;
+            connect(channel, qOverload<int>(&QSpinBox::valueChanged), this, [change](int v) {
+                const int c = v - 1;
                 change([c](AudioChannelOutput &x) { x.channel = c; });
             });
             connect(remove, &QToolButton::clicked, this, [this, id, edited] {

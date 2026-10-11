@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
+#include <QDateTime>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -38,7 +39,8 @@ class SetInteractions : public QUndoCommand
 public:
     SetInteractions(Engine *e, std::vector<Interaction> before, std::vector<Interaction> after, const QString &text,
                     const QString &mergeKey)
-        : QUndoCommand(text), m_e(e), m_before(std::move(before)), m_after(std::move(after)), m_key(mergeKey)
+        : QUndoCommand(text), m_e(e), m_before(std::move(before)), m_after(std::move(after)), m_key(mergeKey),
+          m_time(QDateTime::currentMSecsSinceEpoch())
     {
     }
     void undo() override { m_e->setInteractions(m_before); }
@@ -47,8 +49,9 @@ public:
     bool mergeWith(const QUndoCommand *other) override
     {
         auto *o = static_cast<const SetInteractions *>(other);
-        if (o->m_key != m_key) return false;
+        if (o->m_key != m_key || o->m_time - m_time > 1000) return false; // a new gesture: a step of its own
         m_after = o->m_after;
+        m_time = o->m_time;
         return true;
     }
 
@@ -56,6 +59,7 @@ private:
     Engine *m_e;
     std::vector<Interaction> m_before, m_after;
     QString m_key;
+    qint64 m_time;
 };
 
 constexpr char kMime[] = "application/x-fulskrin-interaction-settings";
@@ -582,9 +586,8 @@ void InteractionPanel::rebuildSettings()
             edit(QStringLiteral("Change Interaction Message"), [k](Interaction &x) { x.midiMessage = MidiMessageKind(k); });
             rebuildSettings();
         });
-        connect(number, &QSpinBox::editingFinished, this, [edit, number] {
-            const int n = number->value();
-            edit(QStringLiteral("Change Interaction Number"), [n](Interaction &x) { x.midiNumber = n; });
+        connect(number, qOverload<int>(&QSpinBox::valueChanged), this, [edit](int n) {
+            edit(QStringLiteral("Change Interaction Number"), [n](Interaction &x) { x.midiNumber = n; }, QStringLiteral("midinumber"));
         });
         break;
     }
@@ -619,9 +622,8 @@ void InteractionPanel::rebuildSettings()
             const QString a = address->text().trimmed();
             edit(QStringLiteral("Change Interaction Address"), [a](Interaction &x) { x.oscAddress = a; });
         });
-        connect(argument, &QSpinBox::editingFinished, this, [edit, argument] {
-            const int a = argument->value();
-            edit(QStringLiteral("Change Interaction Argument"), [a](Interaction &x) { x.oscArgument = a; });
+        connect(argument, qOverload<int>(&QSpinBox::valueChanged), this, [edit](int a) {
+            edit(QStringLiteral("Change Interaction Argument"), [a](Interaction &x) { x.oscArgument = a; }, QStringLiteral("oscarg"));
         });
         connect(scale, qOverload<int>(&QComboBox::activated), this, [this, edit, scale](int) {
             const QPointF r = scale->currentData().toPointF();
@@ -726,9 +728,12 @@ void InteractionPanel::rebuildSettings()
     master->setRange(0, 100);
     master->setDecimals(0);
     master->setSuffix(QStringLiteral(" %"));
-    master->setValue(it.master * 100);
+    master->setSingleStep(1);
+    master->setTicks(10);
     master->setSnaps({0, 100});
-    form->addRow(new ResetLabel(QStringLiteral("Master Level"), [edit] {
+    master->setValue(it.master * 100);
+    form->addRow(new ResetLabel(QStringLiteral("Master Level"), [edit, master] {
+                     master->setValue(100);
                      edit(QStringLiteral("Reset Master Level"), [](Interaction &x) { x.master = 1; });
                  }),
                  master);
@@ -761,7 +766,14 @@ void InteractionPanel::rebuildSettings()
     srcRange->setDecimals(srcHi - srcLo > 10 ? 0 : 2);
     srcRange->setValues(std::min(it.srcMin, it.srcMax), std::max(it.srcMin, it.srcMax));
     srcRange->setToolTip(QStringLiteral("The part of the source's values used: its low end gives 0, its high end 1"));
-    form->addRow(QStringLiteral("Source range"), srcRange);
+    form->addRow(new ResetLabel(QStringLiteral("Source range"), [edit, srcRange, srcLo, srcHi] {
+                     srcRange->setValues(srcLo, srcHi);
+                     edit(QStringLiteral("Reset Source Range"), [srcLo, srcHi](Interaction &x) {
+                         x.srcMin = srcLo;
+                         x.srcMax = srcHi;
+                     });
+                 }),
+                 srcRange);
     connect(srcRange, &RangeField::edited, this, [edit, srcRange](bool, double) {
         const double lo = srcRange->low(), hi = srcRange->high();
         edit(QStringLiteral("Change Source Range"), [lo, hi](Interaction &x) {
@@ -786,7 +798,18 @@ void InteractionPanel::rebuildSettings()
     auto *dstRow = new QHBoxLayout;
     dstRow->addWidget(dstRange, 1);
     dstRow->addWidget(invert);
-    form->addRow(QStringLiteral("Target range"), dstRow);
+    const double fullLo = numberTarget ? tinfo.min : 0, fullHi = numberTarget ? tinfo.max : 1;
+    form->addRow(new ResetLabel(QStringLiteral("Target range"), [edit, dstRange, invert, fullLo, fullHi] {
+                     dstRange->setValues(fullLo, fullHi);
+                     invert->blockSignals(true);
+                     invert->setChecked(false);
+                     invert->blockSignals(false);
+                     edit(QStringLiteral("Reset Target Range"), [fullLo, fullHi](Interaction &x) {
+                         x.dstMin = fullLo;
+                         x.dstMax = fullHi;
+                     });
+                 }),
+                 dstRow);
     auto setTarget = [edit, dstRange, invert](const QString &merge) {
         const double lo = dstRange->low(), hi = dstRange->high();
         const bool inv = invert->isChecked();
@@ -830,10 +853,18 @@ void InteractionPanel::rebuildSettings()
             if (fs.name.isEmpty()) continue;
             auto *f = new SliderField;
             f->setRange(fs.min, fs.max);
-            f->setDecimals(fs.max <= 2 ? 2 : 2);
+            f->setDecimals(fs.min < 0.01 ? 3 : 2);
             f->setSuffix(fs.suffix);
+            f->setSingleStep((fs.max - fs.min) / 100.0);
+            f->setTicks(10);
+            f->setSnaps({fs.def});
             f->setValue(which == 0 ? it.filterA : it.filterB);
-            form->addRow(fs.name, f);
+            const double def = fs.def;
+            form->addRow(new ResetLabel(fs.name, [edit, f, which, def] {
+                             f->setValue(def);
+                             edit(QStringLiteral("Reset Filter"), [which, def](Interaction &x) { (which == 0 ? x.filterA : x.filterB) = def; });
+                         }),
+                         f);
             connect(f, &SliderField::valueEdited, this, [edit, which](double v) {
                 edit(QStringLiteral("Change Filter"), [which, v](Interaction &x) { (which == 0 ? x.filterA : x.filterB) = v; },
                      QStringLiteral("filter%1").arg(which));
