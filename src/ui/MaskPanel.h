@@ -1,6 +1,7 @@
 #pragma once
 // Masks tab of a layer, a group or a viewport (Masks.h): tools that add a shape (drawn point by point in the
-// preview, a rectangle, a triangle, an ellipse), the list of masks, and the selected one's settings: invert,
+// preview, a rectangle, a triangle, an ellipse), the list of masks (combined in its order, dragged to reorder,
+// each with the sign of its mode), and the selected one's settings: how it combines (as DaVinci), invert,
 // feathering and where the soft edge goes, what it is attached to (its picture, or the composition), SVG
 // import and export. The preview edits the selected mask's points.
 
@@ -51,6 +52,8 @@ private:
     QPushButton *m_invert = nullptr, *m_remove = nullptr;
     SliderField *m_feather = nullptr;
     QComboBox *m_mode = nullptr, *m_attach = nullptr;
+    QComboBox *m_combine = nullptr; // how it combines with the masks above (Add, Subtract…)
+    void reordered();               // the list dragged into a new order
     QWidget *m_settings = nullptr;
     QLabel *m_empty = nullptr;
     std::vector<Mask> m_liveBefore;

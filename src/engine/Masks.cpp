@@ -50,7 +50,7 @@ QRectF Mask::bounds() const
 
 bool Mask::operator==(const Mask &o) const
 {
-    return name == o.name && shape == o.shape && nodes == o.nodes && enabled == o.enabled && invert == o.invert
+    return name == o.name && shape == o.shape && nodes == o.nodes && enabled == o.enabled && invert == o.invert && mode == o.mode
            && feather == o.feather && featherMode == o.featherMode && attach == o.attach;
 }
 
@@ -101,6 +101,14 @@ static const char *featherKey(Mask::Feather f)
     return f == Mask::Feather::Inner ? "inner" : f == Mask::Feather::Outer ? "outer" : "centered";
 }
 static const char *attachKey(Mask::Attach a) { return a == Mask::Attach::Composition ? "composition" : "surface"; }
+static const char *const kModeKeys[] = {"add", "subtract", "intersect", "multiply", "difference"};
+static const char *modeKey(Mask::Mode m) { return kModeKeys[std::clamp(int(m), 0, 4)]; }
+static Mask::Mode modeFromKey(const QString &k)
+{
+    for (int i = 0; i < 5; ++i)
+        if (k == QLatin1String(kModeKeys[i])) return Mask::Mode(i);
+    return Mask::Mode::Add;
+}
 
 QJsonObject Mask::toJson() const
 {
@@ -113,6 +121,7 @@ QJsonObject Mask::toJson() const
     o["nodes"] = pts;
     o["enabled"] = enabled;
     o["invert"] = invert;
+    o["mode"] = modeKey(mode);
     o["feather"] = feather;
     o["feather_mode"] = featherKey(featherMode);
     o["attach"] = attachKey(attach);
@@ -136,6 +145,7 @@ Mask Mask::fromJson(const QJsonObject &o)
     }
     m.enabled = o.value("enabled").toBool(true);
     m.invert = o.value("invert").toBool(false);
+    m.mode = modeFromKey(o.value("mode").toString());
     m.feather = std::clamp(o.value("feather").toDouble(0), 0.0, 1.0);
     const QString f = o.value("feather_mode").toString();
     m.featherMode = f == "inner" ? Feather::Inner : f == "outer" ? Feather::Outer : Feather::Centered;
@@ -157,6 +167,18 @@ std::vector<Mask> fromJson(const QJsonArray &a)
     std::vector<Mask> out;
     for (const QJsonValue &v : a) out.push_back(Mask::fromJson(v.toObject()));
     return out;
+}
+
+QString modeName(Mask::Mode m)
+{
+    static const char *const names[] = {"Add", "Subtract", "Intersect", "Multiply", "Difference"};
+    return QString::fromLatin1(names[std::clamp(int(m), 0, 4)]);
+}
+
+QString modeSymbol(Mask::Mode m)
+{
+    static const char16_t *const symbols[] = {u"+", u"\u2212", u"\u2229", u"\u00d7", u"\u2295"};
+    return QString::fromUtf16(symbols[std::clamp(int(m), 0, 4)]);
 }
 
 QString uniqueName(const std::vector<Mask> &m, const QString &base)
@@ -233,20 +255,35 @@ QImage raster(const std::vector<Mask> &m, Mask::Attach attach, QSize size)
 {
     if (size.isEmpty() || !any(m, attach)) return {};
     const int w = size.width(), h = size.height();
-    bool adds = false;
+    std::vector<const Mask *> used;
     for (const Mask &k : m)
-        if (k.enabled && k.valid() && k.attach == attach && !k.invert) adds = true;
-    std::vector<float> acc(size_t(w) * size_t(h), adds ? 0.0f : 1.0f), one;
-    // The masks not inverted add up, then the inverted ones cut
-    for (int pass = 0; pass < 2; ++pass)
-        for (const Mask &k : m) {
-            if (!k.enabled || !k.valid() || k.attach != attach || k.invert != (pass == 1)) continue;
-            rasterOne(k, w, h, one);
-            if (pass == 0)
-                for (size_t i = 0; i < acc.size(); ++i) acc[i] = std::max(acc[i], one[i]);
-            else
-                for (size_t i = 0; i < acc.size(); ++i) acc[i] *= 1.0f - one[i];
+        if (k.enabled && k.valid() && k.attach == attach) used.push_back(&k);
+    // Empty when the first one adds (or makes a difference), full when it cuts
+    const Mask::Mode first = used.front()->mode;
+    const bool empty = first == Mask::Mode::Add || first == Mask::Mode::Difference;
+    std::vector<float> acc(size_t(w) * size_t(h), empty ? 0.0f : 1.0f), one;
+    for (const Mask *k : used) {
+        rasterOne(*k, w, h, one);
+        if (k->invert)
+            for (float &v : one) v = 1.0f - v;
+        switch (k->mode) {
+        case Mask::Mode::Add:
+            for (size_t i = 0; i < acc.size(); ++i) acc[i] = std::max(acc[i], one[i]);
+            break;
+        case Mask::Mode::Subtract:
+            for (size_t i = 0; i < acc.size(); ++i) acc[i] = std::max(acc[i] - one[i], 0.0f);
+            break;
+        case Mask::Mode::Intersect:
+            for (size_t i = 0; i < acc.size(); ++i) acc[i] = std::min(acc[i], one[i]);
+            break;
+        case Mask::Mode::Multiply:
+            for (size_t i = 0; i < acc.size(); ++i) acc[i] *= one[i];
+            break;
+        case Mask::Mode::Difference:
+            for (size_t i = 0; i < acc.size(); ++i) acc[i] = acc[i] + one[i] - 2 * acc[i] * one[i];
+            break;
         }
+    }
     QImage out(w, h, QImage::Format_Grayscale8);
     for (int y = 0; y < h; ++y) {
         uchar *row = out.scanLine(y);
@@ -282,10 +319,10 @@ QString toSvg(const std::vector<Mask> &m, QSize frame)
         d += QStringLiteral(" Z");
         QString name = k.name.toHtmlEscaped();
         s += QStringLiteral("  <path id=\"%1\" d=\"%2\" fill=\"%3\" data-invert=\"%4\" data-feather=\"%5\" "
-                            "data-feather-mode=\"%6\" data-attach=\"%7\" data-enabled=\"%8\"/>\n")
+                            "data-feather-mode=\"%6\" data-attach=\"%7\" data-enabled=\"%8\" data-mode=\"%9\"/>\n")
                  .arg(name, d, k.invert ? QStringLiteral("#000000") : QStringLiteral("#ffffff"), k.invert ? "1" : "0",
                       num(k.feather), QString::fromLatin1(featherKey(k.featherMode)), QString::fromLatin1(attachKey(k.attach)),
-                      k.enabled ? "1" : "0");
+                      k.enabled ? "1" : "0", QString::fromLatin1(modeKey(k.mode)));
     }
     s += QStringLiteral("</svg>\n");
     return s;
@@ -545,6 +582,7 @@ std::vector<Mask> fromSvg(const QByteArray &svg, QString *err)
         m.attach = r.attrs.value(QStringLiteral("data-attach")) == QLatin1String("composition") ? Mask::Attach::Composition
                                                                                                  : Mask::Attach::Surface;
         m.enabled = r.attrs.value(QStringLiteral("data-enabled")) != QLatin1String("0");
+        m.mode = modeFromKey(r.attrs.value(QStringLiteral("data-mode")).toString());
         out.push_back(m);
     }
     if (err) {

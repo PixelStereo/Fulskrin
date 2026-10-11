@@ -4,8 +4,10 @@
 //  - Surface: the picture's own frame (0..1 over it, origin top left): it follows the mapping, its warp included;
 //  - Composition: the composition (0..1, origin top left): the picture is cut where it lands (layers and groups).
 // A viewport's masks are in its own picture (what goes to its screen).
-// Several masks: the ones not inverted are added (nothing but them shows); the inverted ones then cut holes.
-// Without any mask not inverted, the whole picture shows and the inverted ones cut it.
+// Several masks combine in the order of the list, each by its mode (as Fusion's paint modes, DaVinci's Mask window):
+// Add (the union), Subtract (cut out of what is above), Intersect (only where both are), Multiply, Difference
+// (where one or the other, not both). The list starts empty when its first mask adds (or makes a difference), full
+// otherwise (a first Subtract cuts the whole picture). Invert turns a shape inside out before it combines.
 
 #include <QImage>
 #include <QJsonArray>
@@ -27,11 +29,13 @@ struct Mask {
     enum class Shape { Path, Rectangle, Triangle, Ellipse }; // how it was made (its icon)
     enum class Feather { Centered, Inner, Outer };           // where the soft edge goes, against the shape's edge
     enum class Attach { Surface, Composition };
+    enum class Mode { Add, Subtract, Intersect, Multiply, Difference }; // how it combines with the masks above
 
     QString name;
     Shape shape = Shape::Path;
     std::vector<MaskNode> nodes; // closed: the last joins the first
     bool enabled = true, invert = false;
+    Mode mode = Mode::Add;
     double feather = 0; // width of the soft edge: a fraction of the frame's short side (0 to 1)
     Feather featherMode = Feather::Centered;
     Attach attach = Attach::Surface;
@@ -62,6 +66,9 @@ QString uniqueName(const std::vector<Mask> &m, const QString &base = QStringLite
 // picture shows. Null image: no such mask (nothing to apply).
 QImage raster(const std::vector<Mask> &m, Mask::Attach attach, QSize size);
 bool any(const std::vector<Mask> &m, Mask::Attach attach); // a mask there to apply
+
+QString modeName(Mask::Mode m); // "Add", "Subtract"…
+QString modeSymbol(Mask::Mode m); // +, −, ∩, ×, ⊕
 
 // SVG: the masks as paths over a frame of `frame` pixels (white; the inverted ones black), and back. Reading takes
 // path, rect, circle, ellipse, polygon and polyline, each closed shape a mask (normalized by the SVG's size).
