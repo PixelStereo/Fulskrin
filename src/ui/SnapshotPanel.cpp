@@ -1,5 +1,6 @@
 #include "SnapshotPanel.h"
 #include "Commands.h"
+#include "PresetEditor.h"
 #include "Engine.h"
 #include "Widgets.h"
 
@@ -7,6 +8,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDropEvent>
+#include <QTreeWidgetItemIterator>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -21,6 +24,7 @@
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStyledItemDelegate>
 #include <QTimer>
 #include <QToolButton>
@@ -33,7 +37,8 @@
 static const QSize kThumb(160, 90);
 
 // Roles of the trees
-enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, KeyRole = Qt::UserRole + 3, SnapshotRole = Qt::UserRole + 6 };
+enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, KeyRole = Qt::UserRole + 3, SnapshotRole = Qt::UserRole + 6,
+       GroupRole = Qt::UserRole + 7, PresetRole = Qt::UserRole + 8 };
 // Columns of the tree of what a snapshot holds
 enum Column { ColName, ColValue, ColTime };
 
@@ -124,23 +129,125 @@ static QPixmap thumbnail(const QImage &thumb)
 }
 
 namespace {
-// The list of the snapshots; a snapshot dragged from it carries its id (onto a step of a sequence)
+// What a row of the snapshots' list is, in a drag inside it: "s<id>" a snapshot, "g<id>" a group
+constexpr const char *kNodeMime = "application/x-fulskrin-snapshot-node";
+
+QString nodeKey(const QTreeWidgetItem *it)
+{
+    if (!it) return {};
+    if (const quint64 g = it->data(0, GroupRole).toULongLong()) return QStringLiteral("g%1").arg(g);
+    return QStringLiteral("s%1").arg(it->data(0, SnapshotRole).toULongLong());
+}
+
+// The list of the snapshots, in their groups. A snapshot dragged from it carries its id (onto a step of a sequence);
+// inside it, a row dragged is moved: between two rows, or into a group
 class SnapshotList : public QTreeWidget
 {
 public:
     using QTreeWidget::QTreeWidget;
+    // A row (its key) dropped by `target` (its key; empty: at the end): where -1 before it, 1 after it, 0 into it
+    std::function<void(const QString &key, const QString &target, int where)> onMove;
 
 protected:
-    QStringList mimeTypes() const override { return {QString::fromLatin1(kSnapshotMime)}; }
+    QStringList mimeTypes() const override { return {QString::fromLatin1(kSnapshotMime), QString::fromLatin1(kNodeMime)}; }
+    Qt::DropActions supportedDropActions() const override { return Qt::MoveAction | Qt::CopyAction; }
     QMimeData *mimeData(const QList<QTreeWidgetItem *> &items) const override
     {
         if (items.isEmpty()) return nullptr;
+        QTreeWidgetItem *it = items.first();
         auto *m = new QMimeData;
-        m->setData(kSnapshotMime, QByteArray::number(items.first()->data(0, SnapshotRole).toULongLong()));
-        m->setText(items.first()->text(1));
+        m->setData(kNodeMime, nodeKey(it).toUtf8());
+        if (const quint64 id = it->data(0, SnapshotRole).toULongLong()) {
+            m->setData(kSnapshotMime, QByteArray::number(id));
+            m->setText(it->text(1));
+        }
         return m;
     }
+    void dragEnterEvent(QDragEnterEvent *e) override
+    {
+        if (e->source() == this && e->mimeData()->hasFormat(kNodeMime)) QTreeWidget::dragEnterEvent(e);
+        else e->ignore();
+    }
+    void dragMoveEvent(QDragMoveEvent *e) override
+    {
+        if (e->source() != this || !e->mimeData()->hasFormat(kNodeMime)) {
+            e->ignore();
+            return;
+        }
+        QTreeWidget::dragMoveEvent(e);
+        e->setDropAction(Qt::MoveAction);
+        e->accept();
+    }
+    void dropEvent(QDropEvent *e) override
+    {
+        if (e->source() != this || !e->mimeData()->hasFormat(kNodeMime)) {
+            e->ignore();
+            return;
+        }
+        const QString key = QString::fromUtf8(e->mimeData()->data(kNodeMime));
+        QTreeWidgetItem *target = itemAt(e->position().toPoint());
+        const DropIndicatorPosition where = dropIndicatorPosition();
+        e->setDropAction(Qt::IgnoreAction); // the list is rebuilt from the engine: nothing moves here
+        e->accept();
+        if (onMove) {
+            const QString t = where == OnViewport || !target ? QString() : nodeKey(target);
+            const int w = where == OnItem ? 0 : where == AboveItem ? -1 : 1;
+            QMetaObject::invokeMethod(this, [this, key, t, w] { onMove(key, t, w); }, Qt::QueuedConnection);
+        }
+    }
 };
+
+using Node = Engine::SnapshotNode;
+
+QString keyOf(const Node &n) { return n.snapshot ? QStringLiteral("s%1").arg(n.snapshot) : QStringLiteral("g%1").arg(n.group); }
+
+// Takes the node out of the tree; false: not in it
+bool takeNode(std::vector<Node> &nodes, const QString &key, Node *out)
+{
+    for (size_t k = 0; k < nodes.size(); ++k) {
+        if (keyOf(nodes[k]) == key) {
+            *out = nodes[k];
+            nodes.erase(nodes.begin() + long(k));
+            return true;
+        }
+        if (!nodes[k].snapshot && takeNode(nodes[k].children, key, out)) return true;
+    }
+    return false;
+}
+
+Node *findNode(std::vector<Node> &nodes, const QString &key)
+{
+    for (Node &n : nodes) {
+        if (keyOf(n) == key) return &n;
+        if (!n.snapshot)
+            if (Node *f = findNode(n.children, key)) return f;
+    }
+    return nullptr;
+}
+
+// Next to `target` (before or after it, in its group); false: not in the tree
+bool insertBeside(std::vector<Node> &nodes, const QString &target, const Node &n, bool after)
+{
+    for (size_t k = 0; k < nodes.size(); ++k) {
+        if (keyOf(nodes[k]) == target) {
+            nodes.insert(nodes.begin() + long(k) + (after ? 1 : 0), n);
+            return true;
+        }
+        if (!nodes[k].snapshot && insertBeside(nodes[k].children, target, n, after)) return true;
+    }
+    return false;
+}
+
+// The groups, depth first, with their path ("Act 1 › Scene 2")
+void listGroups(const std::vector<Node> &nodes, const QString &prefix, std::vector<std::pair<quint64, QString>> &out)
+{
+    for (const Node &n : nodes) {
+        if (n.snapshot) continue;
+        const QString name = prefix.isEmpty() ? n.name : prefix + QStringLiteral(" › ") + n.name;
+        out.push_back({n.group, name});
+        listGroups(n.children, name, out);
+    }
+}
 
 } // namespace
 
@@ -199,24 +306,31 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_go = new QPushButton(QStringLiteral("GO"));
     m_go->setStyleSheet("QPushButton { font-weight:bold; background:#2f6b3a; color:white; padding:3px 14px; }");
     m_go->setToolTip(QStringLiteral("Recall the selected snapshot (double-click or Enter in the list)"));
+    m_newGroup = new QPushButton(QStringLiteral("Group"));
+    m_newGroup->setToolTip(QStringLiteral("A new group of snapshots: drag snapshots (and groups) into it"));
+    bar->addWidget(m_newGroup);
     bar->addWidget(m_store);
     bar->addWidget(m_go);
     lv->addLayout(bar);
     m_list = new SnapshotList;
     m_list->setColumnCount(3);
     m_list->setHeaderLabels({QStringLiteral("#"), QStringLiteral("Name"), QStringLiteral("Fade")});
-    m_list->setRootIsDecorated(false);
+    m_list->setRootIsDecorated(true);
+    m_list->setIndentation(12);
     m_list->setUniformRowHeights(true);
     m_list->setAlternatingRowColors(true);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
     m_list->setDragEnabled(true);
-    m_list->setDragDropMode(QAbstractItemView::DragOnly);
+    m_list->setDragDropMode(QAbstractItemView::DragDrop);
+    m_list->setDropIndicatorShown(true);
+    m_list->setDefaultDropAction(Qt::MoveAction);
+    m_list->setEditTriggers(QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     m_list->header()->setStretchLastSection(false);
     m_list->header()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_list->setColumnWidth(0, 44);
+    m_list->setColumnWidth(0, 62); // room for the groups' indentation
     m_list->setColumnWidth(2, 58);
-    m_list->setToolTip(QStringLiteral("Double-click or Enter: recall · drag onto a step of a sequence\n"
+    m_list->setToolTip(QStringLiteral("Double-click or Enter: recall · drag to reorder, into a group, or onto a step of a sequence\n"
                                       "Green stripe and ▶: the snapshot recalled last; the green line under it: its fade"));
     m_list->setItemDelegate(new SnapshotRowDelegate(m_engine, m_list));
     { // the fade running moves the line under its snapshot
@@ -232,6 +346,46 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     lv->addWidget(m_list, 1);
     left->setMinimumWidth(220);
     split->addWidget(left);
+
+    // --- The presets, beside the snapshots: a few values each
+    auto *presets = new QWidget;
+    auto *pv = new QVBoxLayout(presets);
+    pv->setContentsMargins(6, 0, 0, 0);
+    auto *pbar = new QHBoxLayout;
+    pbar->addWidget(new QLabel(QStringLiteral("<b>Presets</b>")));
+    pbar->addStretch();
+    m_presetEdit = new QPushButton(QStringLiteral("Edit"));
+    m_presetEdit->setCheckable(true);
+    m_presetEdit->setToolTip(QStringLiteral("Edit mode: the values of the selected preset are underlined in the inspector "
+                                            "(green; orange once changed). Click a value's name — or Alt-click its field — "
+                                            "to put it in the preset or take it out."));
+    m_presetEdit->setStyleSheet(QStringLiteral("QPushButton:checked { background:%1; color:white; }").arg(theme::css()));
+    m_presetNew = new QPushButton(QStringLiteral("+"));
+    m_presetNew->setFixedWidth(34);
+    m_presetNew->setToolTip(QStringLiteral("A new empty preset: fill it in Edit mode, or right-click a value › Add to Preset"));
+    m_presetGo = new QPushButton(QStringLiteral("GO"));
+    m_presetGo->setStyleSheet("QPushButton { font-weight:bold; background:#2f6b3a; color:white; padding:3px 14px; }");
+    m_presetGo->setToolTip(QStringLiteral("Recall the selected preset (double-click or Enter in the list)"));
+    pbar->addWidget(m_presetEdit);
+    pbar->addWidget(m_presetNew);
+    pbar->addWidget(m_presetGo);
+    pv->addLayout(pbar);
+    m_presets = new QTreeWidget;
+    m_presets->setColumnCount(3);
+    m_presets->setHeaderLabels({QStringLiteral("#"), QStringLiteral("Name"), QStringLiteral("Fade")});
+    m_presets->setRootIsDecorated(false);
+    m_presets->setUniformRowHeights(true);
+    m_presets->setAlternatingRowColors(true);
+    m_presets->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_presets->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_presets->header()->setStretchLastSection(false);
+    m_presets->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_presets->setColumnWidth(0, 36);
+    m_presets->setColumnWidth(2, 58);
+    m_presets->setToolTip(QStringLiteral("Double-click or Enter: recall · a preset holds only the values put in it"));
+    pv->addWidget(m_presets, 1);
+    presets->setMinimumWidth(200);
+    split->addWidget(presets);
 
     // --- What the selected snapshot holds
     m_inspector = new QWidget;
@@ -287,7 +441,10 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
                                         "gets there (right)."));
     iv->addWidget(m_layers, 1);
     m_inspector->setMinimumWidth(340);
-    split->addWidget(m_inspector);
+    m_middle = new QStackedWidget;
+    m_middle->addWidget(m_inspector);
+    m_middle->addWidget(buildPresetView());
+    split->addWidget(m_middle);
 
     // --- The selected value
     m_detail = new QWidget;
@@ -296,16 +453,54 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_detail->setMinimumWidth(240);
     split->addWidget(m_detail);
     split->setStretchFactor(0, 1);
-    split->setStretchFactor(1, 2);
-    split->setStretchFactor(2, 1);
-    split->setSizes({260, 520, 300});
+    split->setStretchFactor(1, 1);
+    split->setStretchFactor(2, 2);
+    split->setStretchFactor(3, 1);
+    split->setSizes({240, 220, 480, 260});
+    connectPresets();
 
-    connect(m_list, &QTreeWidget::currentItemChanged, this, [this] {
-        if (!m_filling) showInspector(selected());
+    connect(m_list, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *it) {
+        if (m_filling) return;
+        if (it) { // a snapshot (or a group) chosen: the presets' selection goes
+            if (PresetEditor *pe = PresetEditor::instance()) pe->select(0);
+            QSignalBlocker b(m_presets);
+            m_presets->setCurrentItem(nullptr);
+            m_presets->clearSelection();
+            m_middle->setCurrentIndex(0);
+        }
+        showInspector(selected());
     });
     connect(m_list, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *it) {
-        recall(m_list->indexOfTopLevelItem(it));
+        if (it->data(0, GroupRole).toULongLong()) m_list->editItem(it, 0); // a group: renamed
+        else recall(indexOf(it));
     });
+    static_cast<SnapshotList *>(m_list)->onMove = [this](const QString &key, const QString &target, int where) {
+        moveNode(key, target, where);
+    };
+    connect(m_newGroup, &QPushButton::clicked, this, &SnapshotPanel::newGroup);
+    connect(m_list, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *it, int col) {
+        const quint64 g = it->data(0, GroupRole).toULongLong();
+        if (m_filling || !g || col != 0) return;
+        const QString name = it->text(0).trimmed();
+        editTree(QStringLiteral("Rename Group"), [&](std::vector<Engine::SnapshotNode> &t) {
+            if (Node *n = findNode(t, QStringLiteral("g%1").arg(g))) n->name = name.isEmpty() ? n->name : name;
+        });
+    });
+    // A group folded or unfolded: kept (saved), not an undo step
+    auto fold = [this](QTreeWidgetItem *it, bool open) {
+        const quint64 g = it->data(0, GroupRole).toULongLong();
+        if (m_filling || !g) return;
+        std::vector<Engine::SnapshotNode> t = m_engine->snapshotTree();
+        Node *n = findNode(t, QStringLiteral("g%1").arg(g));
+        if (!n || n->open == open) return;
+        n->open = open;
+        m_applying = true;
+        m_engine->setSnapshotTree(t);
+        m_applying = false;
+        emit edited();
+    };
+    connect(m_list, &QTreeWidget::itemExpanded, this, [fold](QTreeWidgetItem *it) { fold(it, true); });
+    connect(m_list, &QTreeWidget::itemCollapsed, this, [fold](QTreeWidgetItem *it) { fold(it, false); });
     auto *enter = new QShortcut(QKeySequence(Qt::Key_Return), m_list, nullptr, nullptr, Qt::WidgetShortcut);
     connect(enter, &QShortcut::activated, this, [this] { recall(selected()); });
     auto *del = new QShortcut(QKeySequence::Delete, m_list, nullptr, nullptr, Qt::WidgetShortcut);
@@ -314,9 +509,11 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     connect(bs, &QShortcut::activated, this, [this] { removeSnapshot(selected()); });
     connect(m_list, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         QTreeWidgetItem *it = m_list->itemAt(pos);
-        const int i = it ? m_list->indexOfTopLevelItem(it) : -1;
+        const int i = indexOf(it);
+        const quint64 group = it ? it->data(0, GroupRole).toULongLong() : 0;
         QMenu menu;
         menu.addAction(QStringLiteral("Store Current State"), this, &SnapshotPanel::store);
+        menu.addAction(QStringLiteral("New Group"), this, &SnapshotPanel::newGroup);
         if (i >= 0) {
             menu.addSeparator();
             menu.addAction(QStringLiteral("Recall"), this, [this, i] { recall(i); });
@@ -325,6 +522,32 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
                 m_name->setFocus();
                 m_name->selectAll();
             });
+        }
+        if (it) { // Add to Group ▸ every group (not itself, nor one inside it), or back to the top level
+            const QString key = nodeKey(it);
+            std::vector<Engine::SnapshotNode> tree = m_engine->snapshotTree();
+            const Node *self = findNode(tree, key);
+            std::vector<std::pair<quint64, QString>> groups;
+            listGroups(tree, QString(), groups);
+            QMenu *add = menu.addMenu(QStringLiteral("Add to Group"));
+            const bool nested = it->parent() != nullptr;
+            QAction *top = add->addAction(QStringLiteral("Top Level"), this, [this, key] { moveNode(key, QString(), 2); });
+            top->setEnabled(nested);
+            add->addSeparator();
+            for (const auto &[g, name] : groups) {
+                const QString gk = QStringLiteral("g%1").arg(g);
+                std::vector<Node> inside = self && !self->snapshot ? self->children : std::vector<Node>();
+                if (gk == key || (self && !self->snapshot && findNode(inside, gk))) continue;
+                add->addAction(name, this, [this, key, gk] { moveNode(key, gk, 0); });
+            }
+            add->setEnabled(nested || !groups.empty());
+        }
+        if (group) {
+            menu.addSeparator();
+            menu.addAction(QStringLiteral("Rename Group"), this, [this, it] { m_list->editItem(it, 0); });
+            menu.addAction(QStringLiteral("Delete Group (keep its snapshots)"), this, [this, group] { removeGroup(group); });
+        }
+        if (i >= 0) {
             menu.addSeparator();
             menu.addAction(QStringLiteral("Delete"), this, [this, i] { removeSnapshot(i); });
         }
@@ -351,7 +574,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
         m_applying = true;
         m_engine->setSnapshot(i, m);
         m_applying = false;
-        if (QTreeWidgetItem *it = m_list->topLevelItem(i)) it->setText(2, QStringLiteral("%1 s").arg(v, 0, 'f', 1));
+        if (QTreeWidgetItem *it = itemOf(i)) it->setText(2, QStringLiteral("%1 s").arg(v, 0, 'f', 1));
         emit edited();
     });
     connect(m_layers, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *it, int col) {
@@ -385,38 +608,148 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     refresh();
 }
 
-int SnapshotPanel::selected() const
+int SnapshotPanel::selected() const { return indexOf(m_list->currentItem()); }
+
+int SnapshotPanel::indexOf(QTreeWidgetItem *it) const
 {
-    QTreeWidgetItem *it = m_list->currentItem();
-    return it ? m_list->indexOfTopLevelItem(it) : -1;
+    if (!it || it->data(0, GroupRole).toULongLong()) return -1;
+    return m_engine->indexOfSnapshot(it->data(0, SnapshotRole).toULongLong());
+}
+
+QTreeWidgetItem *SnapshotPanel::itemOf(int i) const
+{
+    const quint64 id = m_engine->snapshot(i).id;
+    if (!id) return nullptr;
+    for (QTreeWidgetItemIterator it(m_list); *it; ++it)
+        if ((*it)->data(0, SnapshotRole).toULongLong() == id) return *it;
+    return nullptr;
+}
+
+// The snapshots' tree changed by `fn`, one undo step (nothing when it is the same)
+void SnapshotPanel::editTree(const QString &text, const std::function<void(std::vector<Engine::SnapshotNode> &)> &fn)
+{
+    const std::vector<Engine::SnapshotNode> before = m_engine->snapshotTree();
+    std::vector<Engine::SnapshotNode> after = before;
+    fn(after);
+    if (after == before) return;
+    m_undo->push(new cmd::SetSnapshotTree(m_engine, before, after, text));
+    emit edited();
+}
+
+// A row moved: where = -1 before `target`, 1 after it, 0 into it (a group), 2 at the end of the top level
+void SnapshotPanel::moveNode(const QString &key, const QString &target, int where)
+{
+    if (key == target) return;
+    editTree(QStringLiteral("Move Snapshot"), [&](std::vector<Engine::SnapshotNode> &t) {
+        const Node *moved = findNode(t, key);
+        if (!moved) return;
+        if (!moved->snapshot && !target.isEmpty()) { // a group never goes inside itself
+            std::vector<Node> inside = moved->children;
+            if (findNode(inside, target)) return;
+        }
+        Node n;
+        takeNode(t, key, &n);
+        Node *into = target.isEmpty() ? nullptr : findNode(t, target);
+        if (target.isEmpty() || where == 2 || !into) {
+            t.push_back(n);
+        } else if (where == 0 && !into->snapshot) {
+            into->children.push_back(n);
+            into->open = true;
+        } else {
+            insertBeside(t, target, n, where >= 0);
+        }
+    });
+}
+
+void SnapshotPanel::newGroup()
+{
+    const quint64 g = m_engine->newSnapshotGroupId();
+    std::vector<std::pair<quint64, QString>> groups;
+    listGroups(m_engine->snapshotTree(), QString(), groups);
+    editTree(QStringLiteral("New Group"), [&](std::vector<Engine::SnapshotNode> &t) {
+        Node n;
+        n.group = g;
+        n.name = QStringLiteral("Group %1").arg(groups.size() + 1);
+        t.push_back(n);
+    });
+    for (QTreeWidgetItemIterator it(m_list); *it; ++it)
+        if ((*it)->data(0, GroupRole).toULongLong() == g) {
+            m_list->setCurrentItem(*it);
+            m_list->editItem(*it, 0);
+        }
+}
+
+// A group taken away: what it holds goes where it was
+void SnapshotPanel::removeGroup(quint64 group)
+{
+    editTree(QStringLiteral("Delete Group"), [&](std::vector<Engine::SnapshotNode> &t) {
+        std::function<bool(std::vector<Node> &)> drop = [&](std::vector<Node> &nodes) {
+            for (size_t k = 0; k < nodes.size(); ++k) {
+                if (!nodes[k].snapshot && nodes[k].group == group) {
+                    std::vector<Node> kids = nodes[k].children;
+                    nodes.erase(nodes.begin() + long(k));
+                    nodes.insert(nodes.begin() + long(k), kids.begin(), kids.end());
+                    return true;
+                }
+                if (!nodes[k].snapshot && drop(nodes[k].children)) return true;
+            }
+            return false;
+        };
+        drop(t);
+    });
 }
 
 void SnapshotPanel::refresh()
 {
     if (m_applying) return; // our own edit: the panel already shows it
-    const int keep = selected();
+    const QString keep = nodeKey(m_list->currentItem());
     m_filling = true;
     m_list->clear();
     const int n = m_engine->snapshotCount();
     if (m_active >= n) m_active = -1;
-    for (int i = 0; i < n; ++i) {
-        const Engine::Snapshot m = m_engine->snapshot(i);
-        auto *it = new QTreeWidgetItem(m_list, {QString::number(i + 1), m.name, QStringLiteral("%1 s").arg(m.fade, 0, 'f', 1)});
-        it->setData(0, SnapshotRole, m.id);
-        it->setTextAlignment(0, Qt::AlignRight | Qt::AlignVCenter);
-        it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
-        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
-        if (i == m_active) { // last recalled: ▶, bold, green — not the accent, which is the selection's
-            it->setText(0, QStringLiteral("▶ %1").arg(i + 1));
-            QFont f = it->font(1);
-            f.setBold(true);
-            for (int c = 0; c < 3; ++c) {
-                it->setFont(c, f);
-                it->setForeground(c, kLiveSnapshot);
+    QTreeWidgetItem *current = nullptr;
+    std::function<void(const std::vector<Engine::SnapshotNode> &, QTreeWidgetItem *)> add =
+        [&](const std::vector<Engine::SnapshotNode> &nodes, QTreeWidgetItem *parent) {
+            for (const Engine::SnapshotNode &node : nodes) {
+                QTreeWidgetItem *it = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(m_list);
+                if (!node.snapshot) { // a group: its name across the row, bold
+                    it->setText(0, node.name);
+                    it->setData(0, GroupRole, node.group);
+                    it->setFirstColumnSpanned(true);
+                    QFont f = it->font(0);
+                    f.setBold(true);
+                    it->setFont(0, f);
+                    it->setForeground(0, QColor(0xc8, 0xc8, 0xd0));
+                    it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled |
+                                 Qt::ItemIsEditable);
+                    it->setToolTip(0, QStringLiteral("Group — drag snapshots into it; double-click to rename"));
+                    add(node.children, it);
+                    it->setExpanded(node.open);
+                } else {
+                    const int i = m_engine->indexOfSnapshot(node.snapshot);
+                    const Engine::Snapshot m = m_engine->snapshot(i);
+                    it->setText(0, QString::number(i + 1));
+                    it->setText(1, m.name);
+                    it->setText(2, QStringLiteral("%1 s").arg(m.fade, 0, 'f', 1));
+                    it->setData(0, SnapshotRole, m.id);
+                    it->setTextAlignment(0, Qt::AlignRight | Qt::AlignVCenter);
+                    it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+                    it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
+                    if (i == m_active) { // last recalled: ▶, bold, green — not the accent, which is the selection's
+                        it->setText(0, QStringLiteral("▶ %1").arg(i + 1));
+                        QFont f = it->font(1);
+                        f.setBold(true);
+                        for (int c = 0; c < 3; ++c) {
+                            it->setFont(c, f);
+                            it->setForeground(c, kLiveSnapshot);
+                        }
+                    }
+                }
+                if (nodeKey(it) == keep) current = it;
             }
-        }
-    }
-    if (keep >= 0 && keep < n) m_list->setCurrentItem(m_list->topLevelItem(keep));
+        };
+    add(m_engine->snapshotTree(), nullptr);
+    if (current) m_list->setCurrentItem(current);
     m_filling = false;
     showInspector(selected());
 }
@@ -990,8 +1323,9 @@ void SnapshotPanel::store()
     m.layers = m_engine->captureLayers();
     m.composition = m_engine->captureComposition();
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    const int i = m_engine->addSnapshot(m);
-    m_list->setCurrentItem(m_list->topLevelItem(i));
+    const int sel = selected();
+    const int i = m_engine->addSnapshot(m, sel >= 0 ? sel + 1 : -1); // after the selected one, in its group
+    if (QTreeWidgetItem *it = itemOf(i)) m_list->setCurrentItem(it);
     emit edited();
 }
 
@@ -1112,4 +1446,339 @@ void SnapshotPanel::setInclusion(int i, quint64 id, bool included)
     m_engine->setSnapshot(i, m);
     m_applying = false;
     emit edited();
+}
+
+// ---------------------------------------------------------------------------
+// Presets
+
+namespace {
+QString presetValueText(const QJsonValue &v)
+{
+    if (v.isBool()) return v.toBool() ? QStringLiteral("On") : QStringLiteral("Off");
+    if (v.isDouble()) return QString::number(v.toDouble(), 'g', 5);
+    if (v.isString()) return v.toString();
+    return QStringLiteral("—");
+}
+} // namespace
+
+QWidget *SnapshotPanel::buildPresetView()
+{
+    auto *w = new QWidget;
+    auto *v = new QVBoxLayout(w);
+    v->setContentsMargins(6, 0, 0, 0);
+    m_presetTitle = new QLabel;
+    v->addWidget(m_presetTitle);
+    auto *row = new QHBoxLayout;
+    m_presetName = new QLineEdit;
+    m_presetName->setPlaceholderText(QStringLiteral("Name"));
+    m_presetFade = new NumberBox;
+    m_presetFade->setRange(0, 600);
+    m_presetFade->setDecimals(1);
+    m_presetFade->setSingleStep(0.5);
+    m_presetFade->setSuffix(QStringLiteral(" s"));
+    m_presetFade->setKeyboardTracking(false);
+    m_presetFade->setToolTip(QStringLiteral("Fade: the values set to Follow get to the preset's in this time"));
+    row->addWidget(m_presetName, 2);
+    row->addWidget(new ResetLabel(QStringLiteral("Fade"), [this] { m_presetFade->setValue(1.0); }));
+    row->addWidget(m_presetFade, 1);
+    v->addLayout(row);
+    auto *buttons = new QHBoxLayout;
+    m_presetUpdate = new QPushButton(QStringLiteral("Update Values"));
+    m_presetUpdate->setToolTip(QStringLiteral("Its values as they are now (the same values: none added, none taken out)"));
+    m_presetDelete = new QPushButton(QStringLiteral("Delete"));
+    buttons->addWidget(m_presetUpdate);
+    buttons->addWidget(m_presetDelete);
+    v->addLayout(buttons);
+    m_presetValues = new QTreeWidget;
+    m_presetValues->setColumnCount(3);
+    m_presetValues->setHeaderLabels({QStringLiteral("Layer / value"), QStringLiteral("Value"), QStringLiteral("Time")});
+    m_presetValues->setRootIsDecorated(true);
+    m_presetValues->setIndentation(12);
+    m_presetValues->setAlternatingRowColors(true);
+    m_presetValues->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_presetValues->header()->setStretchLastSection(false);
+    m_presetValues->setColumnWidth(1, 96);
+    m_presetValues->setColumnWidth(2, 84);
+    m_presetValues->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_presetValues->setToolTip(QStringLiteral("What the preset holds. Time: Follow (the preset's fade), 0 (a cut) or seconds "
+                                              "of its own. Delete: takes the value out."));
+    v->addWidget(m_presetValues, 1);
+    return w;
+}
+
+int SnapshotPanel::selectedPreset() const
+{
+    QTreeWidgetItem *it = m_presets->currentItem();
+    return it ? m_engine->indexOfPreset(it->data(0, PresetRole).toULongLong()) : -1;
+}
+
+void SnapshotPanel::connectPresets()
+{
+    PresetEditor *pe = PresetEditor::instance();
+    connect(m_engine, &Engine::presetsChanged, this, &SnapshotPanel::refreshPresets);
+    connect(m_presetNew, &QPushButton::clicked, this, [this] {
+        quint64 id = 0;
+        cmd::editPresets(m_undo, m_engine, QStringLiteral("New Preset"), [&](std::vector<Engine::Preset> &all) {
+            Engine::Preset p;
+            for (const Engine::Preset &x : all) id = std::max(id, x.id);
+            p.id = ++id;
+            p.name = QStringLiteral("Preset %1").arg(all.size() + 1);
+            all.push_back(p);
+        });
+        selectPreset(id);
+        emit edited();
+    });
+    connect(m_presetGo, &QPushButton::clicked, this, [this] { recallPreset(selectedPreset()); });
+    connect(m_presets, &QTreeWidget::itemDoubleClicked, this, [this] { recallPreset(selectedPreset()); });
+    auto *enter = new QShortcut(QKeySequence(Qt::Key_Return), m_presets, nullptr, nullptr, Qt::WidgetShortcut);
+    connect(enter, &QShortcut::activated, this, [this] { recallPreset(selectedPreset()); });
+    auto removePreset = [this] {
+        const int i = selectedPreset();
+        if (i < 0) return;
+        const quint64 id = m_engine->preset(i).id;
+        cmd::editPresets(m_undo, m_engine, QStringLiteral("Delete Preset"), [id](std::vector<Engine::Preset> &all) {
+            all.erase(std::remove_if(all.begin(), all.end(), [id](const Engine::Preset &p) { return p.id == id; }), all.end());
+        });
+        emit edited();
+    };
+    for (auto key : {QKeySequence(QKeySequence::Delete), QKeySequence(Qt::Key_Backspace)}) {
+        auto *del = new QShortcut(key, m_presets, nullptr, nullptr, Qt::WidgetShortcut);
+        connect(del, &QShortcut::activated, this, removePreset);
+    }
+    connect(m_presetDelete, &QPushButton::clicked, this, removePreset);
+    connect(m_presets, &QTreeWidget::currentItemChanged, this, [this, pe](QTreeWidgetItem *it) {
+        if (m_filling) return;
+        const quint64 id = it ? it->data(0, PresetRole).toULongLong() : 0;
+        if (pe) pe->select(id);
+        if (it) {
+            QSignalBlocker b(m_list);
+            m_list->setCurrentItem(nullptr);
+            m_list->clearSelection();
+            m_middle->setCurrentIndex(1);
+        }
+        showPreset();
+    });
+    connect(m_presets, &QTreeWidget::customContextMenuRequested, this, [this, removePreset](const QPoint &pos) {
+        QMenu menu;
+        menu.addAction(QStringLiteral("New Preset"), m_presetNew, &QPushButton::click);
+        if (m_presets->itemAt(pos)) {
+            menu.addSeparator();
+            menu.addAction(QStringLiteral("Recall"), this, [this] { recallPreset(selectedPreset()); });
+            menu.addAction(QStringLiteral("Rename"), this, [this] {
+                m_presetName->setFocus();
+                m_presetName->selectAll();
+            });
+            menu.addSeparator();
+            menu.addAction(QStringLiteral("Delete"), this, removePreset);
+        }
+        menu.exec(m_presets->viewport()->mapToGlobal(pos));
+    });
+    if (pe) {
+        connect(m_presetEdit, &QPushButton::toggled, pe, &PresetEditor::setEditing);
+        connect(pe, &PresetEditor::editingChanged, this, [this](bool on) {
+            QSignalBlocker b(m_presetEdit);
+            m_presetEdit->setChecked(on);
+        });
+        connect(pe, &PresetEditor::selectedChanged, this, [this](quint64 id) {
+            if (m_engine->indexOfPreset(id) >= 0) selectPreset(id);
+        });
+    } else {
+        m_presetEdit->setEnabled(false);
+    }
+    auto edit = [this](const QString &text, const QString &merge, const std::function<void(Engine::Preset &)> &fn) {
+        const int i = selectedPreset();
+        if (i < 0 || m_filling) return;
+        const quint64 id = m_engine->preset(i).id;
+        cmd::editPresets(
+            m_undo, m_engine, text,
+            [&](std::vector<Engine::Preset> &all) {
+                for (Engine::Preset &p : all)
+                    if (p.id == id) fn(p);
+            },
+            merge);
+        emit edited();
+    };
+    connect(m_presetName, &QLineEdit::editingFinished, this, [this, edit] {
+        const QString name = m_presetName->text();
+        edit(QStringLiteral("Rename Preset"), QString(), [&](Engine::Preset &p) { p.name = name; });
+    });
+    connect(m_presetFade, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [edit](double v) {
+        edit(QStringLiteral("Preset Fade"), QStringLiteral("presetFade"), [&](Engine::Preset &p) { p.fade = v; });
+    });
+    connect(m_presetUpdate, &QPushButton::clicked, this, [this, edit] {
+        edit(QStringLiteral("Update Preset"), QString(), [this](Engine::Preset &p) {
+            for (Engine::PresetValue &v : p.values) {
+                const QJsonValue now = m_engine->parameterValue(v.layer, v.path);
+                if (!now.isUndefined()) v.value = now;
+            }
+        });
+    });
+    // A value taken out (Delete, or its menu); its easing
+    auto removeValues = [this, edit] {
+        QList<QPair<quint64, QString>> out;
+        for (QTreeWidgetItem *it : m_presetValues->selectedItems()) {
+            if (it->data(0, KeyRole).toString().isEmpty()) { // a layer: all its values
+                for (int c = 0; c < it->childCount(); ++c)
+                    out.append({it->child(c)->data(0, IdRole).toULongLong(), it->child(c)->data(0, KeyRole).toString()});
+            } else {
+                out.append({it->data(0, IdRole).toULongLong(), it->data(0, KeyRole).toString()});
+            }
+        }
+        if (out.isEmpty()) return;
+        edit(QStringLiteral("Remove from Preset"), QString(), [&](Engine::Preset &p) {
+            auto &v = p.values;
+            v.erase(std::remove_if(v.begin(), v.end(), [&](const Engine::PresetValue &x) { return out.contains({x.layer, x.path}); }),
+                    v.end());
+        });
+    };
+    m_presetValues->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    for (auto key : {QKeySequence(QKeySequence::Delete), QKeySequence(Qt::Key_Backspace)}) {
+        auto *del = new QShortcut(key, m_presetValues, nullptr, nullptr, Qt::WidgetShortcut);
+        connect(del, &QShortcut::activated, this, removeValues);
+    }
+    connect(m_presetValues, &QTreeWidget::customContextMenuRequested, this, [this, edit, removeValues](const QPoint &pos) {
+        QTreeWidgetItem *it = m_presetValues->itemAt(pos);
+        if (!it) return;
+        QMenu menu;
+        const QString path = it->data(0, KeyRole).toString();
+        if (!path.isEmpty()) {
+            const quint64 layer = it->data(0, IdRole).toULongLong();
+            QMenu *ease = menu.addMenu(QStringLiteral("Easing"));
+            const QStringList keys = Engine::easingKeys(), names = Engine::easingNames();
+            const QString current = it->data(1, KeyRole).toString();
+            for (int k = -1; k < keys.size(); ++k) {
+                const QString key = k < 0 ? QString() : keys[k];
+                QAction *a = ease->addAction(k < 0 ? QStringLiteral("Default") : names[k], this, [edit, layer, path, key] {
+                    edit(QStringLiteral("Preset Easing"), QString(), [&](Engine::Preset &p) {
+                        const int i = p.indexOf(layer, path);
+                        if (i >= 0) p.values[size_t(i)].easing = key;
+                    });
+                });
+                a->setCheckable(true);
+                a->setChecked(key == current);
+            }
+        }
+        menu.addAction(QStringLiteral("Remove from Preset"), this, removeValues);
+        menu.exec(m_presetValues->viewport()->mapToGlobal(pos));
+    });
+    refreshPresets();
+}
+
+void SnapshotPanel::selectPreset(quint64 id)
+{
+    for (int k = 0; k < m_presets->topLevelItemCount(); ++k)
+        if (m_presets->topLevelItem(k)->data(0, PresetRole).toULongLong() == id) {
+            if (m_presets->currentItem() != m_presets->topLevelItem(k)) m_presets->setCurrentItem(m_presets->topLevelItem(k));
+            return;
+        }
+}
+
+void SnapshotPanel::refreshPresets()
+{
+    const quint64 keep = m_presets->currentItem() ? m_presets->currentItem()->data(0, PresetRole).toULongLong() : 0;
+    m_filling = true;
+    m_presets->clear();
+    QTreeWidgetItem *current = nullptr;
+    const std::vector<Engine::Preset> all = m_engine->presets();
+    for (size_t i = 0; i < all.size(); ++i) {
+        const Engine::Preset &p = all[i];
+        auto *it = new QTreeWidgetItem(m_presets, {QString::number(i + 1), p.name, QStringLiteral("%1 s").arg(p.fade, 0, 'f', 1)});
+        it->setData(0, PresetRole, p.id);
+        it->setTextAlignment(0, Qt::AlignRight | Qt::AlignVCenter);
+        it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+        it->setToolTip(1, QStringLiteral("%1 value(s)").arg(p.values.size()));
+        if (p.id == keep) current = it;
+    }
+    if (current) m_presets->setCurrentItem(current);
+    m_filling = false;
+    if (m_middle->currentIndex() == 1) showPreset();
+}
+
+void SnapshotPanel::showPreset()
+{
+    const int i = selectedPreset();
+    m_filling = true;
+    m_presetValues->clear();
+    const bool valid = i >= 0;
+    for (QWidget *w : std::initializer_list<QWidget *>{m_presetName, m_presetFade, m_presetValues, m_presetGo, m_presetUpdate, m_presetDelete})
+        w->setEnabled(valid);
+    if (!valid) {
+        m_presetTitle->setText(QStringLiteral("<span style='color:#888'>No preset selected.<br>+ makes one.</span>"));
+        m_presetName->clear();
+        m_filling = false;
+        return;
+    }
+    const Engine::Preset p = m_engine->preset(i);
+    m_presetTitle->setText(QStringLiteral("<b>Preset %1</b> <span style='color:#888'>— %2 value(s). Edit: click a value's "
+                                          "name in the inspector to add it or take it out.</span>")
+                               .arg(i + 1)
+                               .arg(p.values.size()));
+    m_presetName->setText(p.name);
+    m_presetFade->setValue(p.fade);
+    // By layer, in the order of the list; the composition first
+    std::map<quint64, QTreeWidgetItem *> layers;
+    auto layerItem = [&](quint64 id) {
+        auto found = layers.find(id);
+        if (found != layers.end()) return found->second;
+        QString name;
+        if (!id) {
+            name = QStringLiteral("Composition");
+        } else {
+            Engine::Lock lk(&m_engine->mutex());
+            const Layer *l = m_engine->layer(m_engine->indexOfId(id));
+            name = l ? l->name : QStringLiteral("(gone)");
+        }
+        auto *it = new QTreeWidgetItem(m_presetValues, {name});
+        QFont f = it->font(0);
+        f.setBold(true);
+        it->setFont(0, f);
+        it->setData(0, IdRole, id);
+        it->setExpanded(true);
+        layers[id] = it;
+        return it;
+    };
+    for (const Engine::PresetValue &v : p.values) {
+        ParamInfo info;
+        const bool known = m_engine->parameterInfo(v.layer, v.path, &info);
+        const QString label = known ? info.label : v.path;
+        auto *it = new QTreeWidgetItem(layerItem(v.layer), {label, presetValueText(v.value)});
+        it->setData(0, IdRole, v.layer);
+        it->setData(0, KeyRole, v.path);
+        it->setData(1, KeyRole, v.easing);
+        it->setToolTip(0, v.path);
+        if (!known) it->setForeground(0, QColor(255, 180, 90));
+        auto *time = new NumberBox;
+        time->setRange(-1, 600);
+        time->setDecimals(1);
+        time->setSingleStep(0.5);
+        time->setSpecialValueText(QStringLiteral("Follow"));
+        time->setSuffix(QStringLiteral(" s"));
+        time->setKeyboardTracking(false);
+        time->setValue(v.time < 0 ? -1 : v.time);
+        time->setToolTip(QStringLiteral("Follow: the preset's fade · 0: a cut · or seconds of its own"));
+        const quint64 layer = v.layer, id = p.id;
+        const QString path = v.path;
+        connect(time, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, layer, id, path](double t) {
+            cmd::editPresets(
+                m_undo, m_engine, QStringLiteral("Preset Value Time"),
+                [&](std::vector<Engine::Preset> &all) {
+                    for (Engine::Preset &x : all) {
+                        if (x.id != id) continue;
+                        const int k = x.indexOf(layer, path);
+                        if (k >= 0) x.values[size_t(k)].time = t < 0 ? -1 : t;
+                    }
+                },
+                QStringLiteral("presetTime:%1:%2").arg(layer).arg(path));
+            emit edited();
+        });
+        m_presetValues->setItemWidget(it, 2, time);
+    }
+    m_filling = false;
+}
+
+void SnapshotPanel::recallPreset(int i)
+{
+    if (i < 0 || i >= m_engine->presetCount()) return;
+    m_undo->push(new cmd::RecallPreset(m_engine, m_engine->preset(i).id));
+    emit recalled();
 }

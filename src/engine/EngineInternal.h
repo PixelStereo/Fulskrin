@@ -25,6 +25,11 @@ inline QString animWaveKey(AnimWave w) { return animWaveKeys().value(int(w)); }
 QJsonObject layerAnimToJson(const Animation &a);
 Animation layerAnimFromJson(const QJsonObject &o, quint64 layer);
 AnimState animStateFromJson(const QJsonObject &o); // its transport in a file (none: the ones on play)
+// Presets and the snapshots' tree in a project (Presets.cpp)
+QJsonObject presetToJson(const Engine::Preset &p);
+Engine::Preset presetFromJson(const QJsonObject &o);
+QJsonArray snapshotTreeToJson(const std::vector<Engine::SnapshotNode> &nodes);
+std::vector<Engine::SnapshotNode> snapshotTreeFromJson(const QJsonArray &a);
 
 struct Engine::Garbage {
     std::unique_ptr<VideoDecoder> video;

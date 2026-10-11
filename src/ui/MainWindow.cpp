@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "PresetEditor.h"
 #include "Commands.h"
 #include "Engine.h"
 #include "LayerInspector.h"
@@ -71,6 +72,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     setAcceptDrops(true);
     resize(1600, 980);
     m_undo = new QUndoStack(this);
+    new PresetEditor(m_engine, m_undo, this); // presets: the selected one, Edit mode (PresetEditor::instance())
     m_undo->setUndoLimit(500);
 
     QSettings s;

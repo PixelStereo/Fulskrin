@@ -368,4 +368,72 @@ void SetLayerAnim::apply(const std::optional<Animation> &a)
     m_e->setLayerAnim(m_layer, m_param, a ? &*a : nullptr, m_index);
 }
 
+// --- Presets -----------------------------------------------------------------
+
+RecallPreset::RecallPreset(Engine *e, quint64 preset) : m_e(e), m_preset(preset)
+{
+    const Engine::Preset p = e->preset(e->indexOfPreset(preset));
+    for (const Engine::PresetValue &v : p.values) m_before.push_back(e->presetValue(v.layer, v.path));
+    setText(QStringLiteral("Recall Preset \"%1\"").arg(p.name));
+}
+
+void RecallPreset::undo()
+{
+    for (const Engine::PresetValue &v : m_before)
+        if (!v.value.isUndefined()) m_e->setParameter(v.layer, v.path, v.value);
+}
+
+void RecallPreset::redo()
+{
+    const int i = m_e->indexOfPreset(m_preset);
+    if (i < 0) return;
+    if (m_first) {
+        m_first = false;
+        m_e->recallPreset(i);
+        return;
+    }
+    for (const Engine::PresetValue &v : m_e->preset(i).values) m_e->setParameter(v.layer, v.path, v.value);
+}
+
+static bool samePresets(const std::vector<Engine::Preset> &a, const std::vector<Engine::Preset> &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t k = 0; k < a.size(); ++k) {
+        const Engine::Preset &x = a[k], &y = b[k];
+        if (x.id != y.id || x.name != y.name || x.fade != y.fade || x.values.size() != y.values.size()) return false;
+        for (size_t v = 0; v < x.values.size(); ++v) {
+            const Engine::PresetValue &p = x.values[v], &q = y.values[v];
+            if (p.layer != q.layer || p.path != q.path || p.value != q.value || p.time != q.time || p.easing != q.easing)
+                return false;
+        }
+    }
+    return true;
+}
+
+SetPresets::SetPresets(Engine *e, std::vector<Engine::Preset> before, std::vector<Engine::Preset> after, const QString &text,
+                       const QString &mergeKey)
+    : m_e(e), m_before(std::move(before)), m_after(std::move(after)), m_mergeKey(mergeKey), m_time(nowMs())
+{
+    setText(text);
+}
+
+bool SetPresets::mergeWith(const QUndoCommand *other)
+{
+    auto *o = static_cast<const SetPresets *>(other);
+    if (o->m_mergeKey != m_mergeKey || o->m_time - m_time > kMergeWindowMs) return false;
+    m_after = o->m_after;
+    m_time = o->m_time;
+    return true;
+}
+
+void editPresets(QUndoStack *undo, Engine *e, const QString &text, const std::function<void(std::vector<Engine::Preset> &)> &fn,
+                 const QString &mergeKey)
+{
+    const std::vector<Engine::Preset> before = e->presets();
+    std::vector<Engine::Preset> after = before;
+    fn(after);
+    if (samePresets(before, after)) return;
+    undo->push(new SetPresets(e, before, after, text, mergeKey));
+}
+
 } // namespace cmd

@@ -361,7 +361,7 @@ void ParamPanel::attachAnimate(AnimateMenu *menu)
             for (QWidget *w : r.all) menu->attach(w, {speed});
             continue;
         }
-        const QString p = base + r.input;
+        const QString p = base + osc::safeName(r.input);
         // Every number this input has (only the ones declared animatable are offered)
         const QStringList all{p, p + "/x", p + "/y", p + "/r", p + "/g", p + "/b", p + "/a"};
         for (QWidget *w : r.all) menu->attach(w, all);

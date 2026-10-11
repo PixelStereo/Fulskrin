@@ -1,4 +1,5 @@
 #include "ParamAnimPanel.h"
+#include "PresetEditor.h"
 #include "Commands.h"
 #include "Widgets.h"
 
@@ -257,15 +258,17 @@ AnimateMenu::AnimateMenu(Engine *e, QUndoStack *undo, quint64 layer, std::functi
 void AnimateMenu::attach(QWidget *w, const QStringList &paths)
 {
     if (!w) return;
+    // Any stored value can go in a preset; the numbers declared animatable on this layer (Parameter.h) can be animated
+    if (PresetEditor *pe = PresetEditor::instance()) pe->track(w, m_layer, paths);
     QStringList offered;
     for (const QString &p : paths)
-        if (m_animatable.contains(p)) offered << p; // declared animatable on this layer
-    if (offered.isEmpty()) return;
+        if (m_animatable.contains(p)) offered << p;
+    w->setProperty("valuePaths", paths);
     w->setProperty("animPaths", offered);
     w->installEventFilter(this);
     for (QWidget *c : w->findChildren<QWidget *>()) c->installEventFilter(this);
     auto *label = qobject_cast<QLabel *>(w);
-    if (!label) return;
+    if (!label || offered.isEmpty()) return;
     QString tip = label->toolTip();
     for (const QString &p : offered)
         if (m_animated.contains(p)) {
@@ -273,7 +276,7 @@ void AnimateMenu::attach(QWidget *w, const QStringList &paths)
             tip += QStringLiteral("\nAnimated (Anim tab)");
             break;
         }
-    label->setToolTip(tip + QStringLiteral("\nRight-click: animate"));
+    label->setToolTip(tip + QStringLiteral("\nRight-click: animate, presets"));
 }
 
 void AnimateMenu::attach(std::initializer_list<QWidget *> ws, const QStringList &paths)
@@ -285,9 +288,9 @@ bool AnimateMenu::eventFilter(QObject *o, QEvent *e)
 {
     if (e->type() != QEvent::ContextMenu) return false;
     auto *w = qobject_cast<QWidget *>(o);
-    while (w && !w->property("animPaths").isValid()) w = w->parentWidget();
+    while (w && !w->property("valuePaths").isValid()) w = w->parentWidget();
     if (!w || !w->isEnabled()) return false;
-    const QStringList paths = w->property("animPaths").toStringList();
+    const QStringList paths = w->property("animPaths").toStringList(), values = w->property("valuePaths").toStringList();
     // Shown without waiting here (no event loop inside this event): the menu goes with the widget, should the
     // inspector be rebuilt meanwhile
     auto *menu = new QMenu(w);
@@ -300,6 +303,11 @@ bool AnimateMenu::eventFilter(QObject *o, QEvent *e)
                                        (m_animated.contains(p) ? QStringLiteral("  ∿") : QString()));
             paramanim::fillMenu(sub, m_e, m_undo, m_layer, p, w, m_edit);
         }
+    }
+    if (PresetEditor *pe = PresetEditor::instance()) pe->fillMenu(menu, m_layer, values);
+    if (menu->isEmpty()) {
+        delete menu;
+        return false;
     }
     menu->popup(static_cast<QContextMenuEvent *>(e)->globalPos());
     return true;

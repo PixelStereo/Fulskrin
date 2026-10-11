@@ -63,6 +63,7 @@ add_library(fulskrin_engine STATIC
   src/engine/Snapshots.cpp
   src/engine/Sequencer.cpp
   src/engine/Publishing.cpp
+  src/engine/Presets.cpp
   src/engine/Animations.cpp
   src/engine/Parameter.cpp
   src/engine/LayerParams.cpp
@@ -184,6 +185,7 @@ set(APP_SOURCES
   src/ui/MainWindow.cpp
   src/ui/LayerInspector.cpp
   src/ui/ParamPanel.cpp
+  src/ui/PresetEditor.cpp
   src/ui/MappingView.cpp
   src/ui/OutputWindow.cpp
   src/ui/GlDraw.cpp
