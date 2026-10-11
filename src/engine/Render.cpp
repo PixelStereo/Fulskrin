@@ -105,7 +105,7 @@ static QImage renderTextLayer(const Layer &l, const QString &text)
     }
     drawOutlined(l.text.outlineColor, l.text.color, 0, 0, true);
     painter.end();
-    return img.convertToFormat(QImage::Format_RGBA8888).mirrored(false, true);
+    return flippedVertically(img.convertToFormat(QImage::Format_RGBA8888));
 }
 
 void Engine::drawQuad()
@@ -839,7 +839,7 @@ void Engine::readSourcePreview()
             memcpy(img.bits(), p, size_t(bytes));
             f->glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
             std::lock_guard<std::mutex> lk(m_previewMutex);
-            m_previewImage = img.mirrored(false, true);
+            m_previewImage = flippedVertically(img);
             m_previewImageId = m_previewPboId;
         }
         f->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
@@ -911,7 +911,7 @@ QImage Engine::grabViewport(quint64 viewport)
             f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
         }
     });
-    return img.mirrored(false, true);
+    return flippedVertically(img);
 }
 
 QImage Engine::grabOutput()
@@ -927,7 +927,7 @@ QImage Engine::grabOutput()
         f->glReadPixels(0, 0, o.w, o.h, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
         f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
     });
-    return img.mirrored(false, true);
+    return flippedVertically(img);
 }
 
 QImage Engine::grabLayerSource(int index)
@@ -947,7 +947,7 @@ QImage Engine::grabLayerSource(int index)
         f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
         t.destroy();
     });
-    return img.mirrored(false, true);
+    return flippedVertically(img);
 }
 
 quint64 Engine::videoFramesShown(int index) const

@@ -2,6 +2,7 @@
 // Small OpenGL building blocks shared by the whole engine.
 // The engine targets OpenGL 3.3 core (macOS provides 4.1 core, Windows/Linux 3.3+).
 
+#include <QImage>
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
 #include <QString>
@@ -17,6 +18,17 @@
 #endif
 
 inline QOpenGLExtraFunctions *gl() { return QOpenGLContext::currentContext()->extraFunctions(); }
+
+// Upside down: images (top row first) to and from textures (bottom row first). QImage::mirrored is deprecated
+// since Qt 6.13, flipped exists since Qt 6.9.
+inline QImage flippedVertically(const QImage &img)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+    return img.flipped(Qt::Vertical);
+#else
+    return img.mirrored(false, true);
+#endif
+}
 
 // Compiles and links a program. Returns 0 on failure (log filled in).
 GLuint compileProgram(const QString &vs, const QString &fs, QString *log);

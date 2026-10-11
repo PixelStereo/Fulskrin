@@ -545,7 +545,7 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
                     f->glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, gpu.bits());
                     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
                     vt.destroy();
-                    const Diff df = compare(gpu.mirrored(false, true), ref, alpha);
+                    const Diff df = compare(flippedVertically(gpu), ref, alpha);
                     if (path == 0)
                         std::printf("      %-12s %-30s max %3d  mean %.2f\n", fm.name, qPrintable(L->description), df.max, df.mean);
                     // Chroma subsampled by 4 (4:1:0, 4:1:1): interpolations differ a little more

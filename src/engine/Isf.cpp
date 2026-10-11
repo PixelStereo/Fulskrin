@@ -669,7 +669,7 @@ static bool loadImageTexture(const QString &path, Texture2D &tex, QString *err)
         return false;
     }
     // OpenGL convention: first row = bottom of the image.
-    img = img.convertToFormat(QImage::Format_RGBA8888).mirrored(false, true);
+    img = flippedVertically(img.convertToFormat(QImage::Format_RGBA8888));
     tex.upload(img.constBits(), img.width(), img.height());
     return true;
 }

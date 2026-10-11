@@ -12,8 +12,7 @@
 #include <cmath>
 
 #ifdef Q_OS_MACOS
-#define GL_SILENCE_DEPRECATION
-#include <OpenGL/OpenGL.h>
+#include <OpenGL/OpenGL.h> // GL_SILENCE_DEPRECATION: set by CMake
 #elif defined(Q_OS_WIN)
 #include <windows.h>
 #endif
