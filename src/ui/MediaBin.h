@@ -9,8 +9,8 @@ class QPushButton;
 class QLabel;
 class QLineEdit;
 
-// Media Bin: the project's video, image and audio files (used by layers or imported), grouped by type,
-// and the ISF generators of the library (ISF > Generators). Items are dragged onto layers to load them.
+// Media Bin: the project's video, image and audio files (used by layers or imported), grouped by type, the Text
+// generator, the live inputs, and the ISF generators of the library (ISF > Generators). Items are dragged onto layers to load them.
 class MediaBin : public QWidget
 {
     Q_OBJECT
@@ -31,7 +31,7 @@ signals:
 private:
     void probe(const QString &path);
     void refreshIsf();
-    void refreshInputs(); // Inputs: the built-in generators that are not ISF (Text)
+    void refreshText(); // Text: its users
     void updateButtons();
     void importDialog();
     void relinkSelected();
@@ -42,7 +42,7 @@ private:
 
     Engine *m_engine;
     QTreeWidget *m_tree;
-    QTreeWidgetItem *m_videos, *m_images, *m_audios, *m_inputs, *m_isf, *m_isfGenerators;
+    QTreeWidgetItem *m_videos, *m_images, *m_audios, *m_text, *m_inputs, *m_isf, *m_isfGenerators;
     QPushButton *m_relink, *m_remove, *m_reveal;
     QLabel *m_summary;
     QLineEdit *m_search = nullptr;
