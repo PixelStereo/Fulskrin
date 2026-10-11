@@ -1925,6 +1925,13 @@ int main(int argc, char **argv)
                 for (const QJsonValue &x : cap)
                     if (x.toObject().value("id").toString().toULongLong() == wid) st = x.toObject();
                 CHECK(st.value("anims").toArray().size() == 2);
+                // The values they drive are not held (the animations give them); the others are, and every one in
+                // the undo of a recall
+                const QJsonObject held = st.value("params").toObject();
+                CHECK(!held.contains("opacity") && !held.contains("rotation") && held.contains("position/x"));
+                for (const QJsonValue &x : e.captureLayers(true))
+                    if (x.toObject().value("id").toString().toULongLong() == wid)
+                        CHECK(x.toObject().value("params").toObject().contains("opacity"));
                 e.advanceFades(0.3);
                 const double clock0 = (e.layerAnim(wid, "opacity", &now), now.clock);
                 QJsonArray an = st.value("anims").toArray();
