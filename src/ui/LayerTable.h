@@ -29,6 +29,8 @@ public:
         bool hidden = false;        // inside a folded group
         int depth = 0;              // 0 at the top level, 1 in a group, 2 in a group in a group…
         bool locked = false, lockedByGroup = false, effectsOn = true;
+        bool solo = false;       // soloed
+        bool soloHidden = false; // left out by another layer's solo
         int effectCount = 0;
     };
 
@@ -49,6 +51,7 @@ signals:
     void filesDropped(int row, const QStringList &paths); // row -1: below the last layer
     void visibilityToggled(int row, bool visible);
     void lockToggled(int row);
+    void soloToggled(int row);
     void collapseToggled(int row);
     void renamed(int row, const QString &name);
     void opacityEdited(int row, double opacity);

@@ -197,6 +197,10 @@ struct Layer {
     QString name;
     bool enabled = true; // off: the layer is not rendered, not heard, not shown
     bool locked = false;          // no edit allowed (the visibility and the transport stay available)
+    // Solo: while any layer is soloed, only the soloed ones are drawn (with their groups and members). A setup aid:
+    // not saved, not undone, not in snapshots.
+    bool solo = false;
+    bool soloHidden = false; // left out by another layer's solo this frame (render thread)
     bool parentEnabled = true;    // the group containing the layer is visible (updated every frame)
     float opacity = 1.0f;
     BlendMode blend = BlendMode::Normal;

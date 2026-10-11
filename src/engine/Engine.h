@@ -91,6 +91,8 @@ public:
     int groupIndexOf(int i) const;         // index of the group containing layer i, -1 at the top level
     QList<int> groupMembers(int group) const;
     bool isLocked(int i) const;            // locked itself, or member of a locked group
+    // Solo: by index, the layers another layer's solo leaves out (none when nothing is soloed). Lock held.
+    std::vector<bool> soloLeftOut() const;
 
     // --- Viewports: windows onto the composition, each with its size in pixels, its screen and its
     // publishing. Placed in the composition by their Spatial (mapping bounds); never inside a group.

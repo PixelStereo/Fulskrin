@@ -458,6 +458,27 @@ int main(int argc, char **argv)
         img = render();
         CHECK(qGray(img.pixel(8, 16)) < 3 && !e.layer(V + 1)->parentEnabled);
         e.layer(V + 0)->enabled = true;
+        // Solo: a soloed member keeps its group; a layer soloed elsewhere leaves the group out, and it is not drawn
+        {
+            const int o = e.addLayer("Other", e.layerCount());
+            e.layer(V + 1)->solo = true;
+            std::vector<bool> out = e.soloLeftOut();
+            CHECK(!out[size_t(V + 0)] && !out[size_t(V + 1)] && out[size_t(o)]);
+            img = render();
+            CHECK(px(img, 8, 16).red() > 250);
+            e.layer(V + 1)->solo = false;
+            e.layer(o)->solo = true;
+            out = e.soloLeftOut();
+            CHECK(out[size_t(V + 0)] && out[size_t(V + 1)] && !out[size_t(o)]);
+            img = render();
+            CHECK(qGray(img.pixel(8, 16)) < 3);
+            e.layer(o)->solo = false;
+            out = e.soloLeftOut();
+            CHECK(std::none_of(out.begin(), out.end(), [](bool b) { return b; }));
+            img = render();
+            CHECK(px(img, 8, 16).red() > 250);
+            e.removeLayer(o);
+        }
         // Source preview: the group's composite, at the requested size
         e.requestSourcePreview(gid, 32);
         for (int k = 0; k < 8; ++k) e.renderFrame();

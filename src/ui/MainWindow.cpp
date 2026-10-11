@@ -196,6 +196,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_undo->push(new cmd::SetLayerProp(m_engine, id, cmd::SetLayerProp::Locked, before, !before.toBool()));
         m_inspector->rebuild();
     });
+    connect(m_layerTable, &LayerTable::soloToggled, this, &MainWindow::toggleSolo);
     connect(m_layerTable, &LayerTable::collapseToggled, this, [this](int row) {
         {
             Engine::Lock lk(&m_engine->mutex());
@@ -744,15 +745,30 @@ static QString fmtClock(double s)
     return QStringLiteral("%1:%2").arg(m, 2, 10, QChar('0')).arg(s - m * 60, 5, 'f', 2, QChar('0'));
 }
 
+void MainWindow::toggleSolo(int row)
+{
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Layer *l = m_engine->layer(row);
+        if (!l || l->isViewport) return;
+        l->solo = !l->solo;
+    }
+    refreshLayerList();
+    if (row == m_inspector->layerIndex()) m_inspector->rebuild();
+}
+
 void MainWindow::refreshLayerList()
 {
     std::vector<LayerTable::Row> rows;
     {
         Engine::Lock lk(&m_engine->mutex());
+        const std::vector<bool> leftOut = m_engine->soloLeftOut();
         for (int i = 0; i < m_engine->layerCount(); ++i) {
             Layer *l = m_engine->layer(i);
             LayerTable::Row r;
             r.name = l->name;
+            r.solo = l->solo && !l->isViewport;
+            r.soloHidden = leftOut[size_t(i)];
             r.tag = l->isViewport ? QStringLiteral("▭")
                     : l->isGroup  ? QStringLiteral("▤")
                                   : layerTag(l->type != SourceType::None ? l->type : l->missingType);
