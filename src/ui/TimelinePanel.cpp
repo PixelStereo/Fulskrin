@@ -304,8 +304,11 @@ TimelineWindow::TimelineWindow(Engine *engine, QUndoStack *undo, QWidget *parent
     connect(m_del, &QPushButton::clicked, this, [this] {
         const int i = m_engine->indexOfAnimation(m_current);
         if (i < 0) return;
-        if (m_undo) m_undo->push(new cmd::RemoveAnimation(m_engine, i));
-        else m_engine->removeAnimation(i);
+        if (m_undo) {
+            m_undo->push(new cmd::RemoveAnimation(m_engine, i));
+        } else {
+            m_engine->removeAnimation(i);
+        }
         emit edited();
     });
     connect(m_engine, &Engine::animationsChanged, this, [this] {
