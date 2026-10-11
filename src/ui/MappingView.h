@@ -1,6 +1,7 @@
 #pragma once
 #include "GlDraw.h"
 #include "Mapping.h"
+#include "Masks.h"
 #include <QOpenGLWidget>
 #include <QPointF>
 #include <QRectF>
@@ -34,8 +35,14 @@ public:
     void zoomBy(double factor);           // around the center of the view
     void zoomToFit();
     double zoom() const { return m_zoom; }
+    // Masks (Masks.h): the current layer's mask edited here (its points, its handles, dragged whole), and a new one
+    // drawn point by point (click; drag to curve; the first point, a double-click or Enter closes it; Esc cancels)
+    void setMaskIndex(int index); // -1: none
+    void startMaskDrawing();
 
 signals:
+    void masksEdited();         // a mask moved or drawn here
+    void maskPicked(int index); // the mask just drawn
     void layerPicked(int index);
     void mappingEdited();
 
@@ -45,6 +52,7 @@ protected:
     void mousePressEvent(QMouseEvent *e) override;
     void mouseMoveEvent(QMouseEvent *e) override;
     void mouseReleaseEvent(QMouseEvent *e) override;
+    void mouseDoubleClickEvent(QMouseEvent *e) override;
     void keyPressEvent(QKeyEvent *e) override;
     void wheelEvent(QWheelEvent *e) override;
     void resizeEvent(QResizeEvent *e) override;
@@ -128,6 +136,25 @@ private:
     bool m_guidePoint = false;
     QPointF m_guideAt;
     QToolButton *m_magnetButton = nullptr;
+
+    // Masks
+    int m_maskIndex = -1;
+    bool m_drawing = false, m_drawPressing = false;
+    std::vector<MaskNode> m_drawNodes; // the mask being drawn
+    QPointF m_cursor;
+    enum class MaskDrag { None, Node, In, Out, Body } m_maskDrag = MaskDrag::None;
+    int m_maskNode = -1;  // the point dragged, or last clicked
+    QPointF m_maskLast;   // the frame point of the last move (dragging it whole)
+    std::vector<Mask> m_masksBefore;
+    Mask *editedMask();   // lock held
+    bool maskInComposition(const Mask *k) const;
+    QPointF frameToWidget(bool composition, QPointF q) const;               // lock held
+    QPointF widgetToFrame(bool composition, QPointF w, QPointF guess) const; // lock held
+    QPolygonF maskOutline(const Mask &k) const;                              // in the widget
+    void paintMasks();
+    bool pressMask(QMouseEvent *e); // lock held; true: taken by the masks
+    void finishDrawing();
+    void cancelDrawing();
 
     double m_zoom = 1.0;
     QPointF m_pan;                // offset of the view center, widget pixels

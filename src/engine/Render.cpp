@@ -490,9 +490,67 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
             ping = 1 - ping;
         }
     }
+    applySurfaceMasks(l, tex, w, h);
     l.finalTex = tex;
     l.finalW = w;
     l.finalH = h;
+}
+
+// Masks are drawn at most 2048 pixels on their long side (their soft edges and the GPU's filtering hide it)
+static QSize maskRasterSize(int w, int h)
+{
+    const int longSide = std::max(w, h);
+    if (longSide <= 2048) return QSize(std::max(1, w), std::max(1, h));
+    const double s = 2048.0 / longSide;
+    return QSize(std::max(1, int(std::lround(w * s))), std::max(1, int(std::lround(h * s))));
+}
+
+// Its surface masks: the picture through their alpha (a viewport's color too, as its screen shows it opaque)
+void Engine::applySurfaceMasks(Layer &l, GLuint &tex, int w, int h)
+{
+    if (w <= 0 || h <= 0 || !masks::any(l.masks, Mask::Attach::Surface)) {
+        if (l.shapeMaskTarget.fbo) l.shapeMaskTarget.destroy();
+        return;
+    }
+    const QSize size = maskRasterSize(w, h);
+    if (l.shapeMaskSurfaceRev != l.masksRevision || l.shapeMaskSurfaceSize != size) {
+        const QImage img = masks::raster(l.masks, Mask::Attach::Surface, size).convertToFormat(QImage::Format_RGBA8888);
+        l.shapeMaskSurface.upload(img.constBits(), img.width(), img.height());
+        l.shapeMaskSurfaceRev = l.masksRevision;
+        l.shapeMaskSurfaceSize = size;
+    }
+    auto f = gl();
+    l.shapeMaskTarget.ensure(w, h);
+    l.shapeMaskTarget.bind();
+    f->glDisable(GL_BLEND);
+    f->glUseProgram(m_shapeMaskProgram);
+    f->glActiveTexture(GL_TEXTURE1);
+    f->glBindTexture(GL_TEXTURE_2D, l.shapeMaskSurface.tex);
+    f->glActiveTexture(GL_TEXTURE0);
+    f->glBindTexture(GL_TEXTURE_2D, tex);
+    f->glUniform1i(m_shapeMaskTexLoc, 0);
+    f->glUniform1i(m_shapeMaskMaskLoc, 1);
+    f->glUniform1i(m_shapeMaskRgbLoc, l.isViewport ? 1 : 0);
+    drawQuad();
+    tex = l.shapeMaskTarget.tex;
+}
+
+// Its composition masks, on texture unit 2 for the compositing (false: none)
+bool Engine::bindCompositionMasks(Layer &l)
+{
+    if (l.isViewport || !masks::any(l.masks, Mask::Attach::Composition)) return false;
+    const QSize size = maskRasterSize(m_compSize.width(), m_compSize.height());
+    if (l.shapeMaskCompRev != l.masksRevision || l.shapeMaskCompSize != size) {
+        const QImage img = masks::raster(l.masks, Mask::Attach::Composition, size).convertToFormat(QImage::Format_RGBA8888);
+        l.shapeMaskComp.upload(img.constBits(), img.width(), img.height());
+        l.shapeMaskCompRev = l.masksRevision;
+        l.shapeMaskCompSize = size;
+    }
+    auto f = gl();
+    f->glActiveTexture(GL_TEXTURE2);
+    f->glBindTexture(GL_TEXTURE_2D, l.shapeMaskComp.tex);
+    f->glActiveTexture(GL_TEXTURE0);
+    return true;
 }
 
 // A group's picture: its members composited on a transparent canvas the size of the composition
@@ -556,6 +614,7 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     f->glEnable(GL_BLEND);
     f->glUseProgram(m_compProgram);
     f->glUniform1i(m_compTexLoc, 0);
+    f->glUniform1i(m_compMaskLoc, 2); // composition masks (Masks.h)
     // Vertices are in the composition's clip space: scale and offset bring the view to the whole target
     const double rw = std::max(1e-6, view.width()), rh = std::max(1e-6, view.height());
     f->glUniform4f(m_compViewLoc, float(1.0 / rw), float(1.0 / rh), float((1.0 - 2.0 * view.left()) / rw - 1.0),
@@ -588,6 +647,7 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
             f->glDisable(GL_BLEND);
             f->glUseProgram(m_diffProgram);
             f->glUniform1i(m_diffTexLoc, 0);
+            f->glUniform1i(m_diffMaskLoc, 2);
             f->glUniform1i(m_diffDstLoc, 1);
             f->glUniform4f(m_diffViewLoc, float(1.0 / rw), float(1.0 / rh), float((1.0 - 2.0 * view.left()) / rw - 1.0),
                            float(1.0 - (1.0 - 2.0 * view.top()) / rh));
@@ -618,6 +678,8 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
             f->glUniform1f(m_compOpacityLoc, opacity);
         }
         bindMesh(l);
+        const bool compMasks = bindCompositionMasks(l);
+        f->glUniform1i(inDiff ? m_diffMaskOnLoc : m_compMaskOnLoc, compMasks ? 1 : 0);
         f->glBindTexture(GL_TEXTURE_2D, l.finalTex);
         // Drawn smaller than it is: sampled from mipmaps (no shimmer, no moiré), made for this draw only
         bool mip = false;

@@ -5,6 +5,7 @@
 #include "Isf.h"
 #include "LiveInput.h"
 #include "Mapping.h"
+#include "Masks.h"
 #include "Parameter.h"
 #include "Publish.h"
 #include "VideoDecoder.h"
@@ -272,6 +273,13 @@ struct Layer {
     int vpBack = 1;
     std::atomic<int> vpPublished{0};
     RenderTarget prepTarget;  // roi + color
+    // Its masks (Masks.h): edited by the interface, drawn by the render thread when their revision changes
+    std::vector<Mask> masks;
+    unsigned masksRevision = 1;
+    Texture2D shapeMaskSurface, shapeMaskComp; // their alpha, in its picture and in the composition
+    unsigned shapeMaskSurfaceRev = 0, shapeMaskCompRev = 0;
+    QSize shapeMaskSurfaceSize, shapeMaskCompSize;
+    RenderTarget shapeMaskTarget; // its picture through its surface masks
     GLuint rawTex = 0;        // source picture before roi (roi preview)
     int rawW = 0, rawH = 0;
 

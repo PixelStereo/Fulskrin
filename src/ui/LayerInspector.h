@@ -37,6 +37,8 @@ class ViewportOutputPanel;
 // viewport, Output (size, screen, publishing).
 // All edits go through the undo stack. A locked layer shows its settings without allowing edits
 // (the transport stays available). A click on a parameter's name resets it; a right-click animates it.
+class MaskPanel;
+
 class LayerInspector : public QWidget
 {
     Q_OBJECT
@@ -47,6 +49,9 @@ public:
     int layerIndex() const { return m_layer; }
     void rebuild();
     void refreshDynamic(); // playback position (called periodically)
+    void refreshMasks();   // the masks changed elsewhere (the preview, undo)
+    void selectMask(int index); // a mask picked or drawn in the preview
+    int maskIndex() const { return m_maskIndex; }
 
 signals:
     void layerChanged();   // name, visibility, source: the list must be refreshed
@@ -56,6 +61,8 @@ signals:
     void rescanLibraryRequested();         // re-read the ISF folders (shaders added in the Finder)
     void projectEdited();                  // saved interface state of the layer changed (not undoable)
     void kindChanged(const QString &kind); // "Layer", "Group" or "Viewport": the title of the tab
+    void maskSelected(int index);          // the mask the preview edits (-1: none)
+    void maskDrawRequested();              // the preview draws a new mask point by point
 
 private:
     QWidget *buildSource(const LayerValues &s);    // above the tabs: the drop zone, the transition, the speed
@@ -66,6 +73,8 @@ private:
     QWidget *buildColor(const LayerValues &s);
     QWidget *buildCompositing(const LayerValues &s);
     QWidget *buildMapping(const LayerValues &s);
+    QPointer<MaskPanel> m_maskPanel;
+    int m_maskIndex = -1; // the mask selected (kept while the inspector is rebuilt for the same layer)
     QWidget *buildEffects(const LayerValues &s);
     void showEffectParams(); // parameters of the selected effect, swapped without rebuilding the list
     void editMapping(const QString &text, const std::function<void(Mapping &)> &fn, bool merge = false);

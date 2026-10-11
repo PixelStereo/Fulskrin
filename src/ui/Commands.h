@@ -97,6 +97,20 @@ private:
     qint64 m_time;
 };
 
+// A layer's masks (by its id): drawn, moved, edited
+class SetMasks : public QUndoCommand
+{
+public:
+    SetMasks(Engine *e, quint64 layer, const std::vector<Mask> &before, const std::vector<Mask> &after, const QString &text);
+    void undo() override;
+    void redo() override;
+
+private:
+    Engine *m_e;
+    quint64 m_layer;
+    std::vector<Mask> m_before, m_after;
+};
+
 // Layer added (already done at push time)
 class AddLayer : public QUndoCommand
 {

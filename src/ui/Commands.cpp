@@ -185,6 +185,14 @@ bool SetMapping::mergeWith(const QUndoCommand *other)
     return true;
 }
 
+SetMasks::SetMasks(Engine *e, quint64 layer, const std::vector<Mask> &before, const std::vector<Mask> &after, const QString &text)
+    : m_e(e), m_layer(layer), m_before(before), m_after(after)
+{
+    setText(text);
+}
+void SetMasks::undo() { m_e->setLayerMasks(m_layer, m_before); }
+void SetMasks::redo() { m_e->setLayerMasks(m_layer, m_after); }
+
 // --- Layers -----------------------------------------------------------------
 
 AddLayer::AddLayer(Engine *e, int index, const QString &text) : m_e(e), m_index(index)

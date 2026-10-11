@@ -2177,6 +2177,122 @@ int main(int argc, char **argv)
     } // snapshots
 
     if (area("masks")) {
+    // 4e. Shape masks (Masks.h): their alpha, JSON, SVG, and the picture through them
+    {
+        // Raster: a rectangle keeps its inside; inverted, it cuts it out; feathering softens the edge where asked
+        Mask r = Mask::rectangle(QRectF(0.25, 0.25, 0.5, 0.5));
+        r.name = "R";
+        auto gray = [](const QImage &img, int x, int y) { return qGray(img.pixel(x, y)); };
+        QImage a = masks::raster({r}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(!a.isNull() && gray(a, 50, 50) == 255 && gray(a, 5, 5) == 0);
+        CHECK(masks::raster({r}, Mask::Attach::Composition, QSize(100, 100)).isNull()); // none there
+        Mask inv = r;
+        inv.invert = true;
+        a = masks::raster({inv}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 50, 50) == 0 && gray(a, 5, 5) == 255);
+        a = masks::raster({r, Mask::rectangle(QRectF(0.4, 0.4, 0.2, 0.2))}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 50, 50) == 255); // added
+        std::vector<Mask> hole = {r, Mask::rectangle(QRectF(0.4, 0.4, 0.2, 0.2))};
+        hole[1].invert = true;
+        a = masks::raster(hole, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 50, 50) == 0 && gray(a, 30, 30) == 255); // a hole in it
+        Mask soft = r;
+        soft.feather = 0.2; // 20 px over 100
+        a = masks::raster({soft}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(std::abs(gray(a, 25, 50) - 128) < 40 && gray(a, 50, 50) == 255 && gray(a, 10, 50) < 30);
+        soft.featherMode = Mask::Feather::Inner;
+        a = masks::raster({soft}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 25, 50) < 40 && gray(a, 50, 50) > 230);
+        soft.featherMode = Mask::Feather::Outer;
+        a = masks::raster({soft}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 26, 50) > 215 && gray(a, 8, 50) < 60);
+        Mask e2 = Mask::ellipse(QRectF(0, 0, 1, 1));
+        a = masks::raster({e2}, Mask::Attach::Surface, QSize(100, 100));
+        CHECK(gray(a, 50, 50) == 255 && gray(a, 2, 2) == 0 && gray(a, 50, 3) > 200); // round, touching the edges
+
+        // JSON and names
+        soft.name = "Soft";
+        const std::vector<Mask> back = masks::fromJson(masks::toJson({r, soft, e2}));
+        CHECK(back.size() == 3 && back[0] == r && back[1] == soft && back[2] == e2);
+        CHECK(masks::uniqueName({r}) == "Mask-1");
+        Mask named = r;
+        named.name = "Mask-1";
+        CHECK(masks::uniqueName({named}) == "Mask-2");
+
+        // SVG: there and back, and a file from elsewhere (rect, circle, path with curves and relative moves, polygon)
+        QString note;
+        const std::vector<Mask> svgBack = masks::fromSvg(masks::toSvg({r, soft, e2}, QSize(640, 360)).toUtf8(), &note);
+        CHECK(svgBack.size() == 3 && note.isEmpty());
+        if (svgBack.size() == 3) {
+            CHECK(svgBack[1].name == "Soft" && std::abs(svgBack[1].feather - 0.2) < 1e-6 && svgBack[1].featherMode == Mask::Feather::Outer);
+            bool same = svgBack[2].nodes.size() == e2.nodes.size();
+            for (size_t i = 0; same && i < e2.nodes.size(); ++i)
+                same = (svgBack[2].nodes[i].p - e2.nodes[i].p).manhattanLength() < 1e-3
+                       && (svgBack[2].nodes[i].out - e2.nodes[i].out).manhattanLength() < 1e-3;
+            CHECK(same);
+        }
+        const QByteArray other = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 100'>"
+                                 "<rect x='0' y='0' width='100' height='50'/>"
+                                 "<circle cx='150' cy='50' r='25' fill='black'/>"
+                                 "<path d='M10 60 l 40 0 C 60 70, 60 90, 50 100 L10,100z'/>"
+                                 "<polygon points='120,90 140,60 160,90'/></svg>";
+        const std::vector<Mask> got = masks::fromSvg(other, &note);
+        CHECK(got.size() == 4);
+        if (got.size() == 4) {
+            CHECK(got[0].shape == Mask::Shape::Rectangle && (got[0].nodes[2].p - QPointF(0.5, 0.5)).manhattanLength() < 1e-9);
+            CHECK(got[1].invert && got[1].shape == Mask::Shape::Ellipse);
+            CHECK(got[2].nodes.size() == 4 && (got[2].nodes[1].p - QPointF(0.25, 0.6)).manhattanLength() < 1e-9 &&
+                  (got[2].nodes[1].out - QPointF(0.3, 0.7)).manhattanLength() < 1e-9);
+            CHECK(got[3].nodes.size() == 3);
+        }
+        CHECK(masks::fromSvg("<svg/>", &note).empty() && !note.isEmpty());
+
+        // The picture through them: a red layer over the composition, its left half kept, then a hole in the
+        // composition's middle; a viewport's own mask
+        e.newProject();
+        e.fadeCompositionOpacity(1.0, 0);
+        e.setBlackout(false, 0);
+        e.setCompositionSize(QSize(64, 32));
+        QImage red(32, 16, QImage::Format_RGB32);
+        red.fill(qRgb(255, 0, 0));
+        red.save(tmp + "/sred.png");
+        const int li = e.addLayer("Shaped");
+        CHECK(e.setLayerImage(li, tmp + "/sred.png", &err));
+        e.layer(li)->mapping.resetCorners();
+        const quint64 lid = e.layerId(li);
+        auto px = [&](double fx, double fy) {
+            e.renderFrame();
+            const QImage g = e.grabOutput();
+            return g.pixelColor(std::min(g.width() - 1, int(g.width() * fx)), std::min(g.height() - 1, int(g.height() * fy)));
+        };
+        CHECK(px(0.75, 0.5).red() > 250);
+        e.setLayerMasks(lid, {Mask::rectangle(QRectF(0, 0, 0.5, 1))});
+        CHECK(px(0.25, 0.5).red() > 250 && px(0.75, 0.5).red() < 5);
+        Mask middle = Mask::rectangle(QRectF(0.25, 0, 0.5, 1));
+        middle.attach = Mask::Attach::Composition;
+        middle.invert = true;
+        e.setLayerMasks(lid, {middle});
+        CHECK(px(0.1, 0.5).red() > 250 && px(0.5, 0.5).red() < 5 && px(0.9, 0.5).red() > 250);
+        // A composition mask stays when the layer moves; a surface mask goes with it
+        e.layer(li)->mapping.translate(QPointF(0.25, 0)); // its left edge at the middle
+        CHECK(px(0.5, 0.5).red() < 5 && px(0.85, 0.5).red() > 250);
+        e.layer(li)->mapping.translate(QPointF(-0.25, 0));
+        // Saved with the layer
+        const QJsonObject lj = e.layerJson(e.indexOfId(lid));
+        CHECK(lj.value("masks").toArray().size() == 1);
+        e.setLayerMasks(lid, {});
+        CHECK(px(0.5, 0.5).red() > 250 && !e.layerJson(e.indexOfId(lid)).contains("masks"));
+        // A viewport's mask: its picture, color included (its screen shows it opaque)
+        const quint64 vp = e.mainViewportId();
+        Mask vm = Mask::rectangle(QRectF(0, 0, 0.5, 1));
+        e.setLayerMasks(vp, {vm});
+        e.renderFrame();
+        const QImage vg = e.grabViewport(vp);
+        CHECK(!vg.isNull() && vg.pixelColor(vg.width() / 4, vg.height() / 2).red() > 250 &&
+              vg.pixelColor(vg.width() * 3 / 4, vg.height() / 2).red() < 5);
+        e.setLayerMasks(vp, {});
+        CHECK(e.maskFrame(vp) == e.layer(e.indexOfId(vp))->viewportSize());
+    }
     // 4f. Effect masks: an effect applies where another layer's picture is white
     {
         QFile inv(tmp + "/Invert.fs");
