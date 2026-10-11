@@ -281,6 +281,18 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
         w = l.sourceTex.w;
         h = l.sourceTex.h;
         break;
+    case SourceType::Input: // the newest frame of the camera, NDI, OMT or Syphon source
+        if (l.input && l.input->update(l.sourceTex)) {
+            const bool first = !l.srcWidth;
+            l.srcWidth = l.sourceTex.w;
+            l.srcHeight = l.sourceTex.h;
+            if (first && l.mapping.isIdentity() && l.srcHeight > 0)
+                l.mapping.fitAspect(double(l.srcWidth) / l.srcHeight, double(m_compSize.width()) / m_compSize.height());
+        }
+        tex = l.sourceTex.tex;
+        w = l.sourceTex.w;
+        h = l.sourceTex.h;
+        break;
     case SourceType::Isf:
         if (l.generator) {
             l.generator->render(rc, 0, 0, 0, l.generatorTarget, l.genWidth, l.genHeight);

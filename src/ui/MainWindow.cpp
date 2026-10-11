@@ -730,6 +730,7 @@ static QString layerTag(SourceType t)
     case SourceType::Text: return QStringLiteral("T");
     case SourceType::Audio: return QStringLiteral("♪");
     case SourceType::Layer: return QStringLiteral("⧉");
+    case SourceType::Input: return QStringLiteral("◉");
     default: return QStringLiteral("○");
     }
 }
@@ -789,6 +790,10 @@ void MainWindow::refreshLayerList()
                 break;
             case SourceType::Isf: r.source = QStringLiteral("generator ") + QFileInfo(l->sourcePath).completeBaseName(); break;
             case SourceType::Text: r.source = QStringLiteral("text ") + l->text.content.left(40).replace('\n', ' '); break;
+            case SourceType::Input:
+                r.source = liveInputKind(l->sourcePath) + QStringLiteral(" ") + liveInputName(l->sourcePath);
+                r.error = r.error || !l->input;
+                break;
             case SourceType::Layer: {
                 const Layer *src = m_engine->layer(m_engine->indexOfId(l->sourceLayer));
                 r.source = QStringLiteral("layer %1 · %2")
@@ -888,6 +893,32 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
         refreshAll();
         return true;
     }
+    if (const QString uri = liveInputUriOfPath(path); !uri.isEmpty()) { // a camera, NDI, OMT or Syphon source
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(i);
+            if (l && (l->isGroup || l->isViewport)) {
+                lk.unlock();
+                statusBar()->showMessage(QStringLiteral("A group or a viewport has no source: drop the input onto a layer."), 6000);
+                return false;
+            }
+        }
+        const QJsonObject before = m_engine->layerJson(i);
+        QString err;
+        if (!m_engine->setLayerInput(i, uri, &err)) {
+            QMessageBox::warning(this, QStringLiteral("Input"), liveInputName(uri) + QStringLiteral(": ") + err);
+            return false;
+        }
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(i);
+            if (l && l->name.startsWith(QStringLiteral("Layer "))) l->name = liveInputName(uri);
+        }
+        m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Load Input \"%1\"").arg(liveInputName(uri))));
+        selectLayer(i);
+        refreshAll();
+        return true;
+    }
     const QFileInfo fi(path);
     const QString ext = fi.suffix().toLower();
     auto fail = [&](const QString &err) {
@@ -947,7 +978,7 @@ void MainWindow::loadDropped(int layer, const QStringList &paths)
     for (const QString &p : paths) {
         const QString ext = QFileInfo(p).suffix().toLower();
         const bool effect = kIsfExt.contains(ext) && IsfInstance::readHeader(p).isFilter;
-        if (isTextGeneratorPath(p)) { // built in: never imported into the Media Bin
+        if (isTextGeneratorPath(p) || !liveInputUriOfPath(p).isEmpty()) { // built in, or live: never imported into the Media Bin
             if (!sourceLoaded) sourceLoaded = loadIntoLayer(layer, p);
         } else if (effect) {
             loadIntoLayer(layer, p);

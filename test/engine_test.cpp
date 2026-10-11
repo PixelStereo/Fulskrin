@@ -2185,6 +2185,46 @@ int main(int argc, char **argv)
     } // masks
 
     if (area("rendering")) {
+    // Live inputs: a layer's source by URI (a camera, NDI, OMT, Syphon); the test one is a solid color
+    {
+        e.newProject();
+        e.fadeCompositionOpacity(1.0, 0);
+        e.setBlackout(false, 0);
+        e.setCompositionSize(QSize(64, 36));
+        const int li = e.addLayer("Live");
+        const quint64 lid = e.layerId(li);
+        CHECK(e.setLayerInput(li, "input:test:0,255,0", &err));
+        for (int k = 0; k < 3; ++k) e.renderFrame();
+        QImage out = e.grabOutput();
+        CHECK(out.pixelColor(32, 18).green() > 250 && out.pixelColor(32, 18).red() < 5);
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(e.indexOfId(lid));
+            CHECK(l->type == SourceType::Input && l->srcWidth == 64 && l->srcHeight == 36);
+        }
+        const QJsonObject src = e.layerJson(e.indexOfId(lid)).value("source").toObject();
+        CHECK(src.value("type") == "input" && src.value("uri") == "input:test:0,255,0");
+        CHECK(liveInputKind("input:ndi:HOST (Cam)") == "NDI" && liveInputName("input:ndi:HOST (Cam)") == "HOST (Cam)" &&
+              isLiveInputUri("input:camera:x") && !isLiveInputUri("/media/a.mp4"));
+        // Not there: refused, with why; an unknown kind too
+        CHECK(!e.setLayerInput(li, "input:nothing:x", &err) && !err.isEmpty());
+        // Saved and loaded; a snapshot holding another input changes the source
+        CHECK(e.saveProject(tmp + "/input.fulskrin", {}, &err));
+        e.newProject();
+        CHECK(e.loadProject(tmp + "/input.fulskrin", nullptr, &err));
+        CHECK(e.indexOfId(lid) >= 0);
+        QJsonObject state = e.layerJson(e.indexOfId(lid));
+        QJsonObject s2 = state.value("source").toObject();
+        s2["uri"] = "input:test:255,0,0";
+        state["source"] = s2;
+        e.applyLayers(QJsonArray{state}, 0.0);
+        for (int k = 0; k < 3; ++k) e.renderFrame();
+        out = e.grabOutput();
+        CHECK(out.pixelColor(32, 18).red() > 250 && out.pixelColor(32, 18).green() < 5);
+        // Listing does not fail without devices or libraries
+        (void)Engine::liveInputs();
+        e.newProject();
+    }
     // 4d'. Blend modes that take away: Subtract and Difference (against what is drawn below)
     {
         e.newProject();

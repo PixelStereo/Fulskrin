@@ -636,6 +636,7 @@ std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
     l.textKey.clear();
     l.text.stopTyping();
     g->generator = std::move(l.generator);
+    g->input = std::move(l.input);
     g->generatorTarget = l.generatorTarget;
     l.generatorTarget = RenderTarget{};
     l.pendingImage = QImage();
@@ -953,6 +954,29 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
         l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
         if (isDefaultMapping(l->mapping))
             l->mapping.fitAspect(double(img.width()) / img.height(), double(m_compSize.width()) / m_compSize.height());
+    }
+    releaseGarbage(g);
+    return true;
+}
+
+bool Engine::setLayerInput(int i, const QString &uri, QString *err)
+{
+    if (!layer(i)) return false;
+    QString e;
+    std::unique_ptr<LiveInput> input = createLiveInput(uri, QString(), &e);
+    if (!input) {
+        if (err) *err = e;
+        return false;
+    }
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || l->isGroup || l->isViewport) return false;
+        g = detachSource(*l);
+        l->input = std::move(input);
+        l->type = SourceType::Input;
+        l->sourcePath = uri;
     }
     releaseGarbage(g);
     return true;

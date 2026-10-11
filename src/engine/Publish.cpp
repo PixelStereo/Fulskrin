@@ -1,4 +1,5 @@
 #include "Publish.h"
+#include "NetVideo.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -278,42 +279,7 @@ QString omtLibraryPath(const QString &extra)
 // NDI (structures matching Processing.NDI.structs.h / Send.h, SDK v5 and v6)
 // ---------------------------------------------------------------------------
 namespace ndi {
-struct SendCreate {
-    const char *p_ndi_name;
-    const char *p_groups;
-    bool clock_video, clock_audio;
-};
-struct VideoFrameV2 {
-    int xres, yres;
-    uint32_t FourCC;
-    int frame_rate_N, frame_rate_D;
-    float picture_aspect_ratio;
-    int frame_format_type;
-    int64_t timecode;
-    uint8_t *p_data;
-    int line_stride_in_bytes;
-    const char *p_metadata;
-    int64_t timestamp;
-};
-constexpr uint32_t fourcc(char a, char b, char c, char d)
-{
-    return uint32_t(uint8_t(a)) | (uint32_t(uint8_t(b)) << 8) | (uint32_t(uint8_t(c)) << 16) | (uint32_t(uint8_t(d)) << 24);
-}
-constexpr uint32_t kBGRA = fourcc('B', 'G', 'R', 'A');
-constexpr int kProgressive = 1;
-
-struct Lib {
-    bool ok = false;
-    QString error, path;
-    bool (*initialize)() = nullptr;
-    void *(*send_create)(const SendCreate *) = nullptr;
-    void (*send_destroy)(void *) = nullptr;
-    void (*send_video_async_v2)(void *, const VideoFrameV2 *) = nullptr;
-    void (*send_video_v2)(void *, const VideoFrameV2 *) = nullptr;
-    int (*send_get_no_connections)(void *, uint32_t) = nullptr;
-};
-
-static Lib &lib(const QString &extra)
+Lib &lib(const QString &extra)
 {
     static QMutex mutex;
     static Lib l;
@@ -334,6 +300,13 @@ static Lib &lib(const QString &extra)
     l.send_video_async_v2 = reinterpret_cast<void (*)(void *, const VideoFrameV2 *)>(q->resolve("NDIlib_send_send_video_async_v2"));
     l.send_video_v2 = reinterpret_cast<void (*)(void *, const VideoFrameV2 *)>(q->resolve("NDIlib_send_send_video_v2"));
     l.send_get_no_connections = reinterpret_cast<int (*)(void *, uint32_t)>(q->resolve("NDIlib_send_get_no_connections"));
+    l.find_create_v2 = reinterpret_cast<void *(*)(const FindCreate *)>(q->resolve("NDIlib_find_create_v2"));
+    l.find_destroy = reinterpret_cast<void (*)(void *)>(q->resolve("NDIlib_find_destroy"));
+    l.find_get_current_sources = reinterpret_cast<const Source *(*)(void *, uint32_t *)>(q->resolve("NDIlib_find_get_current_sources"));
+    l.recv_create_v3 = reinterpret_cast<void *(*)(const RecvCreateV3 *)>(q->resolve("NDIlib_recv_create_v3"));
+    l.recv_destroy = reinterpret_cast<void (*)(void *)>(q->resolve("NDIlib_recv_destroy"));
+    l.recv_capture_v2 = reinterpret_cast<int (*)(void *, VideoFrameV2 *, void *, void *, uint32_t)>(q->resolve("NDIlib_recv_capture_v2"));
+    l.recv_free_video_v2 = reinterpret_cast<void (*)(void *, const VideoFrameV2 *)>(q->resolve("NDIlib_recv_free_video_v2"));
     if (!l.initialize || !l.send_create || !l.send_destroy || !l.send_video_async_v2) {
         l.error = QStringLiteral("Incompatible NDI library: ") + l.path;
         return l;
@@ -402,37 +375,7 @@ std::unique_ptr<CpuPublisher> createNdiPublisher() { return std::make_unique<Ndi
 // OMT (structures matching libomt.h, Open Media Transport, MIT license)
 // ---------------------------------------------------------------------------
 namespace omt {
-struct MediaFrame {
-    int Type;
-    int64_t Timestamp;
-    int Codec;
-    int Width, Height, Stride;
-    int Flags;
-    int FrameRateN, FrameRateD;
-    float AspectRatio;
-    int ColorSpace;
-    int SampleRate, Channels, SamplesPerChannel;
-    void *Data;
-    int DataLength;
-    void *CompressedData;
-    int CompressedLength;
-    void *FrameMetadata;
-    int FrameMetadataLength;
-};
-constexpr int kVideo = 2;
-constexpr int kBGRA = 0x41524742;
-constexpr int kBT709 = 709;
-
-struct Lib {
-    bool ok = false;
-    QString error, path;
-    void *(*send_create)(const char *, int) = nullptr;
-    void (*send_destroy)(void *) = nullptr;
-    int (*send)(void *, MediaFrame *) = nullptr;
-    int (*send_connections)(void *) = nullptr;
-};
-
-static Lib &lib(const QString &extra)
+Lib &lib(const QString &extra)
 {
     static QMutex mutex;
     static Lib l;
@@ -465,6 +408,10 @@ static Lib &lib(const QString &extra)
     l.send_destroy = reinterpret_cast<void (*)(void *)>(q->resolve("omt_send_destroy"));
     l.send = reinterpret_cast<int (*)(void *, MediaFrame *)>(q->resolve("omt_send"));
     l.send_connections = reinterpret_cast<int (*)(void *)>(q->resolve("omt_send_connections"));
+    l.discovery_getaddresses = reinterpret_cast<char **(*)(int *)>(q->resolve("omt_discovery_getaddresses"));
+    l.receive_create = reinterpret_cast<void *(*)(const char *, int, int, int)>(q->resolve("omt_receive_create"));
+    l.receive_destroy = reinterpret_cast<void (*)(void *)>(q->resolve("omt_receive_destroy"));
+    l.receive = reinterpret_cast<MediaFrame *(*)(void *, int, int)>(q->resolve("omt_receive"));
     if (!l.send_create || !l.send_destroy || !l.send) {
         l.error = QStringLiteral("Incompatible OMT library: ") + l.path;
         return l;

@@ -32,6 +32,7 @@ private:
     void probe(const QString &path);
     void refreshIsf();
     void refreshText(); // Text: its users
+    void refreshInputs(); // Inputs: the live sources there now, and those the layers use
     void updateButtons();
     void importDialog();
     void relinkSelected();
@@ -49,4 +50,5 @@ private:
     bool m_isfOpened = false; // ISF > Generators expanded once filled
     QHash<QString, QString> m_info;  // path -> description (resolution, duration…)
     QHash<QString, bool> m_probing;
+    QStringList m_inputsSignature;
 };

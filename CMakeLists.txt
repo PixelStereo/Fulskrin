@@ -55,6 +55,7 @@ add_library(fulskrin_engine STATIC
   src/engine/Project.cpp
   src/engine/Media.cpp
   src/engine/Publish.cpp
+  src/engine/LiveInput.cpp
   src/engine/AudioStream.cpp
   src/engine/AudioOutput.cpp
   src/engine/MiniaudioImpl.cpp
@@ -70,6 +71,14 @@ add_library(fulskrin_engine STATIC
 target_include_directories(fulskrin_engine PUBLIC src/engine)
 target_link_libraries(fulskrin_engine PUBLIC Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::Network ffmpeg)
 target_compile_definitions(fulskrin_engine PUBLIC GL_SILENCE_DEPRECATION)
+# Cameras (live inputs): Qt Multimedia when it is there
+find_package(Qt6 QUIET COMPONENTS Multimedia)
+if(Qt6Multimedia_FOUND)
+  target_link_libraries(fulskrin_engine PRIVATE Qt6::Multimedia)
+  target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_CAMERA)
+else()
+  message(STATUS "Qt Multimedia not found: no camera inputs")
+endif()
 
 # ---------------------------------------------------------------------------
 # Audio output: miniaudio (single header, public domain / MIT-0), downloaded at configure time
@@ -147,8 +156,8 @@ if(APPLE AND FULSKRIN_SYPHON)
   target_compile_options(syphon PRIVATE -w "SHELL:-include ${syphon_SOURCE_DIR}/Syphon_Prefix.pch"
     $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>)
   target_link_libraries(syphon PUBLIC "-framework Cocoa" "-framework OpenGL" "-framework IOSurface" "-framework Foundation")
-  target_sources(fulskrin_engine PRIVATE src/engine/PublishSyphon.mm)
-  set_source_files_properties(src/engine/PublishSyphon.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_sources(fulskrin_engine PRIVATE src/engine/PublishSyphon.mm src/engine/LiveInputSyphon.mm)
+  set_source_files_properties(src/engine/PublishSyphon.mm src/engine/LiveInputSyphon.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(fulskrin_engine PRIVATE syphon)
   target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_SYPHON)
 endif()
@@ -209,7 +218,8 @@ if(APPLE)
   set_target_properties(Fulskrin PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "Fulskrin"
     MACOSX_BUNDLE_GUI_IDENTIFIER "fr.fulskrin.app"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION})
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in") # with the camera's usage text
   set(ISF_DEST "$<TARGET_FILE_DIR:Fulskrin>/../Resources/isf")
 elseif(WIN32)
   add_executable(Fulskrin WIN32 ${APP_SOURCES})
