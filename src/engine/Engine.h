@@ -281,15 +281,19 @@ public:
         QJsonObject composition;
         // The interactions: each one's values (on / off, master level, ranges, filter, curve), by its id, with its
         // name, "included", "timing" and "easing" as a layer's: [{"id", "name", "included", "params", "timing",
-        // "easing"}] (empty: stored before they were kept)
+        // "easing"}]
         QJsonArray interactions;
+        // false: stored before the snapshots kept interactions (the recall leaves them all alone); else one it does
+        // not hold (made since) is switched off by the recall
+        bool interactionsKept = true;
     };
     QJsonObject captureComposition() const;
     void applyComposition(const QJsonObject &c, double fade); // the recall's part for the composition
     QJsonArray captureInteractions() const; // every interaction's values, all included
     // The recall's part for the interactions: the numbers (master level, ranges, a filter's settings) fade in their
-    // time, the rest is set at once; one made since, or left out, is left alone
-    void applyInteractions(const QJsonArray &states, double fade);
+    // time, the rest is set at once; one removed since is made again; one left out is left alone; one made since
+    // (not among them) is switched off, unless `others` is false
+    void applyInteractions(const QJsonArray &states, double fade, bool others = true);
     // Values of one interaction (keys: "master", "enable"… — or their whole address "interaction/<id>/master"), faded
     // as a snapshot's (lock held)
     void applyInteractionValues(quint64 id, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,

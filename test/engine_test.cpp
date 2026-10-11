@@ -4567,10 +4567,10 @@ int main(int argc, char **argv)
         CHECK(snap.interactions[0].toObject().value("name").toString() == "Interaction 1");
         e.addSnapshot(snap);
         CHECK(e.setParameter(0, on, true) && e.setParameter(0, master, 0.1));
-        Interaction later = Interaction::made(InteractionSource::Keyboard); // made after the snapshot: left alone
+        Interaction later = Interaction::made(InteractionSource::Keyboard); // made after the snapshot: switched off
         const quint64 k = e.addInteraction(later);
         e.recallSnapshot(e.snapshotCount() - 1);
-        CHECK(!value(f).enabled && std::abs(value(f).master - 0.7) < 1e-9 && value(k).enabled);
+        CHECK(!value(f).enabled && std::abs(value(f).master - 0.7) < 1e-9 && !value(k).enabled);
         CHECK(value(f).midiNumber == 7 && value(f).param == "opacity"); // its source and target stay
         // Off: the controller moves nothing
         ev.value = 0.2;
@@ -4673,6 +4673,21 @@ int main(int argc, char **argv)
               value(f).midiNumber == 7 && value(f).layer == a && value(f).param == "opacity");
         const quint64 next = e.addInteraction(Interaction::made(InteractionSource::Keyboard));
         CHECK(next > f && next != k); // ids go on after the one made again
+        // Made after a snapshot: switched off by its recall; a snapshot stored before they were kept leaves it alone
+        CHECK(e.setParameter(0, pre + "enable", true));
+        Engine::Snapshot none;
+        none.fade = 0;
+        e.addSnapshot(none); // holds no interaction
+        e.recallSnapshot(e.snapshotCount() - 1);
+        CHECK(!value(f).enabled && !value(next).enabled);
+        CHECK(e.setParameter(0, pre + "enable", true));
+        Engine::Snapshot old;
+        old.fade = 0;
+        old.interactionsKept = false;
+        old.composition = e.captureComposition();
+        e.addSnapshot(old);
+        e.recallSnapshot(e.snapshotCount() - 1);
+        CHECK(value(f).enabled);
     }
     }
 
