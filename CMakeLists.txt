@@ -218,6 +218,13 @@ if(APPLE)
   list(APPEND APP_SOURCES src/ui/MacPresentation.mm)
   add_executable(Fulskrin MACOSX_BUNDLE ${APP_SOURCES})
   target_link_libraries(Fulskrin PRIVATE "-framework AppKit")
+  # The camera permission plugin (static, from Qt): without it Qt refuses the camera before macOS is asked
+  find_package(Qt6QDarwinCameraPermissionPlugin QUIET)
+  if(TARGET Qt6::QDarwinCameraPermissionPlugin)
+    target_link_libraries(Fulskrin PRIVATE Qt6::QDarwinCameraPermissionPlugin Qt6::QDarwinCameraPermissionPlugin_init)
+  else()
+    message(WARNING "Qt camera permission plugin not found: the camera will not be asked for on macOS")
+  endif()
   set_target_properties(Fulskrin PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "Fulskrin"
     MACOSX_BUNDLE_GUI_IDENTIFIER "fr.fulskrin.app"
