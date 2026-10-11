@@ -56,6 +56,7 @@ add_library(fulskrin_engine STATIC
   src/engine/Media.cpp
   src/engine/Publish.cpp
   src/engine/LiveInput.cpp
+  src/engine/Permissions.cpp
   src/engine/AudioStream.cpp
   src/engine/AudioOutput.cpp
   src/engine/MiniaudioImpl.cpp
@@ -131,11 +132,11 @@ option(FULSKRIN_SPOUT "Spout publishing (Windows)" ON)
 # macOS: the output windows shown through Metal (OpenGL into a window only works on the main thread there)
 if(APPLE)
   enable_language(OBJCXX)
-  target_sources(fulskrin_engine PRIVATE src/engine/PresentMetal.mm)
+  target_sources(fulskrin_engine PRIVATE src/engine/PresentMetal.mm src/engine/Permissions.mm)
   set_source_files_properties(src/engine/PresentMetal.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_compile_definitions(fulskrin_engine PRIVATE GL_SILENCE_DEPRECATION)
   target_link_libraries(fulskrin_engine PRIVATE "-framework Metal" "-framework QuartzCore" "-framework IOSurface"
-    "-framework AppKit")
+    "-framework AppKit" "-framework Network")
 endif()
 
 if(APPLE AND FULSKRIN_SYPHON)
