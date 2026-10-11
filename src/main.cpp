@@ -1,5 +1,6 @@
 #include "Engine.h"
 #include "MainWindow.h"
+#include "Permissions.h"
 #include "Widgets.h"
 
 #include <QFileInfo>
@@ -86,7 +87,9 @@ int main(int argc, char *argv[])
         return ok ? 0 : 2;
     }
 
-    // GUI: rendering runs in its own thread, independent of the UI.
+    // GUI: rendering runs in its own thread, independent of the UI. The system asks for the camera and local network
+    // access first, before the media bin looks for NDI and OMT sources.
+    requestSystemPermissions();
     engine.start();
 
     int rc;
