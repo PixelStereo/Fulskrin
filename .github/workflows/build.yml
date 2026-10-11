@@ -52,6 +52,41 @@ jobs:
         run: |
           xvfb-run -a ctest --test-dir build --output-on-failure
 
+  # The HAP and Snappy readers against damaged files: a short libFuzzer run with ASan / UBSan, seeded with the
+  # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
+  fuzz:
+    name: Fuzzing (HAP, Snappy)
+    runs-on: ubuntu-24.04
+    needs: media
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-media
+          path: test/media
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config clang-18 libclang-rt-18-dev qt6-base-dev libqt6opengl6-dev \
+            qt6-multimedia-dev libgl1-mesa-dev libavformat-dev libavcodec-dev libswscale-dev libswresample-dev \
+            libavutil-dev ffmpeg
+      - name: Build
+        run: |
+          cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DFULSKRIN_FUZZ=ON
+          cmake --build build-fuzz --target fuzz_hap -j4
+      - name: Fuzz (2 minutes)
+        run: |
+          sh test/make_fuzz_corpus.sh "$PWD/fuzz_corpus"
+          mkdir -p fuzz_crashes
+          ./build-fuzz/fuzz_hap -fork=4 -max_total_time=120 -rss_limit_mb=4096 -artifact_prefix=fuzz_crashes/ fuzz_corpus
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: fuzz_crashes
+
   macos:
     name: macOS (Apple Silicon) + tests
     runs-on: macos-14
