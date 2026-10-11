@@ -94,6 +94,12 @@ public:
     bool isLocked(int i) const;            // locked itself, or member of a locked group
     // Solo: by index, the layers another layer's solo leaves out (none when nothing is soloed). Lock held.
     std::vector<bool> soloLeftOut() const;
+    // A layer's masks (Masks.h), by its id. Setting them redraws them.
+    std::vector<Mask> layerMasks(quint64 id) const;
+    void setLayerMasks(quint64 id, const std::vector<Mask> &m);
+    // The frame a layer's surface masks are drawn in, in pixels (its picture; a group: the composition; a viewport:
+    // its size)
+    QSize maskFrame(quint64 id) const;
 
     // --- Viewports: windows onto the composition, each with its size in pixels, its screen and its
     // publishing. Placed in the composition by their Spatial (mapping bounds); never inside a group.
@@ -704,6 +710,11 @@ private:
     Publishing m_publishing{[this] { drawQuad(); }};
     GLuint m_maskProgram = 0; // an effect's result over its input, through a mask
     GLint m_maskInLoc = -1, m_maskFxLoc = -1, m_maskMaskLoc = -1, m_maskInvertLoc = -1;
+    GLuint m_shapeMaskProgram = 0; // a picture through its masks' alpha
+    GLint m_shapeMaskTexLoc = -1, m_shapeMaskMaskLoc = -1, m_shapeMaskRgbLoc = -1;
+    GLint m_compMaskLoc = -1, m_compMaskOnLoc = -1, m_diffMaskLoc = -1, m_diffMaskOnLoc = -1;
+    void applySurfaceMasks(Layer &l, GLuint &tex, int w, int h);  // render thread
+    bool bindCompositionMasks(Layer &l);                          // render thread: true if it has some
     GLuint m_fadeProgram = 0; // a crossfade of two pictures (a source transition without a shader)
     GLint m_fadeALoc = -1, m_fadeBLoc = -1, m_fadeKLoc = -1;
 };

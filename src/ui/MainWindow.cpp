@@ -259,6 +259,16 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
     // --- General sync
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
+    // Masks: the one selected in the inspector is edited in the preview, the one drawn there is selected
+    connect(m_inspector, &LayerInspector::maskSelected, m_view, &MappingView::setMaskIndex);
+    connect(m_inspector, &LayerInspector::maskDrawRequested, this, [this] {
+        m_view->startMaskDrawing();
+        statusBar()->showMessage(QStringLiteral("Draw the mask in the preview: click its points (drag to curve); the first "
+                                                "point, a double-click or Enter closes it; Esc cancels"),
+                                 10000);
+    });
+    connect(m_view, &MappingView::masksEdited, m_inspector, &LayerInspector::refreshMasks);
+    connect(m_view, &MappingView::maskPicked, m_inspector, &LayerInspector::selectMask);
     connect(m_inspector, &LayerInspector::layerChanged, this, &MainWindow::refreshLayerList);
     connect(m_inspector, &LayerInspector::projectEdited, this, &MainWindow::markDirty);
     connect(m_inspector, &LayerInspector::rescanLibraryRequested, this, &MainWindow::rescanLibrary,
@@ -286,6 +296,8 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_undo, &QUndoStack::indexChanged, this, [this] {
         refreshLayerList();   // in-place update (opacity, visibility, name…)
         m_binTimer.start();   // the media bin follows sources and shader images
+        m_inspector->refreshMasks();
+        m_view->update();
     });
 
     // I / O: in / out point of the selected video or sound at its current position

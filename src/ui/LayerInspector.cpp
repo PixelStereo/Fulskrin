@@ -2,6 +2,7 @@
 #include "Commands.h"
 #include "Engine.h"
 #include "LayerTable.h"
+#include "MaskPanel.h"
 #include "ParamAnimPanel.h"
 #include "ParamPanel.h"
 #include "SettingsPanel.h"
@@ -354,7 +355,13 @@ void LayerInspector::showAnimation(const QString &param)
 
 void LayerInspector::setLayer(int index)
 {
-    if (index != m_layer) m_selectedEffect = 0;
+    if (index != m_layer) {
+        m_selectedEffect = 0;
+        if (m_maskIndex >= 0) {
+            m_maskIndex = -1;
+            emit maskSelected(-1);
+        }
+    }
     m_layer = index;
     rebuild();
 }
@@ -539,6 +546,24 @@ void LayerInspector::rebuild()
     tabs->addTab(page(buildRoi(s)), QStringLiteral("ROI"));
     tabs->addTab(page(buildColor(s)), QStringLiteral("Color"));
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
+    {
+        m_maskPanel = new MaskPanel(m_engine, m_undo, s.id, s.isViewport, m_locked);
+        int count = 0;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            if (const Layer *l = m_engine->layer(m_layer)) count = int(l->masks.size());
+        }
+        if (m_maskIndex >= count) m_maskIndex = -1;
+        m_maskPanel->select(m_maskIndex);
+        connect(m_maskPanel, &MaskPanel::currentChanged, this, [this](int i) {
+            m_maskIndex = i;
+            emit maskSelected(i);
+        });
+        connect(m_maskPanel, &MaskPanel::drawRequested, this, &LayerInspector::maskDrawRequested);
+        connect(m_maskPanel, &MaskPanel::edited, this, &LayerInspector::mappingChanged);
+        const int t = tabs->addTab(page(m_maskPanel), count ? QStringLiteral("Masks (%1)").arg(count) : QStringLiteral("Masks"));
+        tabs->setTabToolTip(t, QStringLiteral("Shapes that keep or cut its picture (drawn and edited in the preview)"));
+    }
     tabs->addTab(page(buildEffects(s)), QStringLiteral("FX"));
     if (!s.isViewport) tabs->addTab(page(buildViewports(s)), QStringLiteral("Viewports"));
     m_anims = new ParamAnimPanel(m_engine, m_undo, s.id);
@@ -2300,6 +2325,17 @@ void LayerInspector::refreshSpatial()
         QSignalBlocker blk(boxes[k]);
         boxes[k]->setValue(all[k]);
     }
+}
+
+void LayerInspector::refreshMasks()
+{
+    if (m_maskPanel) m_maskPanel->refresh();
+}
+
+void LayerInspector::selectMask(int index)
+{
+    m_maskIndex = index;
+    if (m_maskPanel) m_maskPanel->select(index);
 }
 
 void LayerInspector::refreshDynamic()

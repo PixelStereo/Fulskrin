@@ -146,22 +146,29 @@ bool Engine::initialize(QString *err)
         "#version 330 core\nlayout(location=0) in vec2 a_pos; layout(location=1) in vec2 a_uv; out vec2 v_uv;\n"
         "uniform vec4 u_view;\n" // scale, offset: the part of the composition the target shows
         "uniform vec4 u_rot; uniform float u_asp;\n" // that part turned: cos, sin, center (clip space); composition width / height
-        "void main(){ v_uv = a_uv; vec2 q = a_pos - u_rot.zw; q.x *= u_asp;\n"
+        "out vec2 v_comp;\n" // where in the composition (0..1, origin bottom left): its masks there
+        "void main(){ v_uv = a_uv; v_comp = a_pos*0.5+0.5; vec2 q = a_pos - u_rot.zw; q.x *= u_asp;\n"
         "  q = vec2(u_rot.x*q.x - u_rot.y*q.y, u_rot.y*q.x + u_rot.x*q.y); q.x /= u_asp;\n"
         "  gl_Position = vec4((q+u_rot.zw)*u_view.xy+u_view.zw,0.0,1.0); }\n",
         "#version 330 core\nuniform sampler2D u_tex; uniform float u_opacity; in vec2 v_uv; out vec4 o;\n"
-        "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity; o = vec4(c.rgb*a, a); }\n",
+        "uniform sampler2D u_mask; uniform int u_maskOn; in vec2 v_comp;\n"
+        "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity;\n"
+        "  if (u_maskOn != 0) a *= texture(u_mask, vec2(v_comp.x, 1.0 - v_comp.y)).r;\n"
+        "  o = vec4(c.rgb*a, a); }\n",
         &log);
     // Difference needs what is already drawn, which blending cannot give: the layer reads a copy of it
     m_diffProgram = compileProgram(
         "#version 330 core\nlayout(location=0) in vec2 a_pos; layout(location=1) in vec2 a_uv; out vec2 v_uv;\n"
         "uniform vec4 u_view;\n"
         "uniform vec4 u_rot; uniform float u_asp;\n"
-        "void main(){ v_uv = a_uv; vec2 q = a_pos - u_rot.zw; q.x *= u_asp;\n"
+        "out vec2 v_comp;\n"
+        "void main(){ v_uv = a_uv; v_comp = a_pos*0.5+0.5; vec2 q = a_pos - u_rot.zw; q.x *= u_asp;\n"
         "  q = vec2(u_rot.x*q.x - u_rot.y*q.y, u_rot.y*q.x + u_rot.x*q.y); q.x /= u_asp;\n"
         "  gl_Position = vec4((q+u_rot.zw)*u_view.xy+u_view.zw,0.0,1.0); }\n",
         "#version 330 core\nuniform sampler2D u_tex; uniform sampler2D u_dst; uniform float u_opacity; in vec2 v_uv; out vec4 o;\n"
+        "uniform sampler2D u_mask; uniform int u_maskOn; in vec2 v_comp;\n"
         "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity;\n"
+        "  if (u_maskOn != 0) a *= texture(u_mask, vec2(v_comp.x, 1.0 - v_comp.y)).r;\n"
         "  vec4 d = texelFetch(u_dst, ivec2(gl_FragCoord.xy), 0);\n"
         "  o = vec4(abs(d.rgb - c.rgb*a), d.a + a*(1.0-d.a)); }\n",
         &log);
@@ -204,6 +211,21 @@ bool Engine::initialize(QString *err)
         if (err) *err = QStringLiteral("Internal shaders: ") + log;
         return false;
     }
+    // A picture through its masks' alpha (Masks.h): the alpha only, or the color too (a viewport: shown opaque)
+    m_shapeMaskProgram = compileProgram(quadVs,
+                                        "#version 330 core\nuniform sampler2D u_tex; uniform sampler2D u_mask; uniform int u_rgb;\n"
+                                        "in vec2 v_uv; out vec4 o;\n"
+                                        "void main(){ vec4 c = texture(u_tex, v_uv);\n"
+                                        "  float m = texture(u_mask, vec2(v_uv.x, 1.0 - v_uv.y)).r;\n" // stored top row first
+                                        "  o = u_rgb != 0 ? c * m : vec4(c.rgb, c.a * m); }\n",
+                                        &log);
+    if (!m_shapeMaskProgram) {
+        if (err) *err = QStringLiteral("Internal shaders: ") + log;
+        return false;
+    }
+    m_shapeMaskTexLoc = f->glGetUniformLocation(m_shapeMaskProgram, "u_tex");
+    m_shapeMaskMaskLoc = f->glGetUniformLocation(m_shapeMaskProgram, "u_mask");
+    m_shapeMaskRgbLoc = f->glGetUniformLocation(m_shapeMaskProgram, "u_rgb");
     // A crossfade between two pictures (a missing one: transparent), mixed in the shader rather than by blending
     m_fadeProgram = compileProgram(quadVs,
                                    "#version 330 core\nuniform sampler2D u_a; uniform sampler2D u_b; uniform vec3 u_k;\n"
@@ -233,6 +255,10 @@ bool Engine::initialize(QString *err)
     m_prepMaskModeLoc = f->glGetUniformLocation(m_prepProgram, "u_maskMode");
     m_compTexLoc = f->glGetUniformLocation(m_compProgram, "u_tex");
     m_compOpacityLoc = f->glGetUniformLocation(m_compProgram, "u_opacity");
+    m_compMaskLoc = f->glGetUniformLocation(m_compProgram, "u_mask");
+    m_compMaskOnLoc = f->glGetUniformLocation(m_compProgram, "u_maskOn");
+    m_diffMaskLoc = f->glGetUniformLocation(m_diffProgram, "u_mask");
+    m_diffMaskOnLoc = f->glGetUniformLocation(m_diffProgram, "u_maskOn");
     m_diffTexLoc = f->glGetUniformLocation(m_diffProgram, "u_tex");
     m_diffDstLoc = f->glGetUniformLocation(m_diffProgram, "u_dst");
     m_diffOpacityLoc = f->glGetUniformLocation(m_diffProgram, "u_opacity");
@@ -432,7 +458,7 @@ void Engine::releaseAll()
     m_videoConv.release();
     m_testCard.release();
     for (GLuint p : {m_blitProgram, m_compProgram, m_diffProgram, m_presentProgram, m_prepProgram, m_maskProgram,
-                     m_fadeProgram})
+                     m_fadeProgram, m_shapeMaskProgram})
         if (p) f->glDeleteProgram(p);
     GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};
     f->glDeleteBuffers(3, bufs);
@@ -441,7 +467,7 @@ void Engine::releaseAll()
     f->glDeleteTextures(1, &m_blackTex);
     m_quadVao = m_meshVao = 0;
     m_blitProgram = m_compProgram = m_diffProgram = m_presentProgram = m_prepProgram = m_maskProgram = 0;
-    m_fadeProgram = 0;
+    m_fadeProgram = m_shapeMaskProgram = 0;
 }
 
 // ---------------------------------------------------------------------------

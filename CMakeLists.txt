@@ -66,6 +66,7 @@ add_library(fulskrin_engine STATIC
   src/engine/Sequencer.cpp
   src/engine/Publishing.cpp
   src/engine/TestCard.cpp
+  src/engine/Masks.cpp
   src/engine/Presets.cpp
   src/engine/Animations.cpp
   src/engine/Parameter.cpp
@@ -200,6 +201,7 @@ set(APP_SOURCES
   src/ui/ParamPanel.cpp
   src/ui/PresetEditor.cpp
   src/ui/MappingView.cpp
+  src/ui/MaskPanel.cpp
   src/ui/OutputWindow.cpp
   src/ui/GlDraw.cpp
   src/ui/Commands.cpp

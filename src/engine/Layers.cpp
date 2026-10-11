@@ -368,6 +368,36 @@ QList<int> Engine::groupMembers(int g) const
     return out;
 }
 
+std::vector<Mask> Engine::layerMasks(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    const int i = indexOfId(id);
+    return i >= 0 ? m_layers[size_t(i)]->masks : std::vector<Mask>{};
+}
+
+void Engine::setLayerMasks(quint64 id, const std::vector<Mask> &m)
+{
+    Lock lk(&m_mutex);
+    const int i = indexOfId(id);
+    if (i < 0) return;
+    Layer &l = *m_layers[size_t(i)];
+    l.masks = m;
+    ++l.masksRevision;
+}
+
+QSize Engine::maskFrame(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    const int i = indexOfId(id);
+    if (i < 0) return m_compSize;
+    const Layer &l = *m_layers[size_t(i)];
+    if (l.isViewport) return l.viewportSize();
+    if (l.isGroup) return m_compSize;
+    if (l.finalW > 0 && l.finalH > 0) return QSize(l.finalW, l.finalH); // its picture, after its ROI
+    if (l.sourceWidth() > 0 && l.sourceHeight() > 0) return QSize(l.sourceWidth(), l.sourceHeight());
+    return m_compSize;
+}
+
 bool Engine::isLocked(int i) const
 {
     Lock lk(&m_mutex);
@@ -400,6 +430,10 @@ void Engine::releaseLayer(Layer &l)
     l.maskTarget[1].destroy();
     l.groupTarget.destroy();
     l.prepTarget.destroy();
+    l.shapeMaskSurface.destroy();
+    l.shapeMaskComp.destroy();
+    l.shapeMaskTarget.destroy();
+    l.shapeMaskSurfaceRev = l.shapeMaskCompRev = 0;
     l.vpOut[0].destroy();
     l.vpOut[1].destroy();
     if (l.meshVbo) gl()->glDeleteBuffers(1, &l.meshVbo);
