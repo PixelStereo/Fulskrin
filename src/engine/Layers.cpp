@@ -380,6 +380,7 @@ void Engine::setLayerMasks(quint64 id, const std::vector<Mask> &m)
     Lock lk(&m_mutex);
     const int i = indexOfId(id);
     if (i < 0) return;
+    takeOverFades(id, {QStringLiteral("masks")}); // set here: a snapshot's fade no longer moves them
     Layer &l = *m_layers[size_t(i)];
     l.masks = m;
     ++l.masksRevision;

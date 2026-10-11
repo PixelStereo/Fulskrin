@@ -2360,11 +2360,13 @@ void LayerInspector::refreshDynamic()
         QRectF roi;
         QColor add, remove;
         double temp = 0, tint = 0;
+        unsigned masksRev = 0;
         {
             Engine::Lock lk(&m_engine->mutex());
             Layer *l = m_engine->layer(m_layer);
             if (!l) return;
             roi = l->roi;
+            masksRev = l->masksRevision;
             add = QColor::fromRgbF(l->color.add[0], l->color.add[1], l->color.add[2]);
             remove = QColor::fromRgbF(l->color.remove[0], l->color.remove[1], l->color.remove[2]);
             temp = l->color.temp;
@@ -2375,6 +2377,10 @@ void LayerInspector::refreshDynamic()
         if (m_roi) m_roi->setRoi(roi);
         if (m_colorAdd) m_colorAdd->setColor(add);
         if (m_colorRemove) m_colorRemove->setColor(remove);
+        if (masksRev != m_masksRev) { // a snapshot (or OSC) changed them: the list and the fields follow
+            m_masksRev = masksRev;
+            refreshMasks();
+        }
     }
     if (follow) {
         float opacity = 1, volume = 1;
