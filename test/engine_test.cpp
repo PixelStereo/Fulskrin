@@ -2330,12 +2330,18 @@ int main(int argc, char **argv)
             QJsonObject cut = before;
             cut["timing"] = QJsonObject{{"masks", 0}};
             e.setLayerMasks(lid, {moved});
-            e.applyLayers(QJsonArray{cut}, 1.0);
-            CHECK(std::abs(M()[0].nodes[0].p.x()) < 1e-9 && !e.isFading());
+            e.applyLayers(QJsonArray{cut}, 1.0); // (the rest of the recall still fades: its routing)
+            CHECK(std::abs(M()[0].nodes[0].p.x()) < 1e-9);
+            e.advanceFades(0.3);
+            CHECK(std::abs(M()[0].nodes[0].p.x()) < 1e-9);
+            e.advanceFades(1.0);
             // Another shape (as many masks, not as many points): at once
             e.setLayerMasks(lid, {Mask::triangle(QRectF(0.5, 0, 0.5, 1))});
             e.applyLayers(QJsonArray{before}, 1.0);
-            CHECK(M().size() == 1 && M()[0].nodes.size() == 4 && std::abs(M()[0].nodes[0].p.x()) < 1e-9 && !e.isFading());
+            CHECK(M().size() == 1 && M()[0].nodes.size() == 4 && std::abs(M()[0].nodes[0].p.x()) < 1e-9);
+            e.advanceFades(0.3);
+            CHECK(M().size() == 1 && std::abs(M()[0].nodes[0].p.x()) < 1e-9);
+            e.advanceFades(1.0);
             // A snapshot without masks takes them away; set by hand during a fade, they stay as set
             QJsonObject none = before;
             none.remove("masks");
