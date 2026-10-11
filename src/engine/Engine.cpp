@@ -2,6 +2,7 @@
 // the output window, the composition size, and the composition opacity / blackout fades.
 // The rest of its methods live in Layers.cpp, Render.cpp, Project.cpp, Media.cpp and Snapshots.cpp.
 #include "EngineInternal.h"
+#include "Midi.h"
 
 #include <QDebug>
 #include <QImage>
@@ -54,7 +55,11 @@ bool Engine::startAudio(const QString &device, QString *err, bool nullDevice)
 
 void Engine::stopAudio() { m_audio->stop(); }
 
-Engine::~Engine() { shutdown(); }
+Engine::~Engine()
+{
+    m_midiIns.clear(); // their callbacks feed the interactions: stopped first
+    shutdown();
+}
 
 void Engine::makeCurrent()
 {

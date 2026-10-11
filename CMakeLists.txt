@@ -73,6 +73,8 @@ add_library(fulskrin_engine STATIC
   src/engine/TimecodeClock.cpp
   src/engine/TimecodeIo.cpp
   src/engine/TimecodeOutputs.cpp
+  src/engine/Interactions.cpp
+  src/engine/InteractionsEngine.cpp
   src/engine/Presets.cpp
   src/engine/Animations.cpp
   src/engine/Parameter.cpp
@@ -291,6 +293,7 @@ set(APP_SOURCES
   src/ui/ParamAnimPanel.cpp
   src/ui/TimelinePanel.cpp
   src/ui/Widgets.cpp
+  src/ui/InteractionPanel.cpp
 )
 
 if(APPLE)
@@ -381,7 +384,7 @@ if(FULSKRIN_TESTS)
   # Test media first: sh test/make_media.sh
   enable_testing()
   foreach(area video project playback undo structure compositing osc snapshots masks rendering thread publishing
-          media sound layersource timecode)
+          media sound layersource timecode interactions)
     add_test(NAME ${area} COMMAND fulskrin_tests --area ${area})
   endforeach()
   add_test(NAME isf COMMAND fulskrin_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")

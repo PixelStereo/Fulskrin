@@ -4259,6 +4259,255 @@ int main(int argc, char **argv)
     }
     }
 
+    if (area("interactions")) {
+    // The chain of an interaction, on its own: range, toggle, filters, curve, master, pick-up
+    {
+        auto near = [](double a, double b, double eps = 1e-6) { return std::abs(a - b) < eps; };
+        Interaction it = Interaction::made(InteractionSource::Midi);
+        CHECK(it.takeover == Takeover::PickUp && Interaction::made(InteractionSource::Keyboard).takeover == Takeover::Jump);
+        InteractionProcessor pr;
+        CHECK(!pr.step(it, 0.016));
+        it.srcMin = 0.2;
+        it.srcMax = 0.8;
+        pr.input(it, 0.5);
+        CHECK(near(*pr.step(it, 0.016), 0.5));
+        pr.input(it, 0.95);
+        CHECK(near(*pr.step(it, 0.016), 1.0)); // beyond the range: held at its end
+        it.srcMin = 0;
+        it.srcMax = 1;
+        it.master = 0.5;
+        pr.input(it, 0.8);
+        CHECK(near(*pr.step(it, 0.016), 0.4));
+        it.master = 1;
+        it.curveOn = true; // an inverted curve
+        it.curve.keys[0].v = 1;
+        it.curve.keys[1].v = 0;
+        pr.input(it, 0.25);
+        CHECK(near(*pr.step(it, 0.016), 0.75));
+        it.curveOn = false;
+        // Toggle: up past the middle flips
+        it.toggle = true;
+        InteractionProcessor tg;
+        std::vector<double> outs;
+        for (double x : {1.0, 0.0, 1.0, 0.0, 0.3, 1.0}) {
+            tg.input(it, x);
+            outs.push_back(*tg.step(it, 0.016));
+        }
+        CHECK(outs == std::vector<double>({1, 1, 0, 0, 0, 1}));
+        it.toggle = false;
+        // Filters: from 0, a step to 1, sixty frames a second
+        auto run = [&](InteractionFilter f, double a, double b, double seconds, double *peak = nullptr) {
+            Interaction x = it;
+            x.filterOn = true;
+            x.filter = f;
+            x.filterA = a;
+            x.filterB = b;
+            InteractionProcessor q;
+            q.input(x, 0);
+            for (int k = 0; k < 120; ++k) q.step(x, 1.0 / 60); // at rest for two seconds
+            q.input(x, 1);
+            double y = 0, top = 0;
+            for (double t = 0; t < seconds; t += 1.0 / 60) {
+                y = *q.step(x, 1.0 / 60);
+                top = std::max(top, y);
+            }
+            if (peak) *peak = top;
+            return y;
+        };
+        CHECK(run(InteractionFilter::Average, 0.5, 0, 0.25) > 0.4 && run(InteractionFilter::Average, 0.5, 0, 0.25) < 0.6);
+        CHECK(run(InteractionFilter::Average, 0.5, 0, 1.0) > 0.99);
+        CHECK(run(InteractionFilter::WeightedAverage, 0.5, 0, 0.1) < 0.6 && run(InteractionFilter::WeightedAverage, 0.5, 0, 1.0) > 0.98);
+        CHECK(run(InteractionFilter::AttackRelease, 0.01, 2, 0.1) > 0.99); // a fast attack
+        double peak = 0;
+        CHECK(run(InteractionFilter::PulseDetection, 0.2, 0.3, 0.6, &peak) < 1e-9 && peak > 0.9); // a pulse, gone in 0.3 s
+        CHECK(std::abs(run(InteractionFilter::Damper, 0.3, 0.7, 3.0) - 1.0) < 0.01); // settles where it is sent
+        // Pick-up: the target at 0.5 is left alone until the controller meets it
+        Interaction pu = Interaction::made(InteractionSource::Midi);
+        InteractionTargetState ts;
+        CHECK(!ts.numberToWrite(pu, 0.1, 0.5, 0.01) && !ts.numberToWrite(pu, 0.3, 0.5, 0.01));
+        CHECK(ts.numberToWrite(pu, 0.6, 0.5, 0.01) && near(*ts.written, 0.6)); // crossed it
+        CHECK(ts.numberToWrite(pu, 0.7, 0.6, 0.01) && near(*ts.written, 0.7));
+        CHECK(!ts.numberToWrite(pu, 0.75, 0.2, 0.01)); // moved elsewhere (a snapshot): let go again
+        Interaction jp = Interaction::made(InteractionSource::Keyboard);
+        InteractionTargetState tj;
+        CHECK(tj.numberToWrite(jp, 0.1, 0.5, 0.01) && near(*tj.written, 0.1));
+        // A file and back
+        it.name = "Fader";
+        it.midiPort = "nanoKONTROL";
+        it.midiChannel = 3;
+        it.midiNumber = 14;
+        it.filterOn = true;
+        it.filter = InteractionFilter::Damper;
+        it.layer = 42;
+        it.param = "opacity";
+        const Interaction back = Interaction::fromJson(it.toJson());
+        CHECK(back.toJson() == it.toJson() && back.midiPort == "nanoKONTROL" && back.filter == InteractionFilter::Damper);
+    }
+    // In the engine: MIDI, a key, OSC and another value drive the show's values, each frame
+    {
+        e.newProject();
+        const quint64 a = e.layerId(e.addLayer("A")), b = e.layerId(e.addLayer("B"));
+        CHECK(e.setLayerImage(e.indexOfId(a), tmp + "/redblue.png", &err));
+        auto opacity = [&](quint64 id) { return e.parameterValue(id, "opacity").toDouble(); };
+        auto midiCc = [&](int ch, int cc, double v) {
+            InteractionEvent ev;
+            ev.source = InteractionSource::Midi;
+            ev.port = "Test Port";
+            ev.channel = ch;
+            ev.message = MidiMessageKind::ControlChange;
+            ev.number = cc;
+            ev.value = v;
+            e.feedInteraction(ev);
+        };
+        Interaction fader = Interaction::made(InteractionSource::Midi);
+        fader.midiChannel = 1;
+        fader.midiNumber = 7;
+        fader.layer = a;
+        fader.param = "opacity";
+        fader.takeover = Takeover::Jump;
+        const quint64 f = e.addInteraction(fader);
+        CHECK(e.interactions().size() == 1 && e.interactions()[0].id == f);
+        midiCc(1, 7, 0.25);
+        e.renderFrame();
+        CHECK(std::abs(opacity(a) - 0.25) < 1e-6);
+        midiCc(2, 7, 0.9); // another channel: not this one
+        midiCc(1, 8, 0.9); // another controller
+        e.renderFrame();
+        CHECK(std::abs(opacity(a) - 0.25) < 1e-6);
+        double level = 0, output = 0;
+        CHECK(e.interactionLevels(f, &level, &output) && std::abs(level - 0.25) < 1e-6);
+        // Pick-up: moved by hand to 0.8, the fader at 0.1 leaves it; brought past it, it takes it
+        fader.id = f;
+        fader.takeover = Takeover::PickUp;
+        CHECK(e.setInteraction(fader));
+        CHECK(e.setParameter(a, "opacity", 0.8));
+        midiCc(1, 7, 0.1);
+        e.renderFrame();
+        CHECK(std::abs(opacity(a) - 0.8) < 1e-6);
+        midiCc(1, 7, 0.5);
+        e.renderFrame();
+        CHECK(std::abs(opacity(a) - 0.8) < 1e-6);
+        midiCc(1, 7, 0.85);
+        e.renderFrame();
+        CHECK(std::abs(opacity(a) - 0.85) < 1e-6);
+        // Target range: 0..1 lands on 0.2..0.4; disabled: nothing
+        fader.takeover = Takeover::Jump;
+        fader.dstMin = 0.2;
+        fader.dstMax = 0.4;
+        CHECK(e.setInteraction(fader));
+        midiCc(1, 7, 0.5);
+        e.renderFrame();
+        CHECK(std::abs(opacity(a) - 0.3) < 1e-6);
+        fader.enabled = false;
+        CHECK(e.setInteraction(fader));
+        midiCc(1, 7, 1.0);
+        e.renderFrame();
+        CHECK(std::abs(opacity(a) - 0.3) < 1e-6);
+        // A locked layer is left alone
+        fader.enabled = true;
+        CHECK(e.setInteraction(fader));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(a))->locked = true;
+        }
+        midiCc(1, 7, 0.0);
+        e.renderFrame();
+        CHECK(std::abs(opacity(a) - 0.3) < 1e-6);
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(a))->locked = false;
+        }
+        e.removeInteraction(f);
+        CHECK(e.interactions().empty());
+
+        // A key toggling a switch (a picture layer's effects)
+        Interaction key = Interaction::made(InteractionSource::Keyboard);
+        key.key = "Space";
+        key.toggle = true;
+        key.layer = a;
+        key.param = "fx/enable";
+        e.addInteraction(key);
+        auto press = [&](const QString &k, double v) {
+            InteractionEvent ev;
+            ev.source = InteractionSource::Keyboard;
+            ev.address = k;
+            ev.value = v;
+            e.feedInteraction(ev);
+        };
+        CHECK(e.parameterValue(a, "fx/enable").toBool());
+        press("Space", 1);
+        press("Space", 0); // pressed and let go within a frame: one press, the toggle at 1
+        e.renderFrame();
+        CHECK(e.parameterValue(a, "fx/enable").toBool());
+        press("Space", 1); // the second: 0
+        e.renderFrame();
+        press("Space", 0);
+        e.renderFrame();
+        CHECK(!e.parameterValue(a, "fx/enable").toBool());
+        press("Space", 1); // the third: 1 again
+        press("Space", 0);
+        e.renderFrame();
+        CHECK(e.parameterValue(a, "fx/enable").toBool());
+
+        // OSC: a message's argument
+        OscServer server(&e);
+        Interaction osc = Interaction::made(InteractionSource::Osc);
+        osc.oscAddress = "/fader/1";
+        osc.oscArgument = 1;
+        osc.takeover = Takeover::Jump;
+        osc.srcMin = 0;
+        osc.srcMax = 100;
+        osc.layer = b;
+        osc.param = "opacity";
+        e.addInteraction(osc);
+        osc::Message m;
+        m.address = "/fader/1";
+        m.args = {QVariant(5), QVariant(40.0)};
+        server.handleMessage(m);
+        e.renderFrame();
+        CHECK(std::abs(opacity(b) - 0.4) < 1e-6);
+
+        // Internal: B's opacity follows A's, inverted
+        e.setInteractions({});
+        Interaction link = Interaction::made(InteractionSource::Internal);
+        link.sourceLayer = a;
+        link.sourceParam = "opacity";
+        link.layer = b;
+        link.param = "opacity";
+        link.dstMin = 1;
+        link.dstMax = 0;
+        e.addInteraction(link);
+        CHECK(e.setParameter(a, "opacity", 0.3));
+        e.renderFrame();
+        CHECK(std::abs(opacity(b) - 0.7) < 1e-6);
+        CHECK(e.setParameter(a, "opacity", 0.9));
+        e.renderFrame();
+        CHECK(std::abs(opacity(b) - 0.1) < 1e-6);
+
+        // Learn: the next event is kept (a key: when pressed)
+        e.setInteractionLearn(true);
+        press("F5", 0);
+        CHECK(!e.takeLearnedInteraction());
+        midiCc(4, 21, 0.5);
+        const std::optional<InteractionEvent> learned = e.takeLearnedInteraction();
+        CHECK(learned && learned->source == InteractionSource::Midi && learned->channel == 4 && learned->number == 21);
+        CHECK(!e.takeLearnedInteraction());
+        e.setInteractionLearn(false);
+        midiCc(4, 22, 0.5);
+        CHECK(!e.takeLearnedInteraction());
+        e.renderFrame();
+
+        // Saved with the project
+        CHECK(e.saveProject(tmp + "/interactions.fulskrin", {}, &err));
+        e.newProject();
+        CHECK(e.interactions().empty());
+        CHECK(e.loadProject(tmp + "/interactions.fulskrin", nullptr, &err));
+        CHECK(e.interactions().size() == 1 && e.interactions()[0].source == InteractionSource::Internal &&
+              e.interactions()[0].sourceLayer == a && e.interactions()[0].layer == b && e.interactions()[0].dstMin == 1);
+        CHECK(e.addInteraction(Interaction::made(InteractionSource::Keyboard)) > e.interactions()[0].id);
+    }
+    }
+
     if (area("layersource")) {
     // 12. Copy / paste of layer parameters, and a layer used as the source of another (pre-FX / post-FX)
     {

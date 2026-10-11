@@ -868,6 +868,7 @@ void Engine::frame(double dt)
         stepCompositionFade(m_realDt); // the output level keeps its real time: a blackout works while paused
         stepAnimations(m_realDt * k); // after the fades: a timeline playing wins over them
     }
+    stepInteractions(m_realDt); // after the animations: a controller moved wins (its own time: it follows the hand)
     markNeeded();
     for (auto &l : m_layers) updateSource(*l, dt);
     for (auto &[id, t] : m_transitions) updateSource(*t->from, dt); // the outgoing sources play on
