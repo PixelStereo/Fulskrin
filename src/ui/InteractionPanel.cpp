@@ -1,0 +1,878 @@
+#include "InteractionPanel.h"
+#include "AnimEditor.h"
+#include "Engine.h"
+#include "Widgets.h"
+
+#include <QApplication>
+#include <QClipboard>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QJsonDocument>
+#include <QKeySequenceEdit>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMenu>
+#include <QMimeData>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QSplitter>
+#include <QTabBar>
+#include <QTimer>
+#include <QToolButton>
+#include <QTreeWidget>
+#include <QUndoCommand>
+#include <QUndoStack>
+#include <QVBoxLayout>
+#include <cmath>
+
+// ---------------------------------------------------------------------------
+// Undo: the whole list before and after (edits of one drag merge into one step)
+// ---------------------------------------------------------------------------
+namespace {
+
+class SetInteractions : public QUndoCommand
+{
+public:
+    SetInteractions(Engine *e, std::vector<Interaction> before, std::vector<Interaction> after, const QString &text,
+                    const QString &mergeKey)
+        : QUndoCommand(text), m_e(e), m_before(std::move(before)), m_after(std::move(after)), m_key(mergeKey)
+    {
+    }
+    void undo() override { m_e->setInteractions(m_before); }
+    void redo() override { m_e->setInteractions(m_after); }
+    int id() const override { return m_key.isEmpty() ? -1 : 0x1A7E; }
+    bool mergeWith(const QUndoCommand *other) override
+    {
+        auto *o = static_cast<const SetInteractions *>(other);
+        if (o->m_key != m_key) return false;
+        m_after = o->m_after;
+        return true;
+    }
+
+private:
+    Engine *m_e;
+    std::vector<Interaction> m_before, m_after;
+    QString m_key;
+};
+
+constexpr char kMime[] = "application/x-fulskrin-interaction-settings";
+const InteractionSource kKinds[] = {InteractionSource::Keyboard, InteractionSource::Midi, InteractionSource::Osc,
+                                    InteractionSource::Internal};
+
+QLabel *note(const QString &t)
+{
+    auto *l = new QLabel(t);
+    l->setWordWrap(true);
+    l->setStyleSheet("color:#888; font-size:11px;");
+    return l;
+}
+
+QProgressBar *meter()
+{
+    auto *m = new QProgressBar;
+    m->setRange(0, 1000);
+    m->setTextVisible(false);
+    m->setFixedHeight(6);
+    m->setStyleSheet(QStringLiteral("QProgressBar { background:#1b1b1d; border:none; } QProgressBar::chunk { background:%1; }")
+                         .arg(theme::css()));
+    return m;
+}
+
+// The chain alone (not the source, not the target): what Copy / Paste Settings carry
+QJsonObject chainJson(const Interaction &it)
+{
+    QJsonObject o = it.toJson();
+    for (const char *k : {"id", "name", "enabled", "source", "key", "port", "channel", "message", "number", "address",
+                          "argument", "source_layer", "source_param", "layer", "param"})
+        o.remove(QLatin1String(k));
+    return o;
+}
+
+void applyChain(Interaction &it, const QJsonObject &chain)
+{
+    QJsonObject o = it.toJson();
+    for (auto c = chain.begin(); c != chain.end(); ++c) o[c.key()] = c.value();
+    it = Interaction::fromJson(o);
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// The panel
+// ---------------------------------------------------------------------------
+InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
+    : QWidget(parent), m_engine(engine), m_undo(undo)
+{
+    auto *v = new QVBoxLayout(this);
+    v->setContentsMargins(4, 4, 4, 4);
+    v->setSpacing(6);
+
+    m_kinds = new QTabBar;
+    m_kinds->setDrawBase(false);
+    m_kinds->setExpanding(false);
+    for (InteractionSource k : kKinds) m_kinds->addTab(interactionSourceName(k));
+    m_kinds->addTab(QStringLiteral("All"));
+    m_kinds->setTabToolTip(3, QStringLiteral("A value of the show driven by another one, with no protocol in between"));
+    v->addWidget(m_kinds);
+
+    auto *bar = new QHBoxLayout;
+    auto *addButton = new QPushButton(QStringLiteral("+"));
+    addButton->setFixedWidth(32);
+    addButton->setToolTip(QStringLiteral("A new interaction of this kind"));
+    m_remove = new QPushButton(QStringLiteral("−"));
+    m_remove->setFixedWidth(32);
+    m_remove->setToolTip(QStringLiteral("Remove the selected interactions"));
+    m_learn = new QToolButton;
+    m_learn->setText(QStringLiteral("Learn"));
+    m_learn->setCheckable(true);
+    m_learn->setToolTip(QStringLiteral("Move a controller, press a key or send an OSC message: the selected interaction "
+                                       "takes it as its source (none selected: a new one is made)"));
+    m_search = new QLineEdit;
+    m_search->setPlaceholderText(QStringLiteral("Search…"));
+    m_search->setClearButtonEnabled(true);
+    bar->addWidget(addButton);
+    bar->addWidget(m_remove);
+    bar->addWidget(m_learn);
+    bar->addWidget(m_search, 1);
+    v->addLayout(bar);
+
+    m_list = new QTreeWidget;
+    m_list->setColumnCount(3);
+    m_list->setHeaderLabels({QStringLiteral("Source"), QStringLiteral("Target"), QStringLiteral("Value")});
+    m_list->setRootIsDecorated(false);
+    m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_list->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_list->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_list->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+
+    auto *settingsBox = new QWidget;
+    auto *sv = new QVBoxLayout(settingsBox);
+    sv->setContentsMargins(0, 0, 0, 0);
+    auto *head = new QHBoxLayout;
+    m_settingsTitle = new QLabel(QStringLiteral("Settings"));
+    m_settingsTitle->setStyleSheet("font-weight:bold;");
+    auto *copy = new QPushButton(QStringLiteral("Copy Settings"));
+    copy->setToolTip(QStringLiteral("Its chain (ranges, toggle, filter, curve, master, pick-up), not its source or target"));
+    m_copy = copy;
+    m_paste = new QPushButton(QStringLiteral("Paste Settings"));
+    m_paste->setToolTip(QStringLiteral("The chain copied, onto the selected interactions (their sources and targets stay)"));
+    head->addWidget(m_settingsTitle, 1);
+    head->addWidget(copy);
+    head->addWidget(m_paste);
+    sv->addLayout(head);
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    m_settings = new QWidget;
+    m_settingsLayout = new QVBoxLayout(m_settings);
+    m_settingsLayout->setContentsMargins(0, 0, 4, 0);
+    scroll->setWidget(m_settings);
+    sv->addWidget(scroll, 1);
+
+    auto *split = new QSplitter(Qt::Vertical);
+    split->addWidget(m_list);
+    split->addWidget(settingsBox);
+    split->setStretchFactor(0, 1);
+    split->setStretchFactor(1, 3);
+    split->setSizes({180, 540}); // the settings get the room
+    v->addWidget(split, 1);
+
+    connect(m_kinds, &QTabBar::currentChanged, this, [this] { rebuildList(); });
+    connect(m_search, &QLineEdit::textChanged, this, [this] { rebuildList(); });
+    connect(addButton, &QPushButton::clicked, this, [this, addButton] {
+        if (const std::optional<InteractionSource> k = shownKind()) {
+            add(*k);
+            return;
+        }
+        QMenu menu;
+        for (InteractionSource k : kKinds) menu.addAction(interactionSourceName(k), this, [this, k] { add(k); });
+        menu.exec(addButton->mapToGlobal(QPoint(0, addButton->height())));
+    });
+    connect(m_remove, &QPushButton::clicked, this, &InteractionPanel::removeSelected);
+    connect(m_learn, &QToolButton::toggled, this, [this](bool on) { m_engine->setInteractionLearn(on); });
+    connect(m_list, &QTreeWidget::itemSelectionChanged, this, [this] {
+        m_remove->setEnabled(!m_list->selectedItems().isEmpty());
+        if (selectedId() != m_shown) rebuildSettings();
+    });
+    connect(m_list, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item, int col) {
+        if (m_filling || col != 0) return;
+        const quint64 id = item->data(0, Qt::UserRole).toULongLong();
+        for (Interaction it : m_engine->interactions())
+            if (it.id == id && it.enabled != (item->checkState(0) == Qt::Checked)) {
+                it.enabled = item->checkState(0) == Qt::Checked;
+                commit(it, it.enabled ? QStringLiteral("Enable Interaction") : QStringLiteral("Disable Interaction"));
+            }
+    });
+    connect(copy, &QPushButton::clicked, this, [this] {
+        const std::optional<Interaction> it = selected();
+        if (!it) return;
+        auto *mime = new QMimeData;
+        const QByteArray json = QJsonDocument(chainJson(*it)).toJson(QJsonDocument::Compact);
+        mime->setData(kMime, json);
+        mime->setText(QString::fromUtf8(json));
+        QApplication::clipboard()->setMimeData(mime);
+    });
+    connect(m_paste, &QPushButton::clicked, this, [this] {
+        const QMimeData *mime = QApplication::clipboard()->mimeData();
+        if (!mime || !mime->hasFormat(kMime)) return;
+        const QJsonObject chain = QJsonDocument::fromJson(mime->data(kMime)).object();
+        QSet<quint64> ids;
+        for (QTreeWidgetItem *item : m_list->selectedItems()) ids.insert(item->data(0, Qt::UserRole).toULongLong());
+        std::vector<Interaction> list = m_engine->interactions();
+        for (Interaction &it : list)
+            if (ids.contains(it.id)) applyChain(it, chain);
+        commitList(list, QStringLiteral("Paste Interaction Settings"));
+        rebuildSettings();
+    });
+    connect(m_engine, &Engine::interactionsChanged, this, [this] {
+        rebuildList();
+        if (!m_committing) rebuildSettings(); // undone, opened: the settings shown again
+    });
+    connect(m_engine, &Engine::layersChanged, this, [this] { // a layer renamed or gone: the targets' names
+        QTimer::singleShot(0, this, [this] { rebuildList(); });
+    });
+
+    m_timer = new QTimer(this);
+    m_timer->setInterval(50);
+    connect(m_timer, &QTimer::timeout, this, [this] {
+        if (!isVisible()) return;
+        refreshLevels();
+        pollLearn();
+    });
+    m_timer->start();
+    rebuildList();
+    rebuildSettings();
+}
+
+std::optional<InteractionSource> InteractionPanel::shownKind() const
+{
+    const int i = m_kinds->currentIndex();
+    if (i >= 0 && i < kInteractionSourceCount) return kKinds[i];
+    return std::nullopt;
+}
+
+QString InteractionPanel::keyName(int key, Qt::KeyboardModifiers mods)
+{
+    mods &= Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier;
+    return QKeySequence(QKeyCombination(mods, Qt::Key(key))).toString(QKeySequence::PortableText);
+}
+
+void InteractionPanel::keyEvent(int key, Qt::KeyboardModifiers mods, bool pressed)
+{
+    if (key == 0 || key == Qt::Key_unknown || key == Qt::Key_Shift || key == Qt::Key_Control || key == Qt::Key_Alt ||
+        key == Qt::Key_Meta)
+        return;
+    InteractionEvent e;
+    e.source = InteractionSource::Keyboard;
+    if (pressed) {
+        e.address = keyName(key, mods);
+        m_pressed.insert(key, e.address);
+    } else {
+        e.address = m_pressed.take(key); // let go: the name it was pressed with
+        if (e.address.isEmpty()) e.address = keyName(key, mods);
+    }
+    e.value = pressed ? 1.0 : 0.0;
+    m_engine->feedInteraction(e);
+}
+
+quint64 InteractionPanel::selectedId() const
+{
+    const QList<QTreeWidgetItem *> sel = m_list->selectedItems();
+    QTreeWidgetItem *item = m_list->currentItem();
+    if (!item || !sel.contains(item)) item = sel.isEmpty() ? nullptr : sel.first();
+    return item ? item->data(0, Qt::UserRole).toULongLong() : 0;
+}
+
+std::optional<Interaction> InteractionPanel::selected() const
+{
+    const quint64 id = selectedId();
+    for (const Interaction &it : m_engine->interactions())
+        if (it.id == id) return it;
+    return std::nullopt;
+}
+
+QString InteractionPanel::targetLabel(quint64 layer, const QString &param) const
+{
+    if (param.isEmpty()) return QStringLiteral("(no target)");
+    QString owner = QStringLiteral("Composition");
+    if (layer) {
+        Engine::Lock lk(&m_engine->mutex());
+        const int i = m_engine->indexOfId(layer);
+        const Layer *l = i >= 0 ? m_engine->layer(i) : nullptr;
+        owner = l ? l->name : QStringLiteral("(layer gone)");
+    }
+    ParamInfo info;
+    const QString name = m_engine->parameterInfo(layer, param, &info) ? info.label : param;
+    return owner + QStringLiteral(" › ") + name;
+}
+
+QString InteractionPanel::describe(const Interaction &it) const
+{
+    if (!it.name.isEmpty()) return it.name;
+    switch (it.source) {
+    case InteractionSource::Keyboard: return it.key.isEmpty() ? QStringLiteral("Key (none)") : QStringLiteral("Key %1").arg(it.key);
+    case InteractionSource::Midi: {
+        QString s = QStringLiteral("MIDI %1 %2").arg(it.midiChannel ? QStringLiteral("ch %1").arg(it.midiChannel) : QStringLiteral("any ch"),
+                                                     midiMessageName(it.midiMessage));
+        if (it.midiMessage != MidiMessageKind::PitchBend) s += QStringLiteral(" %1").arg(it.midiNumber);
+        if (!it.midiPort.isEmpty()) s += QStringLiteral(" · ") + it.midiPort;
+        return s;
+    }
+    case InteractionSource::Osc:
+        return it.oscAddress.isEmpty() ? QStringLiteral("OSC (no address)")
+                                       : QStringLiteral("OSC %1").arg(it.oscAddress) + (it.oscArgument ? QStringLiteral(" [%1]").arg(it.oscArgument) : QString());
+    case InteractionSource::Internal: return targetLabel(it.sourceLayer, it.sourceParam);
+    }
+    return QString();
+}
+
+void InteractionPanel::rebuildList()
+{
+    const quint64 keep = selectedId();
+    QSet<quint64> keepAll;
+    for (QTreeWidgetItem *item : m_list->selectedItems()) keepAll.insert(item->data(0, Qt::UserRole).toULongLong());
+    m_filling = true;
+    m_list->clear();
+    const std::optional<InteractionSource> kind = shownKind();
+    const QString search = m_search->text().trimmed();
+    QTreeWidgetItem *current = nullptr;
+    for (const Interaction &it : m_engine->interactions()) {
+        if (kind && it.source != *kind) continue;
+        const QString src = describe(it), dst = targetLabel(it.layer, it.param);
+        if (!search.isEmpty() && !src.contains(search, Qt::CaseInsensitive) && !dst.contains(search, Qt::CaseInsensitive))
+            continue;
+        auto *item = new QTreeWidgetItem(m_list, {kind ? src : interactionSourceName(it.source) + QStringLiteral(" · ") + src, dst, QString()});
+        item->setData(0, Qt::UserRole, QVariant::fromValue<quint64>(it.id));
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, it.enabled ? Qt::Checked : Qt::Unchecked);
+        item->setToolTip(0, QStringLiteral("On / off"));
+        if (keepAll.contains(it.id)) item->setSelected(true);
+        if (it.id == keep) current = item;
+    }
+    if (current) m_list->setCurrentItem(current, 0, QItemSelectionModel::NoUpdate);
+    m_filling = false;
+    m_remove->setEnabled(!m_list->selectedItems().isEmpty());
+    if (selectedId() != m_shown) rebuildSettings();
+}
+
+void InteractionPanel::commitList(const std::vector<Interaction> &list, const QString &text)
+{
+    m_committing = true;
+    m_undo->push(new SetInteractions(m_engine, m_engine->interactions(), list, text, QString()));
+    m_committing = false;
+    emit edited();
+}
+
+void InteractionPanel::commit(const Interaction &it, const QString &text, const QString &mergeKey)
+{
+    std::vector<Interaction> before = m_engine->interactions(), after = before;
+    bool found = false;
+    for (Interaction &x : after)
+        if (x.id == it.id) {
+            x = it;
+            found = true;
+        }
+    if (!found) return;
+    m_committing = true;
+    m_undo->push(new SetInteractions(m_engine, before, after, text, mergeKey.isEmpty() ? QString() : mergeKey + QString::number(it.id)));
+    m_committing = false;
+    emit edited();
+}
+
+void InteractionPanel::add(InteractionSource kind)
+{
+    std::vector<Interaction> list = m_engine->interactions();
+    Interaction it = Interaction::made(kind);
+    // An id now, so that it is selected (the same one when redone)
+    quint64 id = 1;
+    for (const Interaction &x : list) id = std::max(id, x.id + 1);
+    it.id = id;
+    list.push_back(it);
+    commitList(list, QStringLiteral("Add Interaction"));
+    if (shownKind() && *shownKind() != kind) m_kinds->setCurrentIndex(int(kind));
+    rebuildList();
+    for (int i = 0; i < m_list->topLevelItemCount(); ++i)
+        if (m_list->topLevelItem(i)->data(0, Qt::UserRole).toULongLong() == id) {
+            m_list->clearSelection();
+            m_list->setCurrentItem(m_list->topLevelItem(i));
+        }
+}
+
+void InteractionPanel::removeSelected()
+{
+    QSet<quint64> ids;
+    for (QTreeWidgetItem *item : m_list->selectedItems()) ids.insert(item->data(0, Qt::UserRole).toULongLong());
+    if (ids.isEmpty()) return;
+    std::vector<Interaction> list = m_engine->interactions();
+    list.erase(std::remove_if(list.begin(), list.end(), [&](const Interaction &x) { return ids.contains(x.id); }), list.end());
+    commitList(list, ids.size() > 1 ? QStringLiteral("Remove Interactions") : QStringLiteral("Remove Interaction"));
+}
+
+void InteractionPanel::refreshLevels()
+{
+    for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *item = m_list->topLevelItem(i);
+        double level = 0, out = 0;
+        const bool has = m_engine->interactionLevels(item->data(0, Qt::UserRole).toULongLong(), &level, &out);
+        const QString text = has ? QStringLiteral("%1 %").arg(std::lround(out * 100)) : QStringLiteral("—");
+        if (item->text(2) != text) item->setText(2, text);
+    }
+    double level = 0, out = 0;
+    const bool has = m_shown && m_engine->interactionLevels(m_shown, &level, &out);
+    if (m_inMeter) m_inMeter->setValue(has ? int(level * 1000) : 0);
+    if (m_outMeter) m_outMeter->setValue(has ? int(out * 1000) : 0);
+    if (m_copy) m_copy->setEnabled(m_shown != 0);
+    if (m_paste) m_paste->setEnabled(QApplication::clipboard()->mimeData() && QApplication::clipboard()->mimeData()->hasFormat(kMime) &&
+                                     !m_list->selectedItems().isEmpty());
+}
+
+void InteractionPanel::pollLearn()
+{
+    if (!m_learn->isChecked()) return;
+    const std::optional<InteractionEvent> e = m_engine->takeLearnedInteraction();
+    if (!e) return;
+    m_learn->setChecked(false);
+    std::optional<Interaction> sel = selected();
+    Interaction it = sel ? *sel : Interaction::made(e->source);
+    if (sel && sel->source != e->source) { // another kind of source: its chain kept, the defaults of that kind
+        const Interaction fresh = Interaction::made(e->source);
+        it.source = e->source;
+        it.takeover = fresh.takeover;
+    }
+    it.source = e->source;
+    switch (e->source) {
+    case InteractionSource::Keyboard: it.key = e->address; break;
+    case InteractionSource::Midi:
+        it.midiPort = e->port;
+        it.midiChannel = e->channel;
+        it.midiMessage = e->message;
+        it.midiNumber = e->number;
+        break;
+    case InteractionSource::Osc:
+        it.oscAddress = e->address;
+        it.oscArgument = e->argument;
+        break;
+    case InteractionSource::Internal: break;
+    }
+    if (sel) {
+        commit(it, QStringLiteral("Learn Interaction Source"));
+    } else {
+        std::vector<Interaction> list = m_engine->interactions();
+        quint64 id = 1;
+        for (const Interaction &x : list) id = std::max(id, x.id + 1);
+        it.id = id;
+        list.push_back(it);
+        commitList(list, QStringLiteral("Learn Interaction"));
+        if (shownKind() && *shownKind() != it.source) m_kinds->setCurrentIndex(int(it.source));
+        rebuildList();
+        for (int i = 0; i < m_list->topLevelItemCount(); ++i)
+            if (m_list->topLevelItem(i)->data(0, Qt::UserRole).toULongLong() == id) m_list->setCurrentItem(m_list->topLevelItem(i));
+    }
+    rebuildSettings();
+}
+
+// ---------------------------------------------------------------------------
+// The settings of the one selected
+// ---------------------------------------------------------------------------
+void InteractionPanel::rebuildSettings()
+{
+    const std::optional<Interaction> cur = selected();
+    m_shown = cur ? cur->id : 0;
+    m_inMeter = m_outMeter = nullptr;
+    while (QLayoutItem *item = m_settingsLayout->takeAt(0)) {
+        if (QWidget *w = item->widget()) w->deleteLater();
+        delete item;
+    }
+    if (!cur) {
+        m_settingsTitle->setText(QStringLiteral("Settings"));
+        m_settingsLayout->addWidget(note(QStringLiteral("Add an interaction (+), or press Learn and move a controller, "
+                                                        "press a key or send an OSC message.")));
+        m_settingsLayout->addStretch();
+        return;
+    }
+    const Interaction it = *cur;
+    m_settingsTitle->setText(QStringLiteral("Settings · %1").arg(interactionSourceName(it.source)));
+    const quint64 id = it.id;
+    // An edit of this one: read again as it is now (another edit may have come), changed, committed
+    auto edit = [this, id](const QString &text, const std::function<void(Interaction &)> &fn, const QString &merge = QString()) {
+        for (Interaction x : m_engine->interactions())
+            if (x.id == id) {
+                fn(x);
+                commit(x, text, merge);
+            }
+    };
+
+    auto *form = new QFormLayout;
+    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    auto *formBox = new QWidget;
+    formBox->setLayout(form);
+    m_settingsLayout->addWidget(formBox);
+
+    auto *name = new QLineEdit(it.name);
+    {
+        Interaction unnamed = it;
+        unnamed.name.clear();
+        name->setPlaceholderText(describe(unnamed));
+    }
+    form->addRow(QStringLiteral("Name"), name);
+    connect(name, &QLineEdit::editingFinished, this, [edit, name] {
+        edit(QStringLiteral("Rename Interaction"), [name](Interaction &x) { x.name = name->text().trimmed(); });
+    });
+
+    // The source
+    double srcLo = 0, srcHi = 1; // the bar of the source range
+    switch (it.source) {
+    case InteractionSource::Keyboard: {
+        auto *key = new QKeySequenceEdit(QKeySequence::fromString(it.key, QKeySequence::PortableText));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+        key->setMaximumSequenceLength(1);
+#endif
+        key->setToolTip(QStringLiteral("The key (with its modifiers): pressed 1, let go 0"));
+        form->addRow(QStringLiteral("Key"), key);
+        connect(key, &QKeySequenceEdit::editingFinished, this, [edit, key] {
+            const QKeySequence seq = key->keySequence();
+            const QString k = seq.isEmpty() ? QString() : QKeySequence(seq[0]).toString(QKeySequence::PortableText); // one key
+            edit(QStringLiteral("Change Interaction Key"), [k](Interaction &x) { x.key = k; });
+        });
+        break;
+    }
+    case InteractionSource::Midi: {
+        auto *port = new QComboBox;
+        port->addItem(QStringLiteral("Any input"), QString());
+        for (const QString &p : Engine::midiInputPorts()) port->addItem(p, p);
+        int at = port->findData(it.midiPort);
+        if (at < 0) {
+            port->addItem(QStringLiteral("%1 (not found)").arg(it.midiPort), it.midiPort);
+            at = port->count() - 1;
+        }
+        port->setCurrentIndex(at);
+        port->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        port->setMinimumContentsLength(8);
+        form->addRow(QStringLiteral("Input"), port);
+        auto *row = new QHBoxLayout;
+        auto *channel = new QComboBox;
+        channel->addItem(QStringLiteral("Any channel"), 0);
+        for (int c = 1; c <= 16; ++c) channel->addItem(QStringLiteral("Channel %1").arg(c), c);
+        channel->setCurrentIndex(channel->findData(it.midiChannel));
+        auto *message = new QComboBox;
+        for (int k = 0; k < 4; ++k) message->addItem(midiMessageName(MidiMessageKind(k)), k);
+        message->setCurrentIndex(int(it.midiMessage));
+        auto *number = new IntBox;
+        number->setRange(0, 127);
+        number->setValue(it.midiNumber);
+        number->setEnabled(it.midiMessage != MidiMessageKind::PitchBend);
+        number->setToolTip(QStringLiteral("The controller, the note or the program"));
+        row->addWidget(channel, 1);
+        row->addWidget(message, 1);
+        row->addWidget(number);
+        form->addRow(QStringLiteral("Message"), row);
+        connect(port, qOverload<int>(&QComboBox::activated), this, [edit, port](int) {
+            const QString p = port->currentData().toString();
+            edit(QStringLiteral("Change Interaction Input"), [p](Interaction &x) { x.midiPort = p; });
+        });
+        connect(channel, qOverload<int>(&QComboBox::activated), this, [edit, channel](int) {
+            const int c = channel->currentData().toInt();
+            edit(QStringLiteral("Change Interaction Channel"), [c](Interaction &x) { x.midiChannel = c; });
+        });
+        connect(message, qOverload<int>(&QComboBox::activated), this, [this, edit](int k) {
+            edit(QStringLiteral("Change Interaction Message"), [k](Interaction &x) { x.midiMessage = MidiMessageKind(k); });
+            rebuildSettings();
+        });
+        connect(number, &QSpinBox::editingFinished, this, [edit, number] {
+            const int n = number->value();
+            edit(QStringLiteral("Change Interaction Number"), [n](Interaction &x) { x.midiNumber = n; });
+        });
+        break;
+    }
+    case InteractionSource::Osc: {
+        auto *address = new QLineEdit(it.oscAddress);
+        address->setPlaceholderText(QStringLiteral("/fader/1"));
+        auto *argument = new IntBox;
+        argument->setRange(0, 63);
+        argument->setValue(it.oscArgument);
+        argument->setPrefix(QStringLiteral("arg "));
+        argument->setToolTip(QStringLiteral("Which value of the message (the first: 0)"));
+        auto *row = new QHBoxLayout;
+        row->addWidget(address, 1);
+        row->addWidget(argument);
+        form->addRow(QStringLiteral("Address"), row);
+        auto *scale = new QComboBox;
+        const struct { const char *name; double lo, hi; } kScales[] = {
+            {"0 … 1", 0, 1}, {"−1 … 1", -1, 1}, {"0 … 127", 0, 127}, {"0 … 255", 0, 255}, {"0 … 1000", 0, 1000}};
+        for (const auto &k : kScales) scale->addItem(QString::fromUtf8(k.name), QPointF(k.lo, k.hi));
+        int at = 0;
+        for (int k = 0; k < 5; ++k)
+            if (it.srcMin >= kScales[k].lo && it.srcMax <= kScales[k].hi) {
+                at = k;
+                break;
+            }
+        scale->setCurrentIndex(at);
+        srcLo = kScales[at].lo;
+        srcHi = kScales[at].hi;
+        scale->setToolTip(QStringLiteral("The values the sender sends: the bar of the source range"));
+        form->addRow(QStringLiteral("Values"), scale);
+        connect(address, &QLineEdit::editingFinished, this, [edit, address] {
+            const QString a = address->text().trimmed();
+            edit(QStringLiteral("Change Interaction Address"), [a](Interaction &x) { x.oscAddress = a; });
+        });
+        connect(argument, &QSpinBox::editingFinished, this, [edit, argument] {
+            const int a = argument->value();
+            edit(QStringLiteral("Change Interaction Argument"), [a](Interaction &x) { x.oscArgument = a; });
+        });
+        connect(scale, qOverload<int>(&QComboBox::activated), this, [this, edit, scale](int) {
+            const QPointF r = scale->currentData().toPointF();
+            edit(QStringLiteral("Change Interaction Values"), [r](Interaction &x) {
+                x.srcMin = r.x();
+                x.srcMax = r.y();
+            });
+            rebuildSettings();
+        });
+        break;
+    }
+    case InteractionSource::Internal: {
+        auto *source = new QToolButton;
+        source->setText(targetLabel(it.sourceLayer, it.sourceParam));
+        source->setPopupMode(QToolButton::InstantPopup);
+        source->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        source->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        source->setToolTip(QStringLiteral("The value of the show it follows"));
+        auto *menu = new QMenu(source);
+        source->setMenu(menu);
+        connect(menu, &QMenu::aboutToShow, this, [this, menu, edit] {
+            menu->clear();
+            auto fill = [&](QMenu *into, quint64 layer) {
+                std::vector<ParamInfo> params;
+                for (const ParamInfo &p : m_engine->parameters(layer))
+                    if ((p.access & ParamInfo::Read) && (p.isNumber() || p.type == ParamInfo::Type::Bool)) params.push_back(p);
+                addParamMenu(into, params, [this, edit, layer](QMenu *m, const ParamInfo &p, const QString &text) {
+                    m->addAction(text, this, [this, edit, layer, p] {
+                        edit(QStringLiteral("Change Interaction Source"), [layer, p](Interaction &x) {
+                            x.sourceLayer = layer;
+                            x.sourceParam = p.path;
+                            x.srcMin = p.type == ParamInfo::Type::Bool ? 0 : p.min;
+                            x.srcMax = p.type == ParamInfo::Type::Bool ? 1 : p.max;
+                        });
+                        rebuildSettings();
+                    });
+                });
+            };
+            fill(menu->addMenu(QStringLiteral("Composition")), 0);
+            Engine::Lock lk(&m_engine->mutex());
+            for (int i = 0; i < m_engine->layerCount(); ++i)
+                if (const Layer *l = m_engine->layer(i); l && !l->isGroup) fill(menu->addMenu(l->name), l->id);
+        });
+        form->addRow(QStringLiteral("Follows"), source);
+        ParamInfo info;
+        if (m_engine->parameterInfo(it.sourceLayer, it.sourceParam, &info) && info.isNumber()) {
+            srcLo = std::min(info.min, it.srcMin);
+            srcHi = std::max(info.max, it.srcMax);
+        }
+        break;
+    }
+    }
+
+    // The target
+    auto *target = new QToolButton;
+    target->setText(targetLabel(it.layer, it.param));
+    target->setPopupMode(QToolButton::InstantPopup);
+    target->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    target->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    target->setToolTip(QStringLiteral("The value of the show it drives: a number, a switch, a choice or an action"));
+    auto *targetMenu = new QMenu(target);
+    target->setMenu(targetMenu);
+    connect(targetMenu, &QMenu::aboutToShow, this, [this, targetMenu, edit] {
+        targetMenu->clear();
+        auto fill = [&](QMenu *into, quint64 layer) {
+            std::vector<ParamInfo> params;
+            for (const ParamInfo &p : m_engine->parameters(layer))
+                if ((p.access & ParamInfo::Write) && p.type != ParamInfo::Type::Text) params.push_back(p);
+            addParamMenu(into, params, [this, edit, layer](QMenu *m, const ParamInfo &p, const QString &text) {
+                m->addAction(text, this, [this, edit, layer, p] {
+                    edit(QStringLiteral("Change Interaction Target"), [layer, p](Interaction &x) {
+                        x.layer = layer;
+                        x.param = p.path;
+                        x.dstMin = p.isNumber() ? p.min : 0; // its whole range
+                        x.dstMax = p.isNumber() ? p.max : 1;
+                    });
+                    rebuildSettings();
+                    rebuildList();
+                });
+            });
+        };
+        fill(targetMenu->addMenu(QStringLiteral("Composition")), 0);
+        Engine::Lock lk(&m_engine->mutex());
+        for (int i = 0; i < m_engine->layerCount(); ++i)
+            if (const Layer *l = m_engine->layer(i); l && !l->isGroup) fill(targetMenu->addMenu(l->name), l->id);
+    });
+    form->addRow(QStringLiteral("Target"), target);
+
+    // What it does now
+    m_inMeter = meter();
+    m_outMeter = meter();
+    m_inMeter->setToolTip(QStringLiteral("The source, after its range and the toggle"));
+    m_outMeter->setToolTip(QStringLiteral("The result, after the filter, the curve and the master level"));
+    auto *meters = new QVBoxLayout;
+    meters->setSpacing(3);
+    meters->addWidget(m_inMeter);
+    meters->addWidget(m_outMeter);
+    form->addRow(QStringLiteral("In / Out"), meters);
+
+    // The chain
+    auto *master = new SliderField;
+    master->setRange(0, 100);
+    master->setDecimals(0);
+    master->setSuffix(QStringLiteral(" %"));
+    master->setValue(it.master * 100);
+    master->setSnaps({0, 100});
+    form->addRow(new ResetLabel(QStringLiteral("Master Level"), [edit] {
+                     edit(QStringLiteral("Reset Master Level"), [](Interaction &x) { x.master = 1; });
+                 }),
+                 master);
+    connect(master, &SliderField::valueEdited, this, [edit](double v) {
+        edit(QStringLiteral("Change Master Level"), [v](Interaction &x) { x.master = v / 100.0; }, QStringLiteral("master"));
+    });
+
+    auto *takeover = new QComboBox;
+    takeover->addItem(QStringLiteral("Pick-up"), int(Takeover::PickUp));
+    takeover->addItem(QStringLiteral("Jump"), int(Takeover::Jump));
+    takeover->setCurrentIndex(it.takeover == Takeover::PickUp ? 0 : 1);
+    takeover->setToolTip(QStringLiteral("Pick-up: once the target was moved by something else (a snapshot, the interface), "
+                                        "it waits for the controller to meet it · Jump: it sets it at once"));
+    form->addRow(QStringLiteral("Takeover"), takeover);
+    connect(takeover, qOverload<int>(&QComboBox::activated), this, [edit, takeover](int) {
+        const Takeover t = Takeover(takeover->currentData().toInt());
+        edit(QStringLiteral("Change Takeover"), [t](Interaction &x) { x.takeover = t; });
+    });
+
+    auto *toggle = new FlagBox(QStringLiteral("Toggle"));
+    toggle->setChecked(it.toggle);
+    toggle->setToolTip(QStringLiteral("Each time the source goes up past the middle, the result flips between 0 and 1"));
+    form->addRow(QString(), toggle);
+    connect(toggle, &QCheckBox::toggled, this, [edit](bool on) {
+        edit(QStringLiteral("Change Toggle"), [on](Interaction &x) { x.toggle = on; });
+    });
+
+    auto *srcRange = new RangeField;
+    srcRange->setRange(std::min(srcLo, it.srcMin), std::max(srcHi, it.srcMax));
+    srcRange->setDecimals(srcHi - srcLo > 10 ? 0 : 2);
+    srcRange->setValues(std::min(it.srcMin, it.srcMax), std::max(it.srcMin, it.srcMax));
+    srcRange->setToolTip(QStringLiteral("The part of the source's values used: its low end gives 0, its high end 1"));
+    form->addRow(QStringLiteral("Source range"), srcRange);
+    connect(srcRange, &RangeField::edited, this, [edit, srcRange](bool, double) {
+        const double lo = srcRange->low(), hi = srcRange->high();
+        edit(QStringLiteral("Change Source Range"), [lo, hi](Interaction &x) {
+            x.srcMin = lo;
+            x.srcMax = hi;
+        }, QStringLiteral("srcrange"));
+    });
+
+    // Target range: within the target's own values; inverted, 0 lands on its high end
+    ParamInfo tinfo;
+    const bool numberTarget = m_engine->parameterInfo(it.layer, it.param, &tinfo) && tinfo.isNumber();
+    const double tLo = numberTarget ? std::min({tinfo.min, it.dstMin, it.dstMax}) : 0;
+    const double tHi = numberTarget ? std::max({tinfo.max, it.dstMin, it.dstMax}) : 1;
+    auto *dstRange = new RangeField;
+    dstRange->setRange(tLo, tHi);
+    dstRange->setDecimals(tHi - tLo > 10 ? 1 : 2);
+    dstRange->setValues(std::min(it.dstMin, it.dstMax), std::max(it.dstMin, it.dstMax));
+    dstRange->setToolTip(QStringLiteral("Where in the target's values the result lands"));
+    auto *invert = new FlagBox(QStringLiteral("Invert"));
+    invert->setChecked(it.dstMin > it.dstMax);
+    invert->setToolTip(QStringLiteral("0 lands on the high end, 1 on the low end"));
+    auto *dstRow = new QHBoxLayout;
+    dstRow->addWidget(dstRange, 1);
+    dstRow->addWidget(invert);
+    form->addRow(QStringLiteral("Target range"), dstRow);
+    auto setTarget = [edit, dstRange, invert](const QString &merge) {
+        const double lo = dstRange->low(), hi = dstRange->high();
+        const bool inv = invert->isChecked();
+        edit(QStringLiteral("Change Target Range"), [lo, hi, inv](Interaction &x) {
+            x.dstMin = inv ? hi : lo;
+            x.dstMax = inv ? lo : hi;
+        }, merge);
+    };
+    connect(dstRange, &RangeField::edited, this, [setTarget](bool, double) { setTarget(QStringLiteral("dstrange")); });
+    connect(invert, &QCheckBox::toggled, this, [setTarget](bool) { setTarget(QString()); });
+
+    // Filter
+    auto *filterRow = new QHBoxLayout;
+    auto *filterOn = new FlagBox(QStringLiteral("Filter"));
+    filterOn->setChecked(it.filterOn);
+    auto *filter = new QComboBox;
+    for (int k = 0; k < kInteractionFilterCount; ++k) filter->addItem(interactionFilterName(InteractionFilter(k)), k);
+    filter->setCurrentIndex(int(it.filter));
+    filter->setEnabled(it.filterOn);
+    filter->setToolTip(QStringLiteral("Average: of the last moments · Weighted Average: smoothed · Pulse Detection: a pulse on "
+                                      "each sudden rise · Attack Release: rises and falls at speeds of their own · Damper: "
+                                      "a spring that follows"));
+    filterRow->addWidget(filterOn);
+    filterRow->addWidget(filter, 1);
+    form->addRow(QString(), filterRow);
+    connect(filterOn, &QCheckBox::toggled, this, [this, edit](bool on) {
+        edit(QStringLiteral("Change Filter"), [on](Interaction &x) { x.filterOn = on; });
+        rebuildSettings();
+    });
+    connect(filter, qOverload<int>(&QComboBox::activated), this, [this, edit](int k) {
+        edit(QStringLiteral("Change Filter"), [k](Interaction &x) {
+            x.filter = InteractionFilter(k);
+            x.filterA = interactionFilterSetting(x.filter, 0).def; // the new one's own settings
+            x.filterB = interactionFilterSetting(x.filter, 1).def;
+        });
+        rebuildSettings();
+    });
+    if (it.filterOn)
+        for (int which = 0; which < 2; ++which) {
+            const FilterSetting fs = interactionFilterSetting(it.filter, which);
+            if (fs.name.isEmpty()) continue;
+            auto *f = new SliderField;
+            f->setRange(fs.min, fs.max);
+            f->setDecimals(fs.max <= 2 ? 2 : 2);
+            f->setSuffix(fs.suffix);
+            f->setValue(which == 0 ? it.filterA : it.filterB);
+            form->addRow(fs.name, f);
+            connect(f, &SliderField::valueEdited, this, [edit, which](double v) {
+                edit(QStringLiteral("Change Filter"), [which, v](Interaction &x) { (which == 0 ? x.filterA : x.filterB) = v; },
+                     QStringLiteral("filter%1").arg(which));
+            });
+        }
+
+    // Curve
+    auto *curveOn = new FlagBox(QStringLiteral("Curve"));
+    curveOn->setChecked(it.curveOn);
+    curveOn->setToolTip(QStringLiteral("The result shaped by a curve: click to add a key, drag it, double-click to remove it, "
+                                       "right-click for its easing"));
+    auto *resetCurve = new QPushButton(QStringLiteral("Straight"));
+    resetCurve->setToolTip(QStringLiteral("Back to a straight line"));
+    resetCurve->setEnabled(it.curveOn);
+    auto *curveRow = new QHBoxLayout;
+    curveRow->addWidget(curveOn);
+    curveRow->addStretch();
+    curveRow->addWidget(resetCurve);
+    form->addRow(QString(), curveRow);
+    connect(curveOn, &QCheckBox::toggled, this, [this, edit](bool on) {
+        edit(QStringLiteral("Change Curve"), [on](Interaction &x) { x.curveOn = on; });
+        rebuildSettings();
+    });
+    connect(resetCurve, &QPushButton::clicked, this, [this, edit] {
+        edit(QStringLiteral("Reset Curve"), [](Interaction &x) { x.curve = Interaction::straightCurve(); });
+        rebuildSettings();
+    });
+    if (it.curveOn) {
+        auto *lane = new CurveLane;
+        lane->setTrack(it.curve, 1.0, 0.0, 1.0);
+        lane->setView(0, 1, 0, 1);
+        lane->setMinimumHeight(160);
+        m_settingsLayout->addWidget(lane);
+        connect(lane, &CurveLane::edited, this, [edit](const AnimTrack &t, int gesture) {
+            edit(QStringLiteral("Edit Curve"), [t](Interaction &x) {
+                x.curve.keys = t.keys;
+                for (AnimKey &k : x.curve.keys) k.t = std::clamp(k.t, 0.0, 1.0);
+            }, gesture ? QStringLiteral("curve%1").arg(gesture) : QString());
+        });
+    }
+    m_settingsLayout->addStretch();
+}

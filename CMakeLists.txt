@@ -293,6 +293,7 @@ set(APP_SOURCES
   src/ui/ParamAnimPanel.cpp
   src/ui/TimelinePanel.cpp
   src/ui/Widgets.cpp
+  src/ui/InteractionPanel.cpp
 )
 
 if(APPLE)

@@ -16,6 +16,10 @@ macOS). macOS, Windows, Linux.
   composition's named timecode outputs; the patch (Composition tab) sends an output to any number of destinations, and the
   destination gives the protocol: a named MIDI output (MTC, on a port or a virtual port), a named audio channel (LTC, a
   channel of any output device), a viewport (ATC in its NDI frames and DeckLink SDI: RP188, VITC in SD).
+- **Interactions** (left tab): any value of the show driven by a key, a MIDI controller (CC, note, pitch bend, program),
+  an OSC message, or by another value of the show (Internal, no protocol in between), with Learn. Each through a chain:
+  source range, toggle, filter (average, weighted average, pulse detection, attack / release, damper), a drawn curve,
+  master level, target range, and pick-up (a fader waits to meet the value a snapshot left) or jump.
 - **Control**: OSC and OSCQuery (UDP 1234, TCP 5678, Zeroconf). One address per value everywhere: OSC, project file, snapshots, timelines (`/layer/<name>/position/x`, `…/fx/<fx>/param/<input>`, `…/<param>/anim/play`).
 
 ## Build
@@ -55,7 +59,7 @@ Snappy decompression is as fast as Google's or faster (same output), and it has 
   place with no copy; D3D11VA / VAAPI elsewhere, copied back then uploaded); other codecs on the CPU. HAP is
   decompressed on the CPU and sampled compressed, except Hap R and Hap HDR on macOS (no BPTC in its OpenGL: decoded
   on the CPU, slow in 4K; Hap Q is the fast one there). One stereo audio output.
-- MIDI for the timecode only (MTC), no DMX; ISF audio inputs are black. Cameras need Qt Multimedia (without it, none are listed).
+- MIDI for the interactions and the timecode (MTC), no DMX input yet; ISF audio inputs are black. Cameras need Qt Multimedia (without it, none are listed).
 - NDI and OMT send a GPU readback (one frame of latency). DeckLink plays the same readback on the card's clock,
   three frames ahead (a new picture is shown at most four frames later; a missing one repeats the last). Its ports
   show up when Blackmagic Desktop Video is installed. A picture of another size than the mode is scaled (nearest):

@@ -4,6 +4,7 @@
 #include "Engine.h"
 #include "LayerInspector.h"
 #include "LayerTable.h"
+#include "InteractionPanel.h"
 #include "MappingView.h"
 #include "CompositionPanel.h" // CompositionPanel
 #include "MediaBin.h"
@@ -119,8 +120,12 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_leftTabs = new QTabWidget;
     m_leftTabs->addTab(m_bin, QStringLiteral("Media Bin"));
     m_leftTabs->addTab(m_layerTable, QStringLiteral("Layers"));
+    m_interactions = new InteractionPanel(m_engine, m_undo);
+    m_leftTabs->addTab(m_interactions, QStringLiteral("Interactions"));
     m_leftTabs->setTabToolTip(0, QStringLiteral("Media Bin (Shift+1)"));
     m_leftTabs->setTabToolTip(1, QStringLiteral("Layers (Shift+2)"));
+    m_leftTabs->setTabToolTip(2, QStringLiteral("Interactions: keys, MIDI, OSC and values of the show driving others (Shift+3)"));
+    connect(m_interactions, &InteractionPanel::edited, this, &MainWindow::markDirty);
     m_leftTabs->tabBar()->setChangeCurrentOnDrag(true);
     m_leftTabs->tabBar()->setAcceptDrops(true);
     m_leftTabs->setCurrentIndex(1);
@@ -412,8 +417,22 @@ MainWindow::~MainWindow()
 
 bool MainWindow::eventFilter(QObject *o, QEvent *e)
 {
-    // Shift+1 / Shift+2 switch the left tabs (Media Bin / Layers), whatever the keyboard: the digit with Shift
+    // Shift+1 / Shift+2 / Shift+3 switch the left tabs (Media Bin / Layers / Interactions), whatever the keyboard: the digit with Shift
     // (AZERTY) or the symbol it gives (QWERTY "!" "@", UK "\""). Not while typing in a text field.
+    // Keys are sources of the interactions (not while a text is typed, nor a key chosen)
+    // Each key once: to the widget with the focus, else to the window that has it (the main one with no focus, an
+    // output window shown fullscreen — a QWindow of its own, not a widget's)
+    const bool keyTarget = o == QApplication::focusWidget() || (!QApplication::focusWidget() && o == this) ||
+                           (o->isWindowType() && !o->inherits("QWidgetWindow"));
+    if ((e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) && keyTarget) {
+        auto *k = static_cast<QKeyEvent *>(e);
+        QWidget *f = QApplication::focusWidget();
+        const bool typing = qobject_cast<QLineEdit *>(f) || qobject_cast<QAbstractSpinBox *>(f) ||
+                            (f && f->inherits("QTextEdit")) || (f && f->inherits("QPlainTextEdit")) ||
+                            (f && f->inherits("QKeySequenceEdit"));
+        if (!typing && !k->isAutoRepeat() && m_interactions)
+            m_interactions->keyEvent(k->key(), k->modifiers(), e->type() == QEvent::KeyPress);
+    }
     if (e->type() == QEvent::KeyPress && isActiveWindow()) {
         auto *k = static_cast<QKeyEvent *>(e);
         QWidget *f = QApplication::focusWidget();
@@ -423,6 +442,7 @@ bool MainWindow::eventFilter(QObject *o, QEvent *e)
             int tab = -1;
             if (k->key() == Qt::Key_1 || k->key() == Qt::Key_Exclam) tab = 0;
             if (k->key() == Qt::Key_2 || k->key() == Qt::Key_At || k->key() == Qt::Key_QuoteDbl) tab = 1;
+            if (k->key() == Qt::Key_3 || k->key() == Qt::Key_NumberSign || k->key() == Qt::Key_sterling) tab = 2;
             if (tab >= 0 && !k->isAutoRepeat()) {
                 m_leftTabs->setCurrentIndex(tab);
                 return true;

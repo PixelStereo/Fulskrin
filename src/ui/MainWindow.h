@@ -108,6 +108,7 @@ private:
 
     Engine *m_engine;
     QUndoStack *m_undo = nullptr;
+    class InteractionPanel *m_interactions = nullptr;
     MappingView *m_view = nullptr;
     LayerInspector *m_inspector = nullptr;
     LayerTable *m_layerTable = nullptr;
