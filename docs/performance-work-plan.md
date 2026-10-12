@@ -34,6 +34,25 @@ layers).
   - `VideoDecoderMetrics.cpp`: metrics;
   - `VideoDecoderInternal.h`: what they share.
 
+## Measured
+
+`pinol_bench --decode --software --seconds 5`, Linux, 4 cores, frames/s decoded (the files are 30 fps;
+mix: the average of 3 runs).
+
+| Files | main | #115 as proposed | this change |
+|---|---|---|---|
+| HEVC 4K alone | 129 | 36 | 126 |
+| ProRes 1080p alone | 419 | 138 | 417 |
+| HAP Q 4K alone (8 chunks) | 1280 | 718 | 1287 |
+| Mix: HEVC 4K | 26 | 25 | **39** |
+| Mix: 3 × H.264 1080p | 115–150 | 47–51 | 98–114 |
+| Mix: ProRes 1080p | 86–103 | 44–48 | 65–74 |
+| Mix: HAP Q 4K | 142–165 | 49–53 | **278–287** |
+
+In the mix, only this change keeps every stream above 30 fps. main starves the 4K HEVC (each decoder starts
+a machine-sized team of threads), and #115 slows everything down (one thread per stream, at most 2 decodes at
+once on 4 cores). Not measured here: hardware decoding, and 8+ cores.
+
 ## Definitions
 
 - "Late": the fetched frame is older than the requested clock by more than 1.5 source frames.
@@ -42,8 +61,7 @@ layers).
 
 ## Still to measure
 
-- `pinol_bench` with mixed H.264, HEVC, ProRes and HAP at 1080p and 4K, with hardware decoding and with
-  `--software`, on 8+ core machines.
+- The same with hardware decoding, on 8+ core machines, and the full playback (GPU) bench.
 - Open, close, seek, loop and ping-pong stress with the budgets under pressure.
 
 ## Next steps
