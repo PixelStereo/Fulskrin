@@ -94,6 +94,22 @@ def expand_path(value: str, binary: Path) -> Path | None:
     return None
 
 
+def bundled_macho_files() -> list[Path]:
+    """Return canonical Mach-O paths, avoiding framework symlink aliases.
+
+    Framework binaries are commonly exposed both as Versions/A/Foo and as
+    Foo.framework/Foo. Relative load-command paths must be calculated from the
+    real Versions/A location, not from the top-level symlink.
+    """
+    files: dict[str, Path] = {}
+    for path in APP_CONTENTS.rglob("*"):
+        if is_macho(path):
+            resolved = path.resolve()
+            if within_app(resolved):
+                files[str(resolved)] = resolved
+    return sorted(files.values(), key=lambda p: str(p))
+
+
 def within_app(path: Path) -> bool:
     try:
         path.resolve().relative_to(APP.resolve())
@@ -229,7 +245,7 @@ def main() -> None:
     # Queue-based recursive traversal: each copied dependency is inspected as well.
     # Use @loader_path-relative references for copied libraries instead of injecting LC_RPATH
     # into every third-party Mach-O. This avoids failures on binaries without load-command padding.
-    binaries = [p for p in APP_CONTENTS.rglob("*") if is_macho(p)]
+    binaries = bundled_macho_files()
     queue = list(binaries)
     processed: set[str] = set()
     while queue:
@@ -361,7 +377,7 @@ def main() -> None:
                 queue.append(dest)
 
     # Final strict verification: every non-system dependency must resolve to a file inside this bundle.
-    binaries = [p for p in APP_CONTENTS.rglob("*") if is_macho(p)]
+    binaries = bundled_macho_files()
     errors: list[str] = []
     for binary in binaries:
         for dep in dylib_dependencies(binary):
