@@ -180,14 +180,10 @@ def main() -> None:
     if not FRAMEWORKS.is_dir():
         raise RuntimeError(f"Frameworks directory not found: {FRAMEWORKS}")
 
-    # Add an executable-relative path to every Mach-O so all binaries can find bundled dependencies.
-    binaries = [p for p in APP_CONTENTS.rglob("*") if is_macho(p)]
-    for binary in binaries:
-        add_rpath(binary, "@executable_path/../Frameworks")
-        if binary.parent == FRAMEWORKS or binary.parent == DEPS_DIR:
-            add_rpath(binary, "@loader_path")
-
     # Queue-based recursive traversal: each copied dependency is inspected as well.
+    # Use @loader_path-relative references for copied libraries instead of injecting LC_RPATH
+    # into every third-party Mach-O. This avoids failures on binaries without load-command padding.
+    binaries = [p for p in APP_CONTENTS.rglob("*") if is_macho(p)]
     queue = list(binaries)
     processed: set[str] = set()
     while queue:
@@ -231,9 +227,8 @@ def main() -> None:
             requested_name = Path(dep[len("@rpath/"):] if dep.startswith("@rpath/") else dep).name
             dest, relative_name = copy_dependency(source, requested_name)
             normalize_install_id(dest, relative_name)
-            add_rpath(dest, "@executable_path/../Frameworks")
-            add_rpath(dest, "@loader_path")
-            replacement = "@rpath/" + relative_name
+            relative_from_loader = os.path.relpath(dest, binary.parent).replace(os.sep, "/")
+            replacement = "@loader_path/" + relative_from_loader
             if dep != replacement:
                 run("install_name_tool", "-change", dep, replacement, str(binary))
             if str(dest) not in processed:
