@@ -49,6 +49,24 @@ extern "C" {
 #define GL_TEXTURE_RECTANGLE 0x84F5
 #endif
 
+// Shared budget for mapped upload buffers across every video layer.
+static constexpr size_t kGlobalPboBudget = size_t(512) << 20;
+static std::atomic<size_t> s_globalPboBytes{0};
+
+static bool reserveGlobalPboBytes(size_t bytes)
+{
+    size_t used = s_globalPboBytes.load(std::memory_order_relaxed);
+    for (;;) {
+        if (bytes > kGlobalPboBudget || used > kGlobalPboBudget - bytes) return false;
+        if (s_globalPboBytes.compare_exchange_weak(used, used + bytes, std::memory_order_relaxed)) return true;
+    }
+}
+
+static void releaseGlobalPboBytes(size_t bytes)
+{
+    s_globalPboBytes.fetch_sub(bytes, std::memory_order_relaxed);
+}
+
 static constexpr GLenum kDxt1 = 0x83F0;  // GL_COMPRESSED_RGB_S3TC_DXT1_EXT
 static constexpr GLenum kDxt5 = 0x83F3;  // GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
 static constexpr GLenum kRgtc1 = 0x8DBB; // GL_COMPRESSED_RED_RGTC1 (OpenGL 3.0)
@@ -170,6 +188,9 @@ void VideoConverter::release()
 // ---------------------------------------------------------------------------
 void VideoTexture::createPbo(VideoDecoder &dec)
 {
+    // The per-stream staging target otherwise multiplies to several GiB with many layers.
+    // Reserve globally before asking the driver for another mapped buffer.
+    if (!m_pboSize || !reserveGlobalPboBytes(m_pboSize)) return;
     auto f = gl();
     int id = -1;
     for (size_t i = 0; i < m_pbos.size(); ++i)
@@ -188,8 +209,10 @@ void VideoTexture::createPbo(VideoDecoder &dec)
     void *ptr = f->glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, GLsizeiptr(m_pboSize), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
     f->glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     b.size = m_pboSize;
+    b.budgetReserved = true;
     if (!ptr) { // no mapping: frames go through the decoder's memory
         f->glDeleteBuffers(1, &b.buffer);
+        releaseGlobalPboBytes(m_pboSize);
         b = Pbo{};
         return;
     }
@@ -209,6 +232,7 @@ void VideoTexture::destroyPbo(int id)
         f->glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     }
     f->glDeleteBuffers(1, &b.buffer);
+    if (b.budgetReserved) releaseGlobalPboBytes(b.size);
     b = Pbo{};
     --m_live;
 }

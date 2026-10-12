@@ -20,6 +20,7 @@
 
 #include <QString>
 #include <atomic>
+#include <array>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -80,6 +81,25 @@ public:
     // True when non-looping playback has reached the end and the queue is empty.
     bool finished();
 
+    // Lightweight real-time diagnostics. Counters are lock-free so the render thread can sample them.
+    // p95DecodeMs is an approximate percentile from fixed buckets (no per-frame allocations).
+    struct Metrics {
+        uint64_t decodedFrames = 0;
+        uint64_t fetchedFrames = 0;
+        uint64_t skippedFrames = 0;   // queued frames made obsolete by a later fetch
+        uint64_t fetchMisses = 0;     // no frame available; caller may have to repeat the previous frame
+        uint64_t lateFrames = 0;      // fetched frame lag exceeded 1.5 source-frame intervals
+        uint64_t memoryBudgetDrops = 0; // decoded frames discarded to stay within the process-wide CPU frame budget
+        uint64_t queueHighWatermark = 0;
+        double decodeTimeTotalMs = 0;
+        double decodeTimeMaxMs = 0;
+        double decodeTimeP95Ms = 0;   // bucket estimate, not an exact percentile
+        double lastFrameLatenessMs = 0;
+        double maxFrameLatenessMs = 0;
+    };
+    Metrics metrics() const;
+    void resetMetrics();
+
     // --- Upload buffers (render thread)
     size_t stagingSize() const { return m_stagingSize.load(); } // bytes of one frame (0: not known yet)
     int stagingCount() const;                                   // how many buffers it can use
@@ -106,6 +126,7 @@ private:
     void run();
     void doSeek(double t);
     int decodeNext(VideoFrame &f, double skipBefore = -1e9); // 1 = frame, 2 = skipped, 0 = end, -1 = error
+    int readVideoPacket(); // demux next packet from the selected video stream
     int decodeHap(VideoFrame &f, double skipBefore);
     bool deliver(AVFrame *src, VideoFrame &f, bool mapped); // decoded picture -> f (upload buffer, or kept)
     void produceBackwardWindow(); // decode thread, backward leg
@@ -155,6 +176,7 @@ private:
     std::condition_variable m_cv;
     std::deque<VideoFrame> m_queue;
     std::vector<std::vector<uint8_t>> m_bytePool;
+    std::vector<size_t> m_bytePoolBudgetBytes; // reservations transferred with pooled allocations
     struct Staging {
         int id = -1;
         uint8_t *ptr = nullptr;
@@ -163,6 +185,17 @@ private:
     std::vector<Staging> m_freeStaging;
     std::map<int, Staging> m_stagingById; // every buffer handed over, wherever it is
     std::atomic<size_t> m_stagingSize{0};
+
+    // Metrics use atomics because decode and render/fetch run on different threads.
+    std::atomic<uint64_t> m_metricDecoded{0}, m_metricFetched{0}, m_metricSkipped{0}, m_metricMisses{0};
+    std::atomic<uint64_t> m_metricLate{0}, m_metricMemoryBudgetDrops{0}, m_metricQueueHigh{0};
+    std::atomic<uint64_t> m_metricDecodeNsTotal{0}, m_metricDecodeNsMax{0};
+    std::atomic<uint64_t> m_metricLastLateNs{0}, m_metricMaxLateNs{0};
+    std::array<std::atomic<uint64_t>, 12> m_metricDecodeBuckets{};
+    void recordQueueDepth(size_t depth);
+    void recordDecodeTime(uint64_t nanoseconds);
+    bool reserveFrameMemory(VideoFrame &frame);
+
     bool m_quit = false, m_seekPending = false, m_eof = false, m_needFirst = true;
     double m_seekTarget = 0;
     uint64_t m_generation = 0;

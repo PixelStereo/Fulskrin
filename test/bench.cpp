@@ -175,8 +175,23 @@ int main(int argc, char **argv)
         const double rate = shown / s, want = std::min(fileFps, renderFps);
         const bool good = rate >= want * 0.95;
         allGood = allGood && good;
+        VideoDecoder::Metrics m;
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(i);
+            if (l && l->video) m = l->video->metrics();
+        }
         std::printf("  %-34s %-26s %6.1f frames/s of %.2f  %s  [%s]\n", qPrintable(QFileInfo(files[k]).fileName()),
                     qPrintable(codec), rate, fileFps, good ? "ok" : "DROPS", qPrintable(format));
+        std::printf("      decode p95/max %.2f/%.2f ms; late %llu; skipped %llu; fetch misses %llu; queue high %llu\n",
+                    m.decodeTimeP95Ms, m.decodeTimeMaxMs,
+                    static_cast<unsigned long long>(m.lateFrames),
+                    static_cast<unsigned long long>(m.skippedFrames),
+                    static_cast<unsigned long long>(m.fetchMisses),
+                    static_cast<unsigned long long>(m.queueHighWatermark));
+        std::printf("      decoded %llu; memory-budget drops %llu; decode total %.1f ms\n",
+                    static_cast<unsigned long long>(m.decodedFrames),
+                    static_cast<unsigned long long>(m.memoryBudgetDrops), m.decodeTimeTotalMs);
     }
     e.stop();
     std::printf(allGood ? "Every layer kept its rate.\n" : "Some layers dropped frames.\n");

@@ -37,8 +37,10 @@ class Pool
 public:
     Pool()
     {
-        const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
-        const int n = int(std::min(16u, hw - 1));
+        const unsigned reported = std::thread::hardware_concurrency();
+        const unsigned hw = std::max(2u, reported);
+        // Keep the shared HAP/CPU-fallback pool bounded; decode work has a separate global gate.
+        const int n = int(std::min(4u, hw - 1));
         for (int i = 0; i < n; ++i) m_threads.emplace_back([this] { loop(); });
     }
     ~Pool()

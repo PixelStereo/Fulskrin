@@ -71,6 +71,7 @@ private:
         GLuint buffer = 0;
         size_t size = 0;
         bool mapped = false;
+        bool budgetReserved = false;
     };
     void createPbo(VideoDecoder &dec);
     void destroyPbo(int id);
