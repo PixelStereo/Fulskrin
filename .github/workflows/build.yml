@@ -156,16 +156,46 @@ jobs:
 
           "$QT_PREFIX/bin/macdeployqt" "$APP" -verbose=2 -always-overwrite "${LIBPATH_ARGS[@]}"
 
-          # Fail if a bundled Mach-O file still points into Homebrew's machine-specific paths.
+          # macdeployqt can leave non-Qt libraries with @rpath references (e.g. WebP -> SharpYUV).
+          # Add a loader-relative rpath to each flat dylib and rewrite absolute Homebrew dylib paths
+          # only when the corresponding library has actually been copied into Contents/Frameworks.
+          FRAMEWORKS="$APP/Contents/Frameworks"
           while IFS= read -r -d '' binary; do
-            if file "$binary" | grep -q "Mach-O"; then
-              if otool -L "$binary" | grep -E '/opt/homebrew/(Cellar|opt)/|/usr/local/(Cellar|opt)/'; then
-                echo "Non-portable Homebrew dependency found in: $binary" >&2
-                exit 1
-              fi
-            fi
+            file "$binary" | grep -q "Mach-O" || continue
+            case "$binary" in
+              "$FRAMEWORKS"/*.dylib)
+                if ! otool -l "$binary" | grep -Fq 'path @loader_path (offset'; then
+                  install_name_tool -add_rpath '@loader_path' "$binary"
+                fi
+                ;;
+            esac
+            while IFS= read -r dep; do
+              dep="${dep#${dep%%[![:space:]]*}}"
+              dep="${dep%% (compatibility version*}"
+              case "$dep" in
+                /opt/homebrew/Cellar/*|/opt/homebrew/opt/*|/usr/local/Cellar/*|/usr/local/opt/*)
+                  base="$(basename "$dep")"
+                  if [[ -f "$FRAMEWORKS/$base" && "$dep" != "$FRAMEWORKS/$base" ]]; then
+                    install_name_tool -change "$dep" "@rpath/$base" "$binary"
+                  fi
+                  ;;
+              esac
+            done < <(otool -L "$binary" | tail -n +2)
           done < <(find "$APP/Contents" -type f -print0)
 
+          # macdeployqt may apply an ad-hoc signature before the dependency fixups above.
+          # Re-sign ad-hoc after all install_name_tool changes; Developer ID signing is a later step.
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          # No absolute Homebrew references may remain in the packaged Mach-O files.
+          while IFS= read -r -d '' binary; do
+            file "$binary" | grep -q "Mach-O" || continue
+            if otool -L "$binary" | grep -E '/opt/homebrew/(Cellar|opt)/|/usr/local/(Cellar|opt)/'; then
+              echo "Non-portable Homebrew dependency found in: $binary" >&2
+              exit 1
+            fi
+          done < <(find "$APP/Contents" -type f -print0)
           test -x "$EXE"
           test -d "$APP/Contents/Resources/isf"
           cat > "$APP/Contents/Resources/README-Dependencies.txt" <<'EOF'
