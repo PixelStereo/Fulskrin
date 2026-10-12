@@ -83,7 +83,7 @@ void PresetEditor::track(QWidget *w, quint64 layer, const QStringList &paths)
     m_tracked.push_back(t);
     w->installEventFilter(this);
     for (QWidget *c : w->findChildren<QWidget *>()) c->installEventFilter(this);
-    if (m_editing) updateMarks();
+    updateMarks();
 }
 
 bool PresetEditor::inSelected(quint64 layer, const QStringList &paths) const
@@ -285,7 +285,8 @@ void PresetEditor::updateMarks()
         m_overlay = new Overlay(this, window);
     }
     if (m_overlay) {
-        m_overlay->setVisible(m_editing);
+        const bool hasDriven = std::any_of(m_tracked.begin(), m_tracked.end(), [](const Tracked &t) { return t.driven && t.widget; });
+        m_overlay->setVisible(m_editing || hasDriven);
         m_overlay->raise();
         m_overlay->update();
     }
