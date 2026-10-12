@@ -162,8 +162,27 @@ def normalize_install_id(binary: Path, relative_name: str) -> None:
 
 
 def copy_dependency(source: Path, requested_name: str) -> tuple[Path, str]:
-    """Copy a dependency once; reject collisions rather than silently bundle the wrong ABI."""
+    """Bundle a dependency without flattening framework executables into the dylib directory."""
     source = source.resolve()
+
+    # A framework executable must stay inside its .framework bundle. Flattening it into
+    # FulskrinDeps can collide with another framework/library that happens to share its
+    # basename (e.g. QtNetwork or QtVirtualKeyboard), and can discard framework resources.
+    framework_root = next((parent for parent in source.parents if parent.name.endswith(".framework")), None)
+    if framework_root is not None:
+        dest_framework = FRAMEWORKS / framework_root.name
+        relative_binary = source.relative_to(framework_root)
+        dest = dest_framework / relative_binary
+        if dest_framework.exists():
+            if not dest.is_file() or hashlib.sha256(dest.read_bytes()).digest() != hashlib.sha256(source.read_bytes()).digest():
+                raise RuntimeError(
+                    f"Framework filename collision for {framework_root.name}: "
+                    f"{source} conflicts with {dest_framework}"
+                )
+        else:
+            shutil.copytree(framework_root, dest_framework, symlinks=True)
+        return dest, dest.relative_to(FRAMEWORKS).as_posix()
+
     # Keep the requested load-command basename so versioned symlink names remain loadable.
     safe_name = Path(requested_name).name
     dest = DEPS_DIR / safe_name
