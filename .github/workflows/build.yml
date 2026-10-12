@@ -137,7 +137,8 @@ jobs:
           APP="build/Fulskrin.app"
           EXE="$APP/Contents/MacOS/Fulskrin"
           FRAMEWORKS="$APP/Contents/Frameworks"
-          QT_PREFIX="$(brew --prefix qt)"
+          QT_CELLAR="$(brew --cellar qt)"
+          FFMPEG_LIB="$(brew --prefix ffmpeg)/lib"
 
           test -d "$APP"
           test -f "$EXE"
@@ -151,12 +152,13 @@ jobs:
             -x "$EXE" \
             -d "$FRAMEWORKS" \
             -p "@executable_path/../Frameworks/" \
-            -i "$QT_PREFIX"
+            -i "$QT_CELLAR" \
+            -s "$FFMPEG_LIB"
 
           # Fail if a bundled Mach-O file still points into the build runner's Homebrew Cellar.
           while IFS= read -r -d '' binary; do
             if file "$binary" | grep -q "Mach-O"; then
-              if otool -L "$binary" | grep -E '/opt/homebrew/Cellar/|/usr/local/Cellar/'; then
+              if otool -L "$binary" | grep -E '/opt/homebrew/(Cellar|opt)/|/usr/local/(Cellar|opt)/'; then
                 echo "Non-portable Homebrew dependency found in: $binary" >&2
                 exit 1
               fi
@@ -165,6 +167,18 @@ jobs:
 
           test -x "$EXE"
           test -d "$APP/Contents/Resources/isf"
+          cat > "$APP/Contents/Resources/README-Dependencies.txt" <<'EOF'
+          Fulskrin macOS runtime notes
+
+          The application bundle includes the Qt frameworks/plugins deployed by macdeployqt and the FFmpeg
+          dynamic libraries discovered during packaging. The workflow checks for unresolved absolute Homebrew paths.
+
+          Some optional hardware/network features may still require vendor software installed separately:
+          - Blackmagic DeckLink: Blackmagic Desktop Video driver/runtime.
+          - NDI / OMT: compatible vendor runtime libraries, subject to their own redistribution terms.
+
+          These vendor runtimes are not part of this repository and are not bundled automatically.
+          EOF
           ditto -c -k --keepParent "$APP" Fulskrin-macos.zip
       - uses: actions/upload-artifact@v4
         with:
@@ -245,6 +259,19 @@ jobs:
           if (-not (Get-ChildItem dist -Filter "*.dll")) {
             throw "No runtime DLLs were deployed"
           }
+
+          @'
+          Fulskrin Windows x64 runtime notes
+
+          This archive bundles Fulskrin.exe, Qt runtime libraries/plugins, FFmpeg DLLs and ISF shaders.
+          Run Fulskrin.exe from this extracted directory.
+
+          Some optional hardware/network features may require vendor software installed separately:
+          - Blackmagic DeckLink: Blackmagic Desktop Video driver/runtime.
+          - NDI / OMT: compatible vendor runtime libraries, subject to their own redistribution terms.
+
+          These vendor runtimes are not part of this repository and are not bundled automatically.
+          '@ | Set-Content -Encoding utf8 dist\README-Dependencies.txt
 
           Compress-Archive -Path dist\* -DestinationPath Fulskrin-windows.zip -Force
       - uses: actions/upload-artifact@v4
