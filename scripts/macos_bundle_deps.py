@@ -100,7 +100,10 @@ def candidate_brew_files(name: str) -> list[Path]:
         for pattern in ("Cellar/*/*/lib/**/" + name, "opt/*/lib/**/" + name,
                         "Cellar/*/*/Frameworks/**/" + name, "opt/*/Frameworks/**/" + name):
             for path in root.glob(pattern):
-                if path.is_file():
+                # Frameworks may contain a Headers/QtFoo file with the same basename
+                # as the actual framework executable. Only Mach-O binaries are valid
+                # dependency candidates; headers must never make resolution ambiguous.
+                if path.is_file() and is_macho(path):
                     real = path.resolve()
                     candidates[str(real)] = real
     return sorted(candidates.values(), key=lambda p: str(p))
