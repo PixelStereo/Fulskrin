@@ -144,14 +144,17 @@ jobs:
           # macdeployqt preserves Qt's framework layout and handles its plugin deployment.
           # Supply FFmpeg and every Homebrew runtime dependency as extra search paths,
           # so its recursive dependency scan can copy them into the app bundle.
-          LIBPATH_ARGS=()
+          LIBPATH_ARGS=("-libpath=$QT_PREFIX/lib")
+          # Search every installed Homebrew formula: Qt's frameworks and FFmpeg's
+          # transitive libraries can come from different formula dependency trees.
           while IFS= read -r formula; do
             [[ -n "$formula" ]] || continue
             prefix="$(brew --prefix "$formula")"
             [[ -d "$prefix/lib" ]] && LIBPATH_ARGS+=("-libpath=$prefix/lib")
-          done < <(printf '%s\n' ffmpeg $(brew deps ffmpeg) | sort -u)
+            [[ -d "$prefix/Frameworks" ]] && LIBPATH_ARGS+=("-libpath=$prefix/Frameworks")
+          done < <(brew list --formula | sort -u)
 
-          "$QT_PREFIX/bin/macdeployqt" "$APP" -always-overwrite "${LIBPATH_ARGS[@]}"
+          "$QT_PREFIX/bin/macdeployqt" "$APP" -verbose=2 -always-overwrite "${LIBPATH_ARGS[@]}"
 
           # Fail if a bundled Mach-O file still points into Homebrew's machine-specific paths.
           while IFS= read -r -d '' binary; do
