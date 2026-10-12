@@ -124,6 +124,8 @@ jobs:
         run: brew install qt ffmpeg pkg-config
       - name: Build
         run: |
+          # Keep packaging independent of any stale build artifacts.
+          rm -rf build
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
           cmake --build build -j4
           cmake --build build --target fulskrin_tests -j4
@@ -159,9 +161,22 @@ jobs:
           # Resolve and bundle every non-system dependency recursively, including @rpath libraries
           # (e.g. WebP -> SharpYUV). The helper fails closed when a dependency is missing/ambiguous.
           python3 scripts/macos_bundle_deps.py "$APP"
-          # macdeployqt may apply an ad-hoc signature before the dependency fixups above.
-          # Re-sign ad-hoc after all install_name_tool changes; Developer ID signing is a later step.
-          codesign --force --deep --sign - "$APP"
+          # All install_name_tool edits are complete. Re-sign modified nested code from the
+          # inside out so no later binary edit invalidates a signature. This is an ad-hoc
+          # build signature (not Developer ID signing or notarization).
+          while IFS= read -r -d '' binary; do
+            file "$binary" | grep -q "Mach-O" || continue
+            codesign --force --sign - "$binary"
+          done < <(find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" -type f -print0)
+
+          # Sign framework/plugin bundles after their inner Mach-O files, deepest bundles first.
+          while IFS= read -r -d '' bundle; do
+            codesign --force --sign - "$bundle"
+          done < <(find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" -depth -type d \( -name "*.framework" -o -name "*.bundle" \) -print0)
+
+          # Sign the main executable, then the outer .app bundle last.
+          codesign --force --sign - "$EXE"
+          codesign --force --sign - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
           # No absolute Homebrew references may remain in the packaged Mach-O files.
