@@ -48,30 +48,30 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j4
-          cmake --build build --target fulskrin_tests -j4
+          cmake --build build --target pinol_tests -j4
       - name: Engine tests
         run: |
           xvfb-run -a ctest --test-dir build --output-on-failure
       - name: Package Linux archive
         run: |
           mkdir -p dist
-          install -Dm755 build/Fulskrin dist/Fulskrin
+          install -Dm755 build/Pinol dist/Pinol
           cp -R build/isf dist/isf
           cat > dist/README-Linux.txt <<'EOF'
-          Fulskrin Linux x86_64 — runtime requirements
+          Pinol Linux x86_64 — runtime requirements
 
           This archive is built on Ubuntu 24.04 and is not a fully self-contained AppImage.
           On Ubuntu 24.04, install the runtime libraries with:
             sudo apt install libqt6widgets6 libqt6openglwidgets6 libqt6opengl6 libqt6multimedia6 qt6-qpa-plugins libgl1 libasound2t64 libavformat60 libavcodec60 libswscale7 libswresample4 libavutil58
 
-          Extract the archive and run ./Fulskrin from this directory so the adjacent ./isf shaders can be found.
+          Extract the archive and run ./Pinol from this directory so the adjacent ./isf shaders can be found.
           Other Linux distributions may require equivalent runtime packages.
           EOF
-          tar -czf Fulskrin-linux-x86_64.tar.gz -C dist .
+          tar -czf Pinol-linux-x86_64.tar.gz -C dist .
       - uses: actions/upload-artifact@v4
         with:
-          name: Fulskrin-linux
-          path: Fulskrin-linux-x86_64.tar.gz
+          name: Pinol-linux
+          path: Pinol-linux-x86_64.tar.gz
 
   # The HAP and Snappy readers against damaged files: a short libFuzzer run with ASan / UBSan, seeded with the
   # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
@@ -95,7 +95,7 @@ jobs:
             libavutil-dev ffmpeg
       - name: Build
         run: |
-          cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DFULSKRIN_FUZZ=ON
+          cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DPINOL_FUZZ=ON
           cmake --build build-fuzz --target fuzz_hap -j4
       - name: Fuzz (2 minutes)
         run: |
@@ -128,7 +128,7 @@ jobs:
           rm -rf build
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
           cmake --build build -j4
-          cmake --build build --target fulskrin_tests -j4
+          cmake --build build --target pinol_tests -j4
       - name: Engine tests
         run: |
           ctest --test-dir build --output-on-failure
@@ -136,8 +136,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP="build/Fulskrin.app"
-          EXE="$APP/Contents/MacOS/Fulskrin"
+          APP="build/Pinol.app"
+          EXE="$APP/Contents/MacOS/Pinol"
           QT_PREFIX="$(brew --prefix qt)"
 
           test -d "$APP"
@@ -190,7 +190,7 @@ jobs:
           test -x "$EXE"
           test -d "$APP/Contents/Resources/isf"
           cat > "$APP/Contents/Resources/README-Dependencies.txt" <<'EOF'
-          Fulskrin macOS runtime notes
+          Pinol macOS runtime notes
 
           The application bundle includes the Qt frameworks/plugins deployed by macdeployqt and the FFmpeg
           dynamic libraries discovered during packaging. The workflow checks for unresolved absolute Homebrew paths.
@@ -201,11 +201,11 @@ jobs:
 
           These vendor runtimes are not part of this repository and are not bundled automatically.
           EOF
-          ditto -c -k --keepParent "$APP" Fulskrin-macos.zip
+          ditto -c -k --keepParent "$APP" Pinol-macos.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Fulskrin-macos
-          path: Fulskrin-macos.zip
+          name: Pinol-macos
+          path: Pinol-macos.zip
 
   windows:
     name: Windows (MSVC 2022) + tests
@@ -234,7 +234,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="C:\ffmpeg\$env:FFMPEG_ZIP"
           cmake --build build
-          cmake --build build --target fulskrin_tests
+          cmake --build build --target pinol_tests
       - uses: actions/download-artifact@v4
         with:
           name: test-media
@@ -255,14 +255,14 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force dist | Out-Null
 
-          Copy-Item build\Fulskrin.exe dist\Fulskrin.exe -Force
+          Copy-Item build\Pinol.exe dist\Pinol.exe -Force
           Copy-Item -Recurse -Force build\isf dist\isf
 
           # Deploy Qt libraries, platform plugins, multimedia plugins and the MSVC runtime.
-          # Use Fulskrin's FFmpeg DLLs, not Qt Multimedia's private FFmpeg build.
+          # Use Pinol's FFmpeg DLLs, not Qt Multimedia's private FFmpeg build.
           # Keep the official MSVC redistributable installer in the archive instead of copying
           # compiler-runtime DLLs individually.
-          windeployqt --release --no-compiler-runtime --no-ffmpeg -multimedia dist\Fulskrin.exe
+          windeployqt --release --no-compiler-runtime --no-ffmpeg -multimedia dist\Pinol.exe
 
           # Bundle the FFmpeg DLL set used by this build, including companion DLLs.
           $ffmpegBin = "C:\ffmpeg\$env:FFMPEG_ZIP\bin"
@@ -279,7 +279,7 @@ jobs:
           Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "dist\vc_redist.x64.exe"
 
           # Basic packaging assertions.
-          if (-not (Test-Path dist\Fulskrin.exe)) { throw "Fulskrin.exe missing" }
+          if (-not (Test-Path dist\Pinol.exe)) { throw "Pinol.exe missing" }
           if (-not (Test-Path dist\isf)) { throw "ISF assets missing" }
           if (-not (Test-Path dist\platforms\qwindows.dll)) {
             throw "Qt Windows platform plugin missing after windeployqt"
@@ -289,12 +289,12 @@ jobs:
           }
 
           @'
-          Fulskrin Windows x64 runtime notes
+          Pinol Windows x64 runtime notes
 
-          This archive bundles Fulskrin.exe, Qt runtime libraries/plugins, FFmpeg DLLs, ISF shaders,
+          This archive bundles Pinol.exe, Qt runtime libraries/plugins, FFmpeg DLLs, ISF shaders,
           and Microsoft's official vc_redist.x64.exe installer.
-          If Windows reports that the Visual C++ runtime is missing, run vc_redist.x64.exe, then start Fulskrin.exe.
-          Run Fulskrin.exe from this extracted directory.
+          If Windows reports that the Visual C++ runtime is missing, run vc_redist.x64.exe, then start Pinol.exe.
+          Run Pinol.exe from this extracted directory.
 
           Some optional hardware/network features may require vendor software installed separately:
           - Blackmagic DeckLink: Blackmagic Desktop Video driver/runtime.
@@ -303,11 +303,11 @@ jobs:
           These vendor runtimes are not part of this repository and are not bundled automatically.
           '@ | Set-Content -Encoding utf8 dist\README-Dependencies.txt
 
-          Compress-Archive -Path dist\* -DestinationPath Fulskrin-windows.zip -Force
+          Compress-Archive -Path dist\* -DestinationPath Pinol-windows.zip -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: Fulskrin-windows
-          path: Fulskrin-windows.zip
+          name: Pinol-windows
+          path: Pinol-windows.zip
 
 
   release:
@@ -327,7 +327,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Fulskrin ${{ github.ref_name }}
+          name: Pinol ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

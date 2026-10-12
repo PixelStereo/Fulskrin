@@ -1,5 +1,5 @@
 // Spout publishing (Windows): shares the output texture with other applications.
-// Compiled only on Windows (FULSKRIN_HAS_SPOUT), with the Spout2 SDK (BSD license).
+// Compiled only on Windows (PINOL_HAS_SPOUT), with the Spout2 SDK (BSD license).
 // This file deliberately includes no Qt OpenGL header (Spout provides its own).
 
 #include "Publish.h"

@@ -20,7 +20,7 @@ class QPushButton;
 class QVBoxLayout;
 
 // Drag and drop of a snapshot (onto a step of a sequence): its id, as text
-inline constexpr const char *kSnapshotMime = "application/x-fulskrin-snapshot";
+inline constexpr const char *kSnapshotMime = "application/x-pinol-snapshot";
 
 // One editable (or informative) value stored in a snapshot, found by its path inside the layer's JSON.
 struct MemField {

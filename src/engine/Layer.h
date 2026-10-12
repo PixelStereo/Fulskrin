@@ -33,10 +33,10 @@ enum class SourceType { None, Video, Image, Isf, Audio, Layer, Text, Input };
 
 // The Text generator is built in: the Media Bin lists it under Generators with this (virtual) path, so that it is
 // dragged onto a layer like any media.
-inline const QString kTextGeneratorPath = QStringLiteral("/Fulskrin/Generators/Text");
+inline const QString kTextGeneratorPath = QStringLiteral("/Pinol/Generators/Text");
 inline bool isTextGeneratorPath(const QString &p) { return QString(p).replace('\\', '/').endsWith(kTextGeneratorPath); }
 // The Timecode generator: a text layer that shows a timecode (TimecodeClock.h), from the Media Bin like a file
-inline const QString kTimecodeGeneratorPath = QStringLiteral("/Fulskrin/Generators/Timecode");
+inline const QString kTimecodeGeneratorPath = QStringLiteral("/Pinol/Generators/Timecode");
 inline bool isTimecodeGeneratorPath(const QString &p) { return QString(p).replace('\\', '/').endsWith(kTimecodeGeneratorPath); }
 // Where the picture of a layer used as a source is taken
 enum class LayerTap {

@@ -1,4 +1,4 @@
-// Engine: the project file — a layer to and from JSON, saving and opening a .fulskrin.
+// Engine: the project file — a layer to and from JSON, saving and opening a .pinol.
 #include "EngineInternal.h"
 
 #include <set>
@@ -357,7 +357,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
     QJsonObject root;
     {
         Lock lk(&m_mutex);
-        root["app"] = "Fulskrin";
+        root["app"] = "Pinol";
         root["format_version"] = kProjectFormat;
         root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()},
                                     {"fps", renderSettings().frameRate}, {"speed", m_compositionSpeed.load()}};
@@ -420,15 +420,15 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         return false;
     }
     const QJsonObject root = doc.object();
-    // A Fulskrin project, which this version reads, before anything of the current one is let go
-    if (root.value("app").toString() != QLatin1String("Fulskrin") || !root.value("layers").isArray()) {
-        if (err) *err = QStringLiteral("Not a Fulskrin project: ") + QFileInfo(path).fileName();
+    // A Pinol project, which this version reads, before anything of the current one is let go
+    if (root.value("app").toString() != QLatin1String("Pinol") || !root.value("layers").isArray()) {
+        if (err) *err = QStringLiteral("Not a Pinol project: ") + QFileInfo(path).fileName();
         return false;
     }
     const int version = root.value("format_version").toInt(0);
     if (version != kProjectFormat) {
         if (err)
-            *err = QStringLiteral("%1: project format %2, this version of Fulskrin reads format %3")
+            *err = QStringLiteral("%1: project format %2, this version of Pinol reads format %3")
                        .arg(QFileInfo(path).fileName())
                        .arg(version)
                        .arg(kProjectFormat);

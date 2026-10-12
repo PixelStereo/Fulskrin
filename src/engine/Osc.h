@@ -109,7 +109,7 @@ public:
 
     // Ports 0: chosen by the system (tests). Returns false if a port could not be opened.
     // announce: zeroconf (_oscjson._tcp, _osc._udp)
-    bool start(quint16 oscPort, quint16 queryPort, const QString &name = QStringLiteral("Fulskrin"), bool announce = true);
+    bool start(quint16 oscPort, quint16 queryPort, const QString &name = QStringLiteral("Pinol"), bool announce = true);
     void stop();
     bool isRunning() const;
     quint16 oscPort() const;

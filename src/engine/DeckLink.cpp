@@ -59,7 +59,7 @@ const decklink::Mode *decklink::bestMode(const std::vector<Mode> &modes, QSize s
     return modes.empty() ? nullptr : &modes.front();
 }
 
-#ifndef FULSKRIN_HAS_DECKLINK
+#ifndef PINOL_HAS_DECKLINK
 
 bool decklink::compiledIn() { return false; }
 QString decklink::driverVersion() { return {}; }
@@ -788,4 +788,4 @@ QString decklink::TimecodeInput::status() const
     return d->status;
 }
 
-#endif // FULSKRIN_HAS_DECKLINK
+#endif // PINOL_HAS_DECKLINK

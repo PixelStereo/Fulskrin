@@ -328,7 +328,7 @@ void ViewportOutputPanel::applyPublish()
         if (!m_pubEnabled[k]) continue;
         s.targets[k].enabled = m_pubEnabled[k]->isChecked();
         const QString n = m_pubName[k]->text().trimmed();
-        s.targets[k].name = n.isEmpty() ? QStringLiteral("Fulskrin") : n;
+        s.targets[k].name = n.isEmpty() ? QStringLiteral("Pinol") : n;
     }
     s.omtQuality = m_omtQuality->currentData().toInt();
     s.libraryFolder = m_libFolder->text().trimmed();

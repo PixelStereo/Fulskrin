@@ -1,8 +1,8 @@
-// Fuzz target (libFuzzer) for what Fulskrin reads from video files on its own: HAP frames (sections, chunks),
+// Fuzz target (libFuzzer) for what Pinol reads from video files on its own: HAP frames (sections, chunks),
 // their Snappy second stage, and the texture blocks decoded on the CPU when the GPU cannot sample them.
 // A damaged or hostile file must be refused, never read or written out of bounds (ASan / UBSan check it).
 //
-//   cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DFULSKRIN_FUZZ=ON
+//   cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DPINOL_FUZZ=ON
 //   cmake --build build-fuzz --target fuzz_hap
 //   ./build-fuzz/fuzz_hap -max_total_time=60 corpus/      (seeds: test/make_fuzz_corpus.sh)
 

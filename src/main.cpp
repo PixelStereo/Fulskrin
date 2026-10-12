@@ -25,13 +25,13 @@ int main(int argc, char *argv[])
     QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
 
     QApplication app(argc, argv);
-    QApplication::setApplicationName("Fulskrin");
-    QApplication::setOrganizationName("Fulskrin");
+    QApplication::setApplicationName("Pinol");
+    QApplication::setOrganizationName("Pinol");
     QApplication::setApplicationVersion("0.1.0");
     theme::applyToApplication(app);
 
     QCommandLineParser cli;
-    cli.setApplicationDescription("Fulskrin — multi-layer video mapping, FFmpeg playback, ISF shaders");
+    cli.setApplicationDescription("Pinol — multi-layer video mapping, FFmpeg playback, ISF shaders");
     cli.addHelpOption();
     cli.addVersionOption();
     QCommandLineOption renderOpt("render", "Render the project headless and save the output as PNG.", "output.png");
@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
     cli.addOption(renderOpt);
     cli.addOption(framesOpt);
     cli.addOption(shotOpt);
-    cli.addPositionalArgument("project", ".fulskrin project to open");
+    cli.addPositionalArgument("project", ".pinol project to open");
     cli.process(app);
     const QString project = cli.positionalArguments().value(0);
 
@@ -51,7 +51,7 @@ int main(int argc, char *argv[])
             qCritical("%s", qPrintable(err));
             return 1;
         }
-        QMessageBox::critical(nullptr, "Fulskrin", QStringLiteral("Could not initialize OpenGL:\n") + err);
+        QMessageBox::critical(nullptr, "Pinol", QStringLiteral("Could not initialize OpenGL:\n") + err);
         return 1;
     }
 

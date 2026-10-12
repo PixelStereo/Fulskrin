@@ -31,11 +31,11 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>${MACOSX_BUNDLE_COPYRIGHT}</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Fulskrin uses the camera as the source of a layer.</string>
+	<string>Pinol uses the camera as the source of a layer.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Fulskrin uses the microphone when a layer takes an audio input.</string>
+	<string>Pinol uses the microphone when a layer takes an audio input.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Fulskrin finds and receives NDI and OMT sources on your network, and announces its OSC server.</string>
+	<string>Pinol finds and receives NDI and OMT sources on your network, and announces its OSC server.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ndi._tcp</string>

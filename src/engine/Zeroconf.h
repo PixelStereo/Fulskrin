@@ -28,7 +28,7 @@ public:
     explicit Zeroconf(QObject *parent = nullptr);
     ~Zeroconf() override;
 
-    // instance: shown name, e.g. "Fulskrin (studio-mac)"
+    // instance: shown name, e.g. "Pinol (studio-mac)"
     bool start(const QString &instance, const QList<Service> &services, QString *err = nullptr);
     void stop();
     bool isRunning() const { return m_running; }

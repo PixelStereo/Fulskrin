@@ -5,7 +5,7 @@
 //    then sent by a dedicated thread so it never slows down rendering;
 //  - DeckLink (Blackmagic SDI / HDMI cards): the same picture read back, played out by the card on its own clock.
 //
-// NDI, OMT and the DeckLink driver are loaded at runtime: Fulskrin builds and runs without them,
+// NDI, OMT and the DeckLink driver are loaded at runtime: Pinol builds and runs without them,
 // publishing becomes available as soon as the library is installed on the machine.
 //
 // This file depends on no OpenGL header (the Syphon / Spout implementations have their own).
@@ -30,7 +30,7 @@ QString publishKindName(PublishKind k);
 
 struct PublishTarget {
     bool enabled = false;
-    QString name = QStringLiteral("Fulskrin"); // DeckLink: the port's id (decklink::Port), empty for the first one
+    QString name = QStringLiteral("Pinol"); // DeckLink: the port's id (decklink::Port), empty for the first one
     bool operator==(const PublishTarget &o) const { return enabled == o.enabled && name == o.name; }
     bool operator!=(const PublishTarget &o) const { return !(*this == o); }
 };
