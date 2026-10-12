@@ -136,7 +136,8 @@ jobs:
           set -euo pipefail
           APP="build/Fulskrin.app"
           EXE="$APP/Contents/MacOS/Fulskrin"
-          FRAMEWORKS="$APP/Contents/Frameworks"
+          # Keep Fulskrin's FFmpeg build separate from Qt Multimedia's private FFmpeg libraries.
+          FFMPEG_BUNDLE="$APP/Contents/Frameworks/FulskrinFFmpeg"
           QT_PREFIX="$(brew --prefix qt)"
           QT_CELLAR="$(brew --cellar qt)"
           FFMPEG_LIB="$(brew --prefix ffmpeg)/lib"
@@ -151,8 +152,8 @@ jobs:
           # Keep Qt's already-deployed frameworks intact.
           dylibbundler -b -cd \
             -x "$EXE" \
-            -d "$FRAMEWORKS" \
-            -p "@executable_path/../Frameworks/" \
+            -d "$FFMPEG_BUNDLE" \
+            -p "@executable_path/../Frameworks/FulskrinFFmpeg/" \
             -i "$QT_CELLAR" \
             -s "$FFMPEG_LIB"
 
@@ -238,7 +239,10 @@ jobs:
           Copy-Item -Recurse -Force build\isf dist\isf
 
           # Deploy Qt libraries, platform plugins, multimedia plugins and the MSVC runtime.
-          windeployqt --release --compiler-runtime --multimedia dist\Fulskrin.exe
+          # Use Fulskrin's FFmpeg DLLs, not Qt Multimedia's private FFmpeg build.
+          # Keep the official MSVC redistributable installer in the archive instead of copying
+          # compiler-runtime DLLs individually.
+          windeployqt --release --no-compiler-runtime --no-ffmpeg -multimedia dist\Fulskrin.exe
 
           # Bundle the FFmpeg DLL set used by this build, including companion DLLs.
           $ffmpegBin = "C:\ffmpeg\$env:FFMPEG_ZIP\bin"
@@ -250,6 +254,9 @@ jobs:
             throw "No FFmpeg DLLs found in $ffmpegBin"
           }
           $ffmpegDlls | Copy-Item -Destination dist -Force
+
+          # Include Microsoft's official x64 Visual C++ Redistributable installer.
+          Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "dist\vc_redist.x64.exe"
 
           # Basic packaging assertions.
           if (-not (Test-Path dist\Fulskrin.exe)) { throw "Fulskrin.exe missing" }
@@ -264,7 +271,9 @@ jobs:
           @'
           Fulskrin Windows x64 runtime notes
 
-          This archive bundles Fulskrin.exe, Qt runtime libraries/plugins, FFmpeg DLLs and ISF shaders.
+          This archive bundles Fulskrin.exe, Qt runtime libraries/plugins, FFmpeg DLLs, ISF shaders,
+          and Microsoft's official vc_redist.x64.exe installer.
+          If Windows reports that the Visual C++ runtime is missing, run vc_redist.x64.exe, then start Fulskrin.exe.
           Run Fulskrin.exe from this extracted directory.
 
           Some optional hardware/network features may require vendor software installed separately:
