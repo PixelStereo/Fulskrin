@@ -156,9 +156,8 @@ jobs:
 
           "$QT_PREFIX/bin/macdeployqt" "$APP" -verbose=2 -always-overwrite "${LIBPATH_ARGS[@]}"
 
-          # macdeployqt can leave non-Qt libraries with @rpath references (e.g. WebP -> SharpYUV).
-          # Add a loader-relative rpath to each flat dylib and rewrite absolute Homebrew dylib paths
-          # only when the corresponding library has actually been copied into Contents/Frameworks.
+          # macdeployqt can copy dylibs while preserving their Homebrew install IDs.
+          # Rewrite both each copied dylib's own ID (-id) and its dependency references (-change).
           FRAMEWORKS="$APP/Contents/Frameworks"
           while IFS= read -r -d '' binary; do
             file "$binary" | grep -q "Mach-O" || continue
@@ -167,22 +166,29 @@ jobs:
                 if ! otool -l "$binary" | grep -Fq 'path @loader_path (offset'; then
                   install_name_tool -add_rpath '@loader_path' "$binary"
                 fi
+                dylib_id="$(otool -D "$binary" 2>/dev/null | sed -n '2p' | sed -E 's/^[[:space:]]+//')"
+                case "$dylib_id" in
+                  /opt/homebrew/Cellar/*|/opt/homebrew/opt/*|/usr/local/Cellar/*|/usr/local/opt/*)
+                    install_name_tool -id "@rpath/$(basename "$binary")" "$binary"
+                    ;;
+                esac
                 ;;
             esac
             while IFS= read -r dep; do
-              dep="${dep#${dep%%[![:space:]]*}}"
-              dep="${dep%% (compatibility version*}"
+              dep="$(printf '%s' "$dep" | sed -E 's/^[[:space:]]+//; s/ \(compatibility version.*$//')"
               case "$dep" in
                 /opt/homebrew/Cellar/*|/opt/homebrew/opt/*|/usr/local/Cellar/*|/usr/local/opt/*)
                   base="$(basename "$dep")"
                   if [[ -f "$FRAMEWORKS/$base" && "$dep" != "$FRAMEWORKS/$base" ]]; then
                     install_name_tool -change "$dep" "@rpath/$base" "$binary"
+                  else
+                    echo "Homebrew dependency was not bundled: $dep (referenced by $binary)" >&2
+                    exit 1
                   fi
                   ;;
               esac
             done < <(otool -L "$binary" | tail -n +2)
           done < <(find "$APP/Contents" -type f -print0)
-
           # macdeployqt may apply an ad-hoc signature before the dependency fixups above.
           # Re-sign ad-hoc after all install_name_tool changes; Developer ID signing is a later step.
           codesign --force --deep --sign - "$APP"
