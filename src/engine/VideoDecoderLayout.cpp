@@ -1,6 +1,8 @@
 #include "VideoDecoder.h"
 
 extern "C" {
+#include <libavutil/frame.h>
+#include <libavutil/macros.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 }
