@@ -376,6 +376,14 @@ def main() -> None:
             if str(dest) not in processed:
                 queue.append(dest)
 
+    # Normalize install IDs on every bundled dylib/framework, including frameworks
+    # copied by macdeployqt. Its LC_ID_DYLIB may still point into /opt/homebrew;
+    # dependency rewriting alone does not change that ID, and the release portability
+    # scan correctly rejects it. Framework IDs retain their internal Versions/A path.
+    for binary in bundled_macho_files():
+        relative_name = binary.relative_to(FRAMEWORKS).as_posix()
+        normalize_install_id(binary, relative_name)
+
     # Final strict verification: every non-system dependency must resolve to a file inside this bundle.
     binaries = bundled_macho_files()
     errors: list[str] = []
