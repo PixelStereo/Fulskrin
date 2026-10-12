@@ -172,7 +172,7 @@ jobs:
           # Sign framework/plugin bundles after their inner Mach-O files, deepest bundles first.
           while IFS= read -r -d '' bundle; do
             codesign --force --sign - "$bundle"
-          done < <(find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" -depth -type d \\( -name "*.framework" -o -name "*.bundle" \\) -print0)
+          done < <(find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" -depth -type d \( -name "*.framework" -o -name "*.bundle" \) -print0)
 
           # Sign the main executable, then the outer .app bundle last.
           codesign --force --sign - "$EXE"
