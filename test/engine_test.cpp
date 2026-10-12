@@ -202,6 +202,8 @@ int main(int argc, char **argv)
         CHECK(!e.loadProject(write("other.json", R"({"app":"Other","layers":[]})"), nullptr, &why));
         CHECK(!e.loadProject(write("future.pinol", R"({"app":"Pinol","format_version":99,"layers":[]})"), nullptr, &why) &&
               why.contains("format 99"));
+        CHECK(!e.loadProject(write("legacy-future.pinol", R"({"app":"Fulskrin","format_version":99,"layers":[]})"), nullptr, &why) &&
+              why.contains("format 99"));
         CHECK(e.layerCount() == before);
     }
     } // project
