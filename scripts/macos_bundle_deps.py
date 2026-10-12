@@ -146,6 +146,18 @@ def resolve_brew_dependency(dep: str, binary: Path) -> Path | None:
     return None
 
 
+def bundled_framework_dependency(dep: str) -> Path | None:
+    """Resolve a framework load command by bundle identity, not by basename or broken relative path."""
+    match = re.search(r"([^/]+\\.framework)/(.*)$", dep)
+    if not match:
+        return None
+    framework_name, inside = match.groups()
+    candidate = FRAMEWORKS / framework_name / inside
+    if candidate.is_file() and within_app(candidate):
+        return candidate.resolve()
+    return None
+
+
 def add_rpath(binary: Path, desired: str) -> None:
     if desired not in rpaths(binary):
         run("install_name_tool", "-add_rpath", desired, str(binary))
@@ -239,6 +251,19 @@ def main() -> None:
                     resolved_inside = Path(dep).resolve()
 
             if resolved_inside is not None:
+                continue
+
+            # Framework load commands can be malformed after macdeployqt relocates framework
+            # executables (especially duplicate top-level executables versus Versions/A). Resolve
+            # by the explicit .framework identity and its internal path before basename fallback.
+            bundled_framework = bundled_framework_dependency(dep)
+            if bundled_framework is not None:
+                relative_from_loader = os.path.relpath(bundled_framework, binary.parent).replace(os.sep, "/")
+                replacement = "@loader_path/" + relative_from_loader
+                if dep != replacement:
+                    run("install_name_tool", "-change", dep, replacement, str(binary))
+                if str(bundled_framework) not in processed:
+                    queue.append(bundled_framework)
                 continue
 
             # macdeployqt usually leaves @rpath framework references intact. Resolve those
