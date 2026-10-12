@@ -121,7 +121,7 @@ jobs:
           name: test-media
           path: test/media
       - name: Dependencies
-        run: brew install qt ffmpeg pkg-config
+        run: brew install qt ffmpeg pkg-config dylibbundler
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
@@ -130,10 +130,42 @@ jobs:
       - name: Engine tests
         run: |
           ctest --test-dir build --output-on-failure
-      - name: Package .app
+      - name: Package .app with runtime dependencies
+        shell: bash
         run: |
-          "$(brew --prefix qt)/bin/macdeployqt" build/Fulskrin.app
-          ditto -c -k --keepParent build/Fulskrin.app Fulskrin-macos.zip
+          set -euo pipefail
+          APP="build/Fulskrin.app"
+          EXE="$APP/Contents/MacOS/Fulskrin"
+          FRAMEWORKS="$APP/Contents/Frameworks"
+          QT_PREFIX="$(brew --prefix qt)"
+
+          test -d "$APP"
+          test -f "$EXE"
+
+          # Deploy Qt frameworks and the Qt plugins used by this application.
+          "$QT_PREFIX/bin/macdeployqt" "$APP" -always-overwrite
+
+          # Bundle FFmpeg and its transitive non-system dylib dependencies.
+          # Keep Qt's already-deployed frameworks intact.
+          dylibbundler -b -cd \
+            -x "$EXE" \
+            -d "$FRAMEWORKS" \
+            -p "@executable_path/../Frameworks/" \
+            -i "$QT_PREFIX"
+
+          # Fail if a bundled Mach-O file still points into the build runner's Homebrew Cellar.
+          while IFS= read -r -d '' binary; do
+            if file "$binary" | grep -q "Mach-O"; then
+              if otool -L "$binary" | grep -E '/opt/homebrew/Cellar/|/usr/local/Cellar/'; then
+                echo "Non-portable Homebrew dependency found in: $binary" >&2
+                exit 1
+              fi
+            fi
+          done < <(find "$APP/Contents" -type f -print0)
+
+          test -x "$EXE"
+          test -d "$APP/Contents/Resources/isf"
+          ditto -c -k --keepParent "$APP" Fulskrin-macos.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Fulskrin-macos
@@ -181,14 +213,40 @@ jobs:
           $env:PATH = "C:\ffmpeg\$env:FFMPEG_ZIP\bin;$env:PATH"
           ctest --test-dir build --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Package
+      - name: Package with runtime dependencies
         shell: pwsh
         run: |
-          New-Item -ItemType Directory dist | Out-Null
-          Copy-Item build\Fulskrin.exe, build\*.dll dist\
-          Copy-Item -Recurse build\isf dist\isf
-          windeployqt --release dist\Fulskrin.exe
-          Compress-Archive -Path dist\* -DestinationPath Fulskrin-windows.zip
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force dist | Out-Null
+
+          Copy-Item build\Fulskrin.exe dist\Fulskrin.exe -Force
+          Copy-Item -Recurse -Force build\isf dist\isf
+
+          # Deploy Qt libraries, platform plugins, multimedia plugins and the MSVC runtime.
+          windeployqt --release --compiler-runtime --multimedia dist\Fulskrin.exe
+
+          # Bundle the FFmpeg DLL set used by this build, including companion DLLs.
+          $ffmpegBin = "C:\ffmpeg\$env:FFMPEG_ZIP\bin"
+          if (-not (Test-Path $ffmpegBin)) {
+            throw "FFmpeg runtime directory not found: $ffmpegBin"
+          }
+          $ffmpegDlls = @(Get-ChildItem "$ffmpegBin\*.dll")
+          if ($ffmpegDlls.Count -eq 0) {
+            throw "No FFmpeg DLLs found in $ffmpegBin"
+          }
+          $ffmpegDlls | Copy-Item -Destination dist -Force
+
+          # Basic packaging assertions.
+          if (-not (Test-Path dist\Fulskrin.exe)) { throw "Fulskrin.exe missing" }
+          if (-not (Test-Path dist\isf)) { throw "ISF assets missing" }
+          if (-not (Test-Path dist\platforms\qwindows.dll)) {
+            throw "Qt Windows platform plugin missing after windeployqt"
+          }
+          if (-not (Get-ChildItem dist -Filter "*.dll")) {
+            throw "No runtime DLLs were deployed"
+          }
+
+          Compress-Archive -Path dist\* -DestinationPath Fulskrin-windows.zip -Force
       - uses: actions/upload-artifact@v4
         with:
           name: Fulskrin-windows
