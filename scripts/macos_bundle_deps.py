@@ -40,12 +40,24 @@ def is_macho(path: Path) -> bool:
 
 
 def dylib_dependencies(binary: Path) -> list[str]:
+    """Return load dependencies, excluding a dylib's own LC_ID_DYLIB.
+
+    otool -L prints the install ID as the first entry for a dylib or
+    framework. It is not a dependency of that image. Treating it as one
+    causes absolute Homebrew install IDs to be reported as unresolved
+    dependencies even when all actual load commands are bundled correctly.
+    """
     output = run("otool", "-L", str(binary))
+    install_id_lines = run("otool", "-D", str(binary), check=False).splitlines()
+    install_id = install_id_lines[1].strip() if len(install_id_lines) > 1 else None
     deps = []
     for line in output.splitlines()[1:]:
         m = re.match(r"^\s+(.+?) \(compatibility version ", line)
         if m:
-            deps.append(m.group(1))
+            name = m.group(1)
+            if install_id and name == install_id:
+                continue
+            deps.append(name)
     return deps
 
 
