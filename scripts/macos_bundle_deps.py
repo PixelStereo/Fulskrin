@@ -17,9 +17,9 @@ from pathlib import Path
 
 APP = Path(sys.argv[1]).resolve()
 APP_CONTENTS = APP / "Contents"
-APP_EXE = APP_CONTENTS / "MacOS" / "Fulskrin"
+APP_EXE = APP_CONTENTS / "MacOS" / "Pinol"
 FRAMEWORKS = APP_CONTENTS / "Frameworks"
-DEPS_DIR = FRAMEWORKS / "FulskrinDeps"
+DEPS_DIR = FRAMEWORKS / "PinolDeps"
 
 SYSTEM_PREFIXES = ("/System/Library/", "/usr/lib/", "/System/iOSSupport/")
 BREW_ROOTS = [Path("/opt/homebrew"), Path("/usr/local")]
@@ -206,7 +206,7 @@ def copy_dependency(source: Path, requested_name: str) -> tuple[Path, str]:
     source = source.resolve()
 
     # A framework executable must stay inside its .framework bundle. Flattening it into
-    # FulskrinDeps can collide with another framework/library that happens to share its
+    # PinolDeps can collide with another framework/library that happens to share its
     # basename (e.g. QtNetwork or QtVirtualKeyboard), and can discard framework resources.
     framework_root = next((parent for parent in source.parents if parent.name.endswith(".framework")), None)
     if framework_root is not None:
@@ -233,7 +233,7 @@ def copy_dependency(source: Path, requested_name: str) -> tuple[Path, str]:
     else:
         shutil.copy2(source, dest)
         dest.chmod(dest.stat().st_mode | 0o200)
-    return dest, "FulskrinDeps/" + safe_name
+    return dest, "PinolDeps/" + safe_name
 
 
 def main() -> None:
@@ -306,7 +306,7 @@ def main() -> None:
 
             # Resolve framework dependencies from their source framework identity, not
             # by basename alone. Multiple Qt frameworks can have nested/symlinked paths
-            # with the same executable name, and flattening them into FulskrinDeps is wrong.
+            # with the same executable name, and flattening them into PinolDeps is wrong.
             source: Path | None = None
             if dep.startswith("@rpath/") or dep.startswith("/"):
                 source = resolve_brew_dependency(dep, binary)
@@ -338,7 +338,7 @@ def main() -> None:
 
             # macdeployqt bundles Qt frameworks in nested directories, not at the
             # Frameworks root. Find an already-deployed Mach-O by basename before copying
-            # a second copy into FulskrinDeps (which can collide with a framework binary).
+            # a second copy into PinolDeps (which can collide with a framework binary).
             existing_candidates: dict[str, Path] = {}
             for candidate in FRAMEWORKS.rglob(requested_name):
                 if not candidate.is_file() or not is_macho(candidate):

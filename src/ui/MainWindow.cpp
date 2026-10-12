@@ -529,7 +529,7 @@ void MainWindow::buildMenus()
         refreshAll();
     });
     edit->addSeparator();
-    // On macOS, Qt moves it to the application menu (Fulskrin ▸ Settings…, ⌘,)
+    // On macOS, Qt moves it to the application menu (Pinol ▸ Settings…, ⌘,)
     QAction *prefs = edit->addAction(QStringLiteral("Preferences…"), QKeySequence::Preferences, this,
                                      [this] { m_tabs->setCurrentWidget(m_tabs->widget(2)); }); // the Settings tab
     prefs->setMenuRole(QAction::PreferencesRole);
@@ -672,7 +672,7 @@ void MainWindow::syncOutputs()
             connect(o.window, &OutputWindow::keyPressed, this,
                     [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
         }
-        const QString title = QStringLiteral("Fulskrin — %1").arg(w.name);
+        const QString title = QStringLiteral("Pinol — %1").arg(w.name);
         if (o.title != title) o.window->setTitle(o.title = title);
         QScreen *sc = OutputWindow::screenNamed(w.screen);
         const QString scName = sc ? sc->name() : QString();
@@ -1568,7 +1568,7 @@ void MainWindow::markDirty()
 void MainWindow::updateTitle()
 {
     const QString p = m_engine->projectPath();
-    setWindowTitle((p.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(p).fileName()) + QStringLiteral("[*] — Fulskrin"));
+    setWindowTitle((p.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(p).fileName()) + QStringLiteral("[*] — Pinol"));
     setWindowModified(isDirty());
 }
 
@@ -1582,7 +1582,7 @@ QJsonObject MainWindow::uiState() const
 bool MainWindow::maybeSave()
 {
     if (!isDirty()) return true;
-    QMessageBox box(QMessageBox::Question, QStringLiteral("Fulskrin"), QStringLiteral("Save changes to the project?"),
+    QMessageBox box(QMessageBox::Question, QStringLiteral("Pinol"), QStringLiteral("Save changes to the project?"),
                     QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
     // ⌘D / Ctrl+D discards, as everywhere else on macOS
     if (auto *discard = qobject_cast<QPushButton *>(box.button(QMessageBox::Discard)))
@@ -1618,7 +1618,7 @@ void MainWindow::openProjectDialog()
     if (!maybeSave()) return;
     QSettings s;
     const QString f = QFileDialog::getOpenFileName(this, QStringLiteral("Open Project"), s.value("dirs/project").toString(),
-                                                   QStringLiteral("Fulskrin Projects (*.fulskrin *.json)"));
+                                                   QStringLiteral("Pinol Projects (*.pinol *.json)"));
     if (!f.isEmpty()) openProject(f);
 }
 
@@ -1669,9 +1669,9 @@ bool MainWindow::saveAs()
 {
     QSettings s;
     QString f = QFileDialog::getSaveFileName(this, QStringLiteral("Save Project"), s.value("dirs/project").toString(),
-                                             QStringLiteral("Fulskrin Projects (*.fulskrin)"));
+                                             QStringLiteral("Pinol Projects (*.pinol)"));
     if (f.isEmpty()) return false;
-    if (QFileInfo(f).suffix().isEmpty()) f += ".fulskrin";
+    if (QFileInfo(f).suffix().isEmpty()) f += ".pinol";
     if (!saveTo(f)) return false;
     s.setValue("dirs/project", QFileInfo(f).absolutePath());
     s.setValue("project/last", f);
@@ -1682,7 +1682,7 @@ QString MainWindow::autosavePath()
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dir);
-    return dir + "/autosave.fulskrin";
+    return dir + "/autosave.pinol";
 }
 
 void MainWindow::autosave()
@@ -1712,7 +1712,7 @@ bool MainWindow::offerRecovery()
     f.close();
     const QString original = ui.value("autosave_of").toString();
     const QDateTime when = QDateTime::fromString(ui.value("autosave_time").toString(), Qt::ISODate);
-    QMessageBox box(QMessageBox::Warning, QStringLiteral("Recovery"), QStringLiteral("Fulskrin did not quit normally."),
+    QMessageBox box(QMessageBox::Warning, QStringLiteral("Recovery"), QStringLiteral("Pinol did not quit normally."),
                     QMessageBox::NoButton, this);
     box.setInformativeText(QStringLiteral("Restore the session autosaved on %1 %2?")
                                .arg(when.isValid() ? when.toString("dd/MM 'at' HH:mm:ss") : QStringLiteral("(unknown date)"),
@@ -1745,7 +1745,7 @@ bool MainWindow::offerRecovery()
 }
 
 // ---------------------------------------------------------------------------
-// File opening (macOS: double-click .fulskrin file or drag to app icon)
+// File opening (macOS: double-click .pinol file or drag to app icon)
 // ---------------------------------------------------------------------------
 
 bool MainWindow::event(QEvent *e)
@@ -1795,7 +1795,7 @@ void MainWindow::dropEvent(QDropEvent *e)
     for (const QUrl &u : e->mimeData()->urls()) {
         const QString path = u.toLocalFile();
         if (path.isEmpty()) continue;
-        if (QFileInfo(path).suffix().toLower() == "fulskrin") {
+        if (QFileInfo(path).suffix().toLower() == "pinol") {
             if (maybeSave()) openProject(path);
             e->acceptProposedAction();
             return;

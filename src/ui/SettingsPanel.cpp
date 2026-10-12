@@ -217,7 +217,7 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
                      swatch);
     lookForm->addRow(note(QStringLiteral("Used for the selected layer, the bars, the buttons that are on and the "
                                          "links. A click on the name puts it back to the default light grey.")));
-    // Magnetism: its state when Fulskrin starts (the button next to the zoom changes it meanwhile), its reach
+    // Magnetism: its state when Pinol starts (the button next to the zoom changes it meanwhile), its reach
     auto *magnetOn = new FlagBox(QStringLiteral("Magnetism on at start"));
     magnetOn->setChecked(magnet::enabledAtStart());
     auto *reach = new IntBox;

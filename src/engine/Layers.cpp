@@ -159,7 +159,7 @@ int Engine::addViewport(const QString &name, QSize size)
         const int n = viewportCountLocked();
         l->name = name.isEmpty() ? QStringLiteral("Viewport %1").arg(n + 1) : name;
         l->vpPublish = PublishSettings();
-        for (PublishTarget &t : l->vpPublish.targets) t.name = QStringLiteral("Fulskrin %1").arg(l->name);
+        for (PublishTarget &t : l->vpPublish.targets) t.name = QStringLiteral("Pinol %1").arg(l->name);
         double x = 0;
         for (const auto &o : m_layers)
             if (o->isViewport) x = std::max(x, o->mapping.bounds().right());

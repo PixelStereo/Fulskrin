@@ -136,7 +136,7 @@ static QPixmap thumbnail(const QImage &thumb)
 
 namespace {
 // What a row of the snapshots' list is, in a drag inside it: "s<id>" a snapshot, "g<id>" a group
-constexpr const char *kNodeMime = "application/x-fulskrin-snapshot-node";
+constexpr const char *kNodeMime = "application/x-pinol-snapshot-node";
 
 QString nodeKey(const QTreeWidgetItem *it)
 {

@@ -54,8 +54,8 @@ PublishSettings PublishSettings::fromJson(const QJsonObject &o)
             s.targets[i].name = t.value("name").toString();
             continue;
         }
-        s.targets[i].name = t.value("name").toString(QStringLiteral("Fulskrin"));
-        if (s.targets[i].name.trimmed().isEmpty()) s.targets[i].name = QStringLiteral("Fulskrin");
+        s.targets[i].name = t.value("name").toString(QStringLiteral("Pinol"));
+        if (s.targets[i].name.trimmed().isEmpty()) s.targets[i].name = QStringLiteral("Pinol");
     }
     s.omtQuality = o.value("omt_quality").toInt(0);
     s.libraryFolder = o.value("library_folder").toString();
@@ -68,23 +68,23 @@ bool publishCompiledIn(PublishKind k)
     switch (k) {
     case PublishKind::Ndi:
     case PublishKind::Omt: return true;
-#ifdef FULSKRIN_HAS_SYPHON
+#ifdef PINOL_HAS_SYPHON
     case PublishKind::Syphon: return true;
 #endif
-#ifdef FULSKRIN_HAS_SPOUT
+#ifdef PINOL_HAS_SPOUT
     case PublishKind::Spout: return true;
 #endif
-#ifdef FULSKRIN_HAS_DECKLINK
+#ifdef PINOL_HAS_DECKLINK
     case PublishKind::DeckLink: return true;
 #endif
     default: return false;
     }
 }
 
-#ifndef FULSKRIN_HAS_SYPHON
+#ifndef PINOL_HAS_SYPHON
 std::unique_ptr<GpuPublisher> createSyphonPublisher() { return nullptr; }
 #endif
-#ifndef FULSKRIN_HAS_SPOUT
+#ifndef PINOL_HAS_SPOUT
 std::unique_ptr<GpuPublisher> createSpoutPublisher() { return nullptr; }
 #endif
 

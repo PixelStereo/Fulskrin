@@ -1,6 +1,6 @@
 // Playback benchmark: several videos at once, as the show plays them.
 //
-//   fulskrin_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] file...
+//   pinol_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] file...
 //
 // Default: every file in a layer of one composition (a grid), played by the render thread for S seconds;
 // for each layer, the frames it showed per second against the file's own rate, and the rate of the render.
@@ -85,7 +85,7 @@ int main(int argc, char **argv)
         else files << a;
     }
     if (files.isEmpty()) {
-        std::printf("usage: fulskrin_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] file...\n");
+        std::printf("usage: pinol_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] file...\n");
         return 1;
     }
     if (software) VideoDecoder::setHardwareDecoding(false);

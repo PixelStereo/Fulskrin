@@ -69,7 +69,7 @@ private:
     qint64 m_time;
 };
 
-constexpr char kMime[] = "application/x-fulskrin-interaction-settings";
+constexpr char kMime[] = "application/x-pinol-interaction-settings";
 const InteractionSource kKinds[] = {InteractionSource::Keyboard, InteractionSource::Midi, InteractionSource::Osc,
                                     InteractionSource::Internal};
 

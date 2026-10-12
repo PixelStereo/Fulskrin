@@ -1,4 +1,4 @@
-# Fulskrin
+# Pinol
 
 Video mapping for stage, installations and live shows: layers of video, images, sound, text and ISF shaders, warped onto
 surfaces, sent to several outputs, recalled as snapshots and driven by OSC. Qt 6, FFmpeg, OpenGL 3.3 (Metal output on
@@ -27,7 +27,7 @@ macOS). macOS, Windows, Linux.
 
 ## Build
 
-The libraries Fulskrin builds from source are git submodules in `third_party/` (miniaudio, bcdec, Syphon, Spout,
+The libraries Pinol builds from source are git submodules in `third_party/` (miniaudio, bcdec, Syphon, Spout,
 RtMidi): clone with `git clone --recursive`, or run `git submodule update --init` in a clone.
 
 ```bash
@@ -46,14 +46,14 @@ Windows: Qt 6 (MSVC 2022, with Qt Multimedia), shared FFmpeg, then
 
 Requires Qt 6.2+, FFmpeg 4+, CMake 3.21+, C++17, OpenGL 3.3 core.
 
-Tests: `sh test/make_media.sh && cmake --build build --target fulskrin_tests && ctest --test-dir build`
-(one process per area; `fulskrin_tests --area snapshots` runs one; CI runs them on the three platforms).
-Playback benchmark: `cmake --build build --target fulskrin_bench && sh test/bench_4k.sh build` (how many 4K files
+Tests: `sh test/make_media.sh && cmake --build build --target pinol_tests && ctest --test-dir build`
+(one process per area; `pinol_tests --area snapshots` runs one; CI runs them on the three platforms).
+Playback benchmark: `cmake --build build --target pinol_bench && sh test/bench_4k.sh build` (how many 4K files
 play together, per codec, with and without zero copy).
 Fuzzing of the HAP and Snappy readers (Clang, libFuzzer + ASan / UBSan; CI runs it two minutes):
-`cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DFULSKRIN_FUZZ=ON && cmake --build build-fuzz --target fuzz_hap`,
+`cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DPINOL_FUZZ=ON && cmake --build build-fuzz --target fuzz_hap`,
 then `sh test/make_fuzz_corpus.sh "$PWD/corpus" && ./build-fuzz/fuzz_hap -max_total_time=600 corpus`.
-HAP is read by Fulskrin itself (sections, chunks, Snappy, GPU blocks), not by Vidvox's library: on 4K frames its
+HAP is read by Pinol itself (sections, chunks, Snappy, GPU blocks), not by Vidvox's library: on 4K frames its
 Snappy decompression is as fast as Google's or faster (same output), and it has no dependency.
 
 ## Limits

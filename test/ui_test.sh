@@ -8,15 +8,15 @@ Xvfb :97 -screen 0 1920x1080x24 >/dev/null 2>&1 & XV=$!
 sleep 1
 (openbox >/dev/null 2>&1 &)   # a real window manager: fullscreen, focus, stacking
 sleep 1
-AUTOSAVE="$HOME/.local/share/Fulskrin/Fulskrin/autosave.fulskrin"
+AUTOSAVE="$HOME/.local/share/Pinol/Pinol/autosave.pinol"
 rm -f "$AUTOSAVE"
 cp media/h264.mp4 "$OUT/act2_found.mov"
 shot() { xwd -root -silent | convert xwd:- "$OUT/$1.png"; }
 # Coordinates relative to the main window
 X0=0; Y0=0
-origin() { # the largest window whose title ends with "Fulskrin" (main window)
+origin() { # the largest window whose title ends with "Pinol" (main window)
     local best=0 w
-    for w in $(xdotool search --name "Fulskrin$"); do
+    for w in $(xdotool search --name "Pinol$"); do
         local info ax ay ww hh
         info=$(xwininfo -id "$w")
         ax=$(echo "$info" | awk '/Absolute upper-left X/ {print $4}')
@@ -36,7 +36,7 @@ same() { # number of differing pixels between two screenshots, within an area
 }
 PREVIEW=""
 
-../build/Fulskrin projects/demo.fulskrin >"$OUT/log1.txt" 2>&1 & APP=$!
+../build/Pinol projects/demo.pinol >"$OUT/log1.txt" 2>&1 & APP=$!
 sleep 5
 xdotool key Return; sleep 1                      # "file not found" warning
 origin; PREVIEW=$(roi 400 180 700 380)
@@ -80,7 +80,7 @@ echo "preview after restore: $(lum 11_lights_up "$PREVIEW")"
 xdotool key ctrl+shift+f; sleep 12
 ls "$AUTOSAVE" >/dev/null 2>&1 && echo "autosave: yes" || echo "autosave: NO"
 kill -9 $APP; sleep 1
-../build/Fulskrin >"$OUT/log2.txt" 2>&1 & APP=$!
+../build/Pinol >"$OUT/log2.txt" 2>&1 & APP=$!
 sleep 4; shot 12_recovery
 xdotool key Return; sleep 4; shot 13_restored
 kill $APP 2>/dev/null; sleep 1; kill -9 $APP 2>/dev/null

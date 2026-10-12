@@ -1,5 +1,5 @@
 // Syphon publishing (macOS): shares the output texture with other applications, with no CPU copy.
-// Compiled only on macOS (FULSKRIN_HAS_SYPHON), with the Syphon framework (BSD license).
+// Compiled only on macOS (PINOL_HAS_SYPHON), with the Syphon framework (BSD license).
 
 #include "Publish.h"
 

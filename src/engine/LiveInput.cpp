@@ -16,7 +16,7 @@
 #include <cstring>
 #include <thread>
 
-#ifdef FULSKRIN_HAS_CAMERA
+#ifdef PINOL_HAS_CAMERA
 #include <QCamera>
 #include <QCameraDevice>
 #include <QCameraFormat>
@@ -29,7 +29,7 @@
 #endif
 #endif
 
-#ifdef FULSKRIN_HAS_SYPHON
+#ifdef PINOL_HAS_SYPHON
 std::vector<LiveInputInfo> listSyphonInputs();
 std::unique_ptr<LiveInput> createSyphonInput(const QString &name, QString *err);
 #endif
@@ -125,7 +125,7 @@ private:
         c.color_format = ndi::kRecvRGBX_RGBA;
         c.bandwidth = ndi::kRecvBandwidthHighest;
         c.allow_video_fields = false;
-        c.p_ndi_recv_name = "Fulskrin";
+        c.p_ndi_recv_name = "Pinol";
         void *recv = m_lib->recv_create_v3(&c);
         if (!recv) return;
         while (!m_quit) {
@@ -224,7 +224,7 @@ std::vector<LiveInputInfo> omtSources(const QString &folder)
     return out;
 }
 
-#ifdef FULSKRIN_HAS_CAMERA
+#ifdef PINOL_HAS_CAMERA
 // The format a camera is opened in. Left to itself, the system may pick a square one (the cameras with Center
 // Stage, the iPhone's Continuity Camera offer them): the whole picture is wanted, so a wide format (not square),
 // at least 24 fps, as large as possible up to 4K, then the highest rate up to 60.
@@ -330,7 +330,7 @@ private:
 
 } // namespace
 
-static const QString kInputsFolder = QStringLiteral("/Fulskrin/Inputs/");
+static const QString kInputsFolder = QStringLiteral("/Pinol/Inputs/");
 
 QString liveInputPath(const QString &uri) { return kInputsFolder + QString::fromLatin1(QUrl::toPercentEncoding(uri)); }
 
@@ -356,7 +356,7 @@ QString liveInputKind(const QString &uri)
 
 QString liveInputName(const QString &uri)
 {
-#ifdef FULSKRIN_HAS_CAMERA
+#ifdef PINOL_HAS_CAMERA
     if (part(uri, 1) == QLatin1String("camera"))
         for (const QCameraDevice &d : QMediaDevices::videoInputs())
             if (QString::fromUtf8(d.id()) == rest(uri)) return d.description();
@@ -367,13 +367,13 @@ QString liveInputName(const QString &uri)
 std::vector<LiveInputInfo> listLiveInputs(const QString &folder)
 {
     std::vector<LiveInputInfo> out;
-#ifdef FULSKRIN_HAS_CAMERA
+#ifdef PINOL_HAS_CAMERA
     for (const QCameraDevice &d : QMediaDevices::videoInputs())
         out.push_back({QStringLiteral("input:camera:") + QString::fromUtf8(d.id()), d.description(), QStringLiteral("Camera")});
 #endif
     for (const LiveInputInfo &i : ndiSources(folder)) out.push_back(i);
     for (const LiveInputInfo &i : omtSources(folder)) out.push_back(i);
-#ifdef FULSKRIN_HAS_SYPHON
+#ifdef PINOL_HAS_SYPHON
     for (const LiveInputInfo &i : listSyphonInputs()) out.push_back(i);
 #endif
     return out;
@@ -404,7 +404,7 @@ std::unique_ptr<LiveInput> createLiveInput(const QString &uri, const QString &fo
         return std::make_unique<OmtInput>(&lib, what);
     }
     if (kind == QLatin1String("camera")) {
-#ifdef FULSKRIN_HAS_CAMERA
+#ifdef PINOL_HAS_CAMERA
         for (const QCameraDevice &d : QMediaDevices::videoInputs())
             if (QString::fromUtf8(d.id()) == what) return std::make_unique<CameraInput>(d);
         return fail(QStringLiteral("Camera not found: ") + what);
@@ -413,7 +413,7 @@ std::unique_ptr<LiveInput> createLiveInput(const QString &uri, const QString &fo
 #endif
     }
     if (kind == QLatin1String("syphon")) {
-#ifdef FULSKRIN_HAS_SYPHON
+#ifdef PINOL_HAS_SYPHON
         return createSyphonInput(what, err);
 #else
         return fail(QStringLiteral("Syphon is only available on macOS"));

@@ -61,7 +61,7 @@ bool Zeroconf::start(const QString &instance, const QList<Service> &services, QS
     // Own host name, so as not to compete with the system's
     QString host = QHostInfo::localHostName().section('.', 0, 0);
     host.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9-]")), QStringLiteral("-"));
-    m_host = QStringLiteral("fulskrin-%1").arg(host.isEmpty() ? QStringLiteral("host") : host).left(63);
+    m_host = QStringLiteral("pinol-%1").arg(host.isEmpty() ? QStringLiteral("host") : host).left(63);
     m_addresses.clear();
     for (const QHostAddress &a : QNetworkInterface::allAddresses())
         if (a.protocol() == QAbstractSocket::IPv4Protocol && !a.isLoopback()) m_addresses << a;

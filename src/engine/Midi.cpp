@@ -1,11 +1,11 @@
 #include "Midi.h"
 
-#ifdef FULSKRIN_HAS_MIDI
+#ifdef PINOL_HAS_MIDI
 #include <RtMidi.h>
 
 #include <QRegularExpression>
 
-static constexpr const char *kClient = "Fulskrin"; // the name other software sees
+static constexpr const char *kClient = "Pinol"; // the name other software sees
 
 // Errors are told by the calls' results; RtMidi's warnings (no port…) are not printed
 static void quiet(RtMidiError::Type, const std::string &, void *) {}
@@ -91,7 +91,7 @@ bool midi::Output::open(const QString &name, QString *err)
             return false;
         }
         d->name = QString::fromStdString(d->port->getPortName(unsigned(i)));
-        d->port->openPort(unsigned(i), "Fulskrin");
+        d->port->openPort(unsigned(i), "Pinol");
         if (!d->port->isPortOpen()) {
             if (err) *err = QStringLiteral("MIDI output \"%1\" refused").arg(d->name);
             d->port.reset();
@@ -173,7 +173,7 @@ bool midi::Input::open(const QString &name, Callback cb, QString *err)
             return false;
         }
         d->cb = std::move(cb);
-        d->port->openPort(unsigned(i), "Fulskrin");
+        d->port->openPort(unsigned(i), "Pinol");
         d->port->ignoreTypes(false, false, true); // SysEx (MTC full frames) and time code kept, active sensing not
         d->port->setCallback(&Impl::received, d.get());
         d->name = QString::fromStdString(d->port->getPortName(unsigned(i)));

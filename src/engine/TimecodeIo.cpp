@@ -150,7 +150,7 @@ struct TimecodeIo::Impl {
             c.color_format = ndi::kRecvRGBX_RGBA;
             c.bandwidth = 0; // the lowest: only its timecode is read
             c.allow_video_fields = false;
-            c.p_ndi_recv_name = "Fulskrin timecode";
+            c.p_ndi_recv_name = "Pinol timecode";
             void *recv = lib.recv_create_v3(&c);
             if (!recv) {
                 clock->setInputStatus(QStringLiteral("cannot receive %1").arg(s.input));

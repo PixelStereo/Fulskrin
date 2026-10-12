@@ -79,13 +79,13 @@ int main(int argc, char **argv)
         std::printf("FAIL OpenGL: %s\n", qPrintable(err));
         return 1;
     }
-    // Areas: each one starts from a new project and can run alone (fulskrin_tests --area <name>: CTest runs them so,
+    // Areas: each one starts from a new project and can run alone (pinol_tests --area <name>: CTest runs them so,
     // one process each); without --area, all of them in turn
     QStringList only;
     for (int k = 1; k + 1 < argc; ++k)
         if (QString(argv[k]) == "--area") only << QString(argv[k + 1]);
     // Its own folder: areas run side by side (ctest -j)
-    const QString tmp = QDir::tempPath() + "/fulskrin_test" + (only.isEmpty() ? QString() : "_" + only.join('_'));
+    const QString tmp = QDir::tempPath() + "/pinol_test" + (only.isEmpty() ? QString() : "_" + only.join('_'));
     QDir().mkpath(tmp);
     { // Pictures several areas use: left half red, right half blue; top half red, bottom half blue
         QImage rb(64, 32, QImage::Format_RGB32);
@@ -109,7 +109,7 @@ int main(int argc, char **argv)
     // the layers of these tests start at row V.
     const int V = 1;
 
-    // Compatibility mode: fulskrin_tests --check-isf <folder>  -> compiles and renders every shader in the folder
+    // Compatibility mode: pinol_tests --check-isf <folder>  -> compiles and renders every shader in the folder
     if (argc >= 3 && QString(argv[1]) == "--check-isf") {
         QDirIterator it(argv[2], {"*.fs"}, QDir::Files, QDirIterator::Subdirectories);
         int total = 0, ok = 0, skipped = 0;
@@ -162,11 +162,11 @@ int main(int argc, char **argv)
     CHECK(e.layerCount() == V + 2);
     for (int i = 0; i < 10; ++i) e.renderFrame();
     const QPointF cp = e.layer(gen)->mapping.controlPoint(1, 1);
-    CHECK(e.saveProject(tmp + "/a.fulskrin", {}, &err));
-    CHECK(e.loadProject(tmp + "/a.fulskrin", nullptr, &err));
+    CHECK(e.saveProject(tmp + "/a.pinol", {}, &err));
+    CHECK(e.loadProject(tmp + "/a.pinol", nullptr, &err));
     CHECK(err.isEmpty());
-    CHECK(e.saveProject(tmp + "/b.fulskrin", {}, &err));
-    QJsonObject a = readJson(tmp + "/a.fulskrin"), b = readJson(tmp + "/b.fulskrin");
+    CHECK(e.saveProject(tmp + "/b.pinol", {}, &err));
+    QJsonObject a = readJson(tmp + "/a.pinol"), b = readJson(tmp + "/b.pinol");
     CHECK(a.value("layers") == b.value("layers"));
     CHECK(e.layer(V + 0)->mapping.meshMode);
     CHECK(QLineF(e.layer(V + 0)->mapping.controlPoint(1, 1), cp).length() < 1e-9);
@@ -189,7 +189,7 @@ int main(int argc, char **argv)
         CHECK(std::abs(m.bounds().width() - to.width()) < 1e-9 && std::abs(m.bounds().center().x() - to.center().x()) < 1e-9);
     }
 
-    { // Only a Fulskrin project is opened, and the one open stays when another file is refused
+    { // Only a Pinol project is opened, and the one open stays when another file is refused
         const int before = e.layerCount();
         auto write = [&](const QString &name, const QByteArray &json) {
             QFile f(tmp + "/" + name);
@@ -198,9 +198,9 @@ int main(int argc, char **argv)
             return tmp + "/" + name;
         };
         QString why;
-        CHECK(!e.loadProject(write("empty.fulskrin", "{}"), nullptr, &why) && why.startsWith("Not a Fulskrin project"));
+        CHECK(!e.loadProject(write("empty.pinol", "{}"), nullptr, &why) && why.startsWith("Not a Pinol project"));
         CHECK(!e.loadProject(write("other.json", R"({"app":"Other","layers":[]})"), nullptr, &why));
-        CHECK(!e.loadProject(write("future.fulskrin", R"({"app":"Fulskrin","format_version":99,"layers":[]})"), nullptr, &why) &&
+        CHECK(!e.loadProject(write("future.pinol", R"({"app":"Pinol","format_version":99,"layers":[]})"), nullptr, &why) &&
               why.contains("format 99"));
         CHECK(e.layerCount() == before);
     }
@@ -297,9 +297,9 @@ int main(int argc, char **argv)
                   Engine::timingKeyOf(QJsonObject{{fxPath, 1.0}, {"fx", 2.0}}, fxPath) == fxPath &&
                   Engine::timingKeyOf(QJsonObject{{"speed", 1.0}}, fxPath).isEmpty());
             e.removeEffect(g, fxi);
-            CHECK(e.saveProject(tmp + "/speed.fulskrin", {}, &err));
+            CHECK(e.saveProject(tmp + "/speed.pinol", {}, &err));
             e.newProject();
-            CHECK(e.loadProject(tmp + "/speed.fulskrin", nullptr, &err));
+            CHECK(e.loadProject(tmp + "/speed.pinol", nullptr, &err));
             CHECK(e.layerCount() == V + 1 && cmd::resolveIsf(&e, V + 0, -1)->speed == 3.0);
             e.newProject();
             g = e.addLayer("Test Pattern");
@@ -500,8 +500,8 @@ int main(int argc, char **argv)
         e.layer(V + 1)->effectsEnabled = false;
         e.layer(V + 0)->locked = true;
         const LayerTree before = e.structure();
-        CHECK(e.saveProject(tmp + "/groups.fulskrin", {}, &err));
-        CHECK(e.loadProject(tmp + "/groups.fulskrin", nullptr, &err));
+        CHECK(e.saveProject(tmp + "/groups.pinol", {}, &err));
+        CHECK(e.loadProject(tmp + "/groups.pinol", nullptr, &err));
         CHECK(e.structure() == before);
         CHECK(e.layer(V + 0)->locked && e.layer(V + 0)->isGroup);
         CHECK(QLineF(e.layer(V + 1)->roi.topLeft(), QPointF(0.1, 0.2)).length() < 1e-9 && std::abs(e.layer(V + 1)->roi.width() - 0.5) < 1e-9);
@@ -566,10 +566,10 @@ int main(int argc, char **argv)
         CHECK(timeScale() == 0.0 && e.compositionSpeed() == 0.5);
         e.setPaused(false);
         CHECK(timeScale() == 0.5);
-        e.saveProject(tmp + "/cspeed.fulskrin", {}, &err);
+        e.saveProject(tmp + "/cspeed.pinol", {}, &err);
         e.newProject();
         CHECK(e.compositionSpeed() == 1.0 && timeScale() == 1.0);
-        CHECK(e.loadProject(tmp + "/cspeed.fulskrin", nullptr, &err) && e.compositionSpeed() == 0.5);
+        CHECK(e.loadProject(tmp + "/cspeed.pinol", nullptr, &err) && e.compositionSpeed() == 0.5);
         e.newProject();
     }
 
@@ -581,10 +581,10 @@ int main(int argc, char **argv)
         bool inMedia = false;
         for (const auto &r : e.mediaUsage()) inMedia |= r.path.endsWith("TestPattern.fs");
         CHECK(Engine::isIsfFile(gen) && !Engine::isIsfFile("a.mp4") && !inMedia);
-        CHECK(e.saveProject(tmp + "/binisf.fulskrin", {}, &err));
+        CHECK(e.saveProject(tmp + "/binisf.pinol", {}, &err));
         e.newProject();
         CHECK(e.binItems().isEmpty());
-        CHECK(e.loadProject(tmp + "/binisf.fulskrin", nullptr, &err) && e.binItems().size() == 1);
+        CHECK(e.loadProject(tmp + "/binisf.pinol", nullptr, &err) && e.binItems().size() == 1);
         e.newProject();
     }
 
@@ -864,7 +864,7 @@ int main(int argc, char **argv)
         // Zeroconf responder: answers to a PTR question for _oscjson._tcp.local (without the network)
         {
             Zeroconf z;
-            z.start("Fulskrin (test)", {{"_oscjson._tcp", 5678, {{"txtvers", "1"}}}, {"_osc._udp", 1234, {}}});
+            z.start("Pinol (test)", {{"_oscjson._tcp", 5678, {{"txtvers", "1"}}}, {"_osc._udp", 1234, {}}});
             QByteArray q;
             const char head[12] = {0x12, 0x34, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0};
             q.append(head, 12);
@@ -876,7 +876,7 @@ int main(int argc, char **argv)
             q.append("\x00\x0c\x00\x01", 4); // PTR, IN
             bool uni = false;
             const QByteArray a = z.answerQuery(q, &uni);
-            CHECK(a.size() > 12 && quint8(a[0]) == 0x12 && quint8(a[2]) == 0x84 && a.contains("Fulskrin (test)"));
+            CHECK(a.size() > 12 && quint8(a[0]) == 0x12 && quint8(a[2]) == 0x84 && a.contains("Pinol (test)"));
             CHECK(a.contains(QByteArray("\x16\x2e", 2))); // SRV port 5678 in the additional records
             CHECK(a.contains(z.hostName().toUtf8()) && a.contains("txtvers=1"));
             q[q.size() - 3] = 0x10; // TXT of another name: no answer
@@ -1091,8 +1091,8 @@ int main(int argc, char **argv)
                 mc.name = "Comp";
                 mc.composition = c;
                 const int mi = e.addSnapshot(mc);
-                CHECK(e.saveProject(tmp + "/comp.fulskrin", {}, &err));
-                CHECK(readJson(tmp + "/comp.fulskrin").value("snapshots").toArray().at(mi).toObject().value("composition") == c);
+                CHECK(e.saveProject(tmp + "/comp.pinol", {}, &err));
+                CHECK(readJson(tmp + "/comp.pinol").value("snapshots").toArray().at(mi).toObject().value("composition") == c);
                 // Every key of a project is lowercase snake_case (parameter names of shaders and the times of a snapshot aside)
                 {
                     int bad = 0;
@@ -1108,7 +1108,7 @@ int main(int argc, char **argv)
                             }
                         }
                     };
-                    walk(readJson(tmp + "/comp.fulskrin"));
+                    walk(readJson(tmp + "/comp.pinol"));
                     CHECK(bad == 0);
                 }
                 e.removeSnapshot(mi);
@@ -1226,8 +1226,8 @@ int main(int argc, char **argv)
             e.setFadesManual(false);
         }
         // Saved with the project
-        CHECK(e.saveProject(tmp + "/snapshots.fulskrin", {}, &err));
-        CHECK(e.loadProject(tmp + "/snapshots.fulskrin", nullptr, &err));
+        CHECK(e.saveProject(tmp + "/snapshots.pinol", {}, &err));
+        CHECK(e.loadProject(tmp + "/snapshots.pinol", nullptr, &err));
         CHECK(e.snapshotCount() == 2 && e.snapshot(1).name == "Look 2" && std::abs(e.snapshot(1).fade - 0.4) < 1e-9);
         CHECK(e.snapshot(0).thumbnail.width() == 16 && e.snapshot(0).layers.size() == 2);
         e.recallSnapshot(0);
@@ -1267,8 +1267,8 @@ int main(int argc, char **argv)
             CHECK(e.sequencer().add(copy) == 1 && e.sequencer().current() == 0);
             e.sequencer().setCurrent(1);
             CHECK(e.sequencer().position() == -1);
-            CHECK(e.saveProject(tmp + "/sequences.fulskrin", {}, &err));
-            CHECK(e.loadProject(tmp + "/sequences.fulskrin", nullptr, &err));
+            CHECK(e.saveProject(tmp + "/sequences.pinol", {}, &err));
+            CHECK(e.loadProject(tmp + "/sequences.pinol", nullptr, &err));
             CHECK(e.sequencer().count() == 2 && e.sequencer().current() == 1 && e.sequencer().sequence(0).loop &&
                   e.sequencer().sequence(0).steps.size() == 3 && e.sequencer().sequence(0).steps[0].text == "Act 1" &&
                   e.sequencer().sequence(0).steps[0].snapshot == e.snapshot(1).id);
@@ -1430,8 +1430,8 @@ int main(int argc, char **argv)
             e.sequencer().advance(10.0);
             CHECK(fired == std::vector<int>{mB1}); // neither step 0's pre-wait nor step 1's auto-follow
             // Saved with the project
-            CHECK(e.saveProject(tmp + "/waits.fulskrin", {}, &err));
-            CHECK(e.loadProject(tmp + "/waits.fulskrin", nullptr, &err));
+            CHECK(e.saveProject(tmp + "/waits.pinol", {}, &err));
+            CHECK(e.loadProject(tmp + "/waits.pinol", nullptr, &err));
             {
                 const Sequencer::Sequence w = e.sequencer().sequence(e.sequencer().current());
                 CHECK(w.steps.size() == 3 && near(w.steps[0].preWait, 1.0) && near(w.steps[0].postWait, 0.5) &&
@@ -1730,8 +1730,8 @@ int main(int argc, char **argv)
                 e.controlAnimation(cid, A::Stop);
             }
             // Saved with the project
-            CHECK(e.saveProject(tmp + "/timelines.fulskrin", {}, &err));
-            CHECK(e.loadProject(tmp + "/timelines.fulskrin", nullptr, &err));
+            CHECK(e.saveProject(tmp + "/timelines.pinol", {}, &err));
+            CHECK(e.loadProject(tmp + "/timelines.pinol", nullptr, &err));
             {
                 const int k = e.indexOfAnimation(aid);
                 CHECK(k >= 0);
@@ -1978,8 +1978,8 @@ int main(int argc, char **argv)
                 e.controlLayerAnim(wid, "opacity", A::Play);
                 e.setLayerAnimOn(wid, "rotation", false);
             }
-            CHECK(e.saveProject(tmp + "/anims.fulskrin", {}, &err));
-            CHECK(e.loadProject(tmp + "/anims.fulskrin", nullptr, &err));
+            CHECK(e.saveProject(tmp + "/anims.pinol", {}, &err));
+            CHECK(e.loadProject(tmp + "/anims.pinol", nullptr, &err));
             CHECK(e.layerAnims(wid).size() == 2 && e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Playing &&
                   near(now.speed, 2) && now.tracks[0].layer == wid && e.layerAnim(wid, "rotation", &now) &&
                   !now.tracks[0].enabled && now.state == Engine::AnimState::Stopped && now.tracks[0].keys.size() == 3);
@@ -2079,8 +2079,8 @@ int main(int argc, char **argv)
                 if (in.name == "color") r = in.cValue[0];
             CHECK(std::abs(r - 0.25) < 1e-6);
             // Still edited after a save / load round trip
-            CHECK(e.saveProject(tmp + "/snapshots.fulskrin", {}, &err));
-            CHECK(e.loadProject(tmp + "/snapshots.fulskrin", nullptr, &err));
+            CHECK(e.saveProject(tmp + "/snapshots.pinol", {}, &err));
+            CHECK(e.loadProject(tmp + "/snapshots.pinol", nullptr, &err));
             CHECK(std::abs(paramOf(e.snapshot(0).layers[0].toObject(), "opacity").toDouble() - 0.25) < 1e-9);
         }
         e.newProject();
@@ -2122,11 +2122,11 @@ int main(int argc, char **argv)
         CHECK(at == 2 && e.snapshotTree()[0].children[1].children.size() == 2);
         e.removeSnapshot(e.indexOfSnapshot(ids[0]));
         CHECK(e.snapshotTree()[0].children[1].children.size() == 1 && e.snapshotCount() == 3);
-        CHECK(e.saveProject(tmp + "/tree.fulskrin", {}, &err));
+        CHECK(e.saveProject(tmp + "/tree.pinol", {}, &err));
         const auto saved = e.snapshotTree();
         e.newProject();
         CHECK(e.snapshotTree().empty());
-        CHECK(e.loadProject(tmp + "/tree.fulskrin", nullptr, &err));
+        CHECK(e.loadProject(tmp + "/tree.pinol", nullptr, &err));
         CHECK(e.snapshotTree() == saved);
 
         // Presets: a few values, recalled with their fade (each its own time), the others left alone
@@ -2167,10 +2167,10 @@ int main(int argc, char **argv)
         CHECK(near(e.compositionOpacity(), 0.3));
         e.fadeCompositionOpacity(1.0, 0);
         // Saved and loaded
-        CHECK(e.saveProject(tmp + "/presets.fulskrin", {}, &err));
+        CHECK(e.saveProject(tmp + "/presets.pinol", {}, &err));
         e.newProject();
         CHECK(e.presetCount() == 0);
-        CHECK(e.loadProject(tmp + "/presets.fulskrin", nullptr, &err));
+        CHECK(e.loadProject(tmp + "/presets.pinol", nullptr, &err));
         CHECK(e.presetCount() == 2 && e.preset(0).name == "Half" && e.preset(0).values.size() == 3 &&
               e.preset(0).values[1].time == 0 && e.preset(0).values[0].layer == lid);
         e.setFadesManual(false);
@@ -2549,9 +2549,9 @@ int main(int argc, char **argv)
         // Not there: refused, with why; an unknown kind too
         CHECK(!e.setLayerInput(li, "input:nothing:x", &err) && !err.isEmpty());
         // Saved and loaded; a snapshot holding another input changes the source
-        CHECK(e.saveProject(tmp + "/input.fulskrin", {}, &err));
+        CHECK(e.saveProject(tmp + "/input.pinol", {}, &err));
         e.newProject();
-        CHECK(e.loadProject(tmp + "/input.fulskrin", nullptr, &err));
+        CHECK(e.loadProject(tmp + "/input.pinol", nullptr, &err));
         CHECK(e.indexOfId(lid) >= 0);
         QJsonObject state = e.layerJson(e.indexOfId(lid));
         QJsonObject s2 = state.value("source").toObject();
@@ -2638,7 +2638,7 @@ int main(int argc, char **argv)
         CHECK(std::abs(c10.red() - c8.red()) <= 1 && std::abs(c10.green() - c8.green()) <= 1 && std::abs(c10.blue() - c8.blue()) <= 1);
         CHECK(std::abs(c10.red() - 100) <= 1 && std::abs(c10.green() - 50) <= 1); // half of (200, 100, 50)
         // Rendering is the machine's (Settings): a project does not keep it
-        const QString p = tmp + "/depth.fulskrin";
+        const QString p = tmp + "/depth.pinol";
         CHECK(e.saveProject(p, QJsonObject(), &err));
         e.newProject();
         CHECK(e.renderSettings().depth == -1);
@@ -2799,9 +2799,9 @@ int main(int argc, char **argv)
         CHECK(!e.layer(e.indexOfId(outer))->shownIn(vp2));
         // Saved and read back: sizes, places, screens, routing
         e.setViewportOutput(e.indexOfId(vp2), QStringLiteral("HDMI-1"), 2);
-        CHECK(e.saveProject(tmp + "/viewports.fulskrin", {}, &err));
-        const QJsonObject saved = readJson(tmp + "/viewports.fulskrin");
-        CHECK(e.loadProject(tmp + "/viewports.fulskrin", nullptr, &err));
+        CHECK(e.saveProject(tmp + "/viewports.pinol", {}, &err));
+        const QJsonObject saved = readJson(tmp + "/viewports.pinol");
+        CHECK(e.loadProject(tmp + "/viewports.pinol", nullptr, &err));
         CHECK(e.viewports().size() == 2);
         {
             Engine::Lock lk(&e.mutex());
@@ -2810,8 +2810,8 @@ int main(int argc, char **argv)
             CHECK(std::abs(v->mapping.bounds().left() - 0.5) < 1e-9);
             CHECK(!e.layer(e.indexOfId(outer))->shownIn(vp2));
         }
-        CHECK(e.saveProject(tmp + "/viewports2.fulskrin", {}, &err));
-        CHECK(saved.value("layers") == readJson(tmp + "/viewports2.fulskrin").value("layers"));
+        CHECK(e.saveProject(tmp + "/viewports2.pinol", {}, &err));
+        CHECK(saved.value("layers") == readJson(tmp + "/viewports2.pinol").value("layers"));
         // A hidden outer group silences what is inside its inner groups too
         {
             const quint64 in2 = e.layerId(e.addGroup("Inner 2", e.layerCount()));
@@ -2919,10 +2919,10 @@ int main(int argc, char **argv)
         // The frame rate is the project's (composition/fps); samples, mipmaps and depth are the machine's
         rs = Engine::RenderSettings{30, 8, 1};
         e.setRenderSettings(rs);
-        CHECK(e.saveProject(tmp + "/render.fulskrin", {}, &err));
+        CHECK(e.saveProject(tmp + "/render.pinol", {}, &err));
         e.newProject();
         CHECK(e.renderSettings().frameRate < 0 && e.renderSettings().samples < 0); // a new project: the defaults
-        CHECK(e.loadProject(tmp + "/render.fulskrin", nullptr, &err));
+        CHECK(e.loadProject(tmp + "/render.pinol", nullptr, &err));
         CHECK(e.renderSettings().frameRate == 30 && e.renderSettings().samples < 0 && e.renderSettings().mipmaps < 0);
         e.setRenderSettings({});
     }
@@ -3094,8 +3094,8 @@ int main(int argc, char **argv)
             CHECK(std::abs(e.layer(w)->color.remove[1] - 1.0f) < 1e-6); // the value is kept
         }
         // Switches saved with the project (a project without them has everything on)
-        CHECK(e.saveProject(tmp + "/colorswitch.fulskrin", {}, &err));
-        CHECK(e.loadProject(tmp + "/colorswitch.fulskrin", nullptr, &err));
+        CHECK(e.saveProject(tmp + "/colorswitch.pinol", {}, &err));
+        CHECK(e.loadProject(tmp + "/colorswitch.pinol", nullptr, &err));
         {
             Engine::Lock lk(&e.mutex());
             Layer *l = e.layer(V + 0);
@@ -3277,11 +3277,11 @@ int main(int argc, char **argv)
         CHECK(e.layersUsingMedia(tmp + "/topred.png") == QList<int>{g});
 
         // Save, delete the video, reopen: the path is kept and reported
-        CHECK(e.saveProject(tmp + "/media.fulskrin", {}, &err));
+        CHECK(e.saveProject(tmp + "/media.pinol", {}, &err));
         e.newProject(); // the video closed (Windows does not move a file that is open)
         CHECK(QFile::rename(tmp + "/clip.mp4", tmp + "/clip_moved.mp4"));
         QString warn;
-        CHECK(e.loadProject(tmp + "/media.fulskrin", nullptr, &warn));
+        CHECK(e.loadProject(tmp + "/media.pinol", nullptr, &warn));
         std::printf("       warning: %s\n", qPrintable(warn));
         CHECK(warn.contains("not found"));
         int vi = -1;
@@ -4205,10 +4205,10 @@ int main(int argc, char **argv)
         CHECK(clockA()->settings().rate == TcRate::Fps30 && !clockA()->playing() && std::abs(clockA()->position() - 42) < 1e-6);
 
         // Saved and opened again: the patch, and which layer drives which output
-        CHECK(e.saveProject(tmp + "/tcout.fulskrin", {}, &err));
+        CHECK(e.saveProject(tmp + "/tcout.pinol", {}, &err));
         e.newProject();
         CHECK(e.timecodeOutputs().empty());
-        CHECK(e.loadProject(tmp + "/tcout.fulskrin", nullptr, &err));
+        CHECK(e.loadProject(tmp + "/tcout.pinol", nullptr, &err));
         CHECK(e.timecodeOutputs().size() == 1 && e.timecodeOutputs()[0].name == "Show" &&
               e.timecodeOutputs()[0].routes == QStringList({tcroute::midi(m1), tcroute::audio(a1)}));
         CHECK(e.audioChannelOutputs().size() == 1 && e.audioChannelOutputs()[0] == ao);
@@ -4506,10 +4506,10 @@ int main(int argc, char **argv)
         e.renderFrame();
 
         // Saved with the project
-        CHECK(e.saveProject(tmp + "/interactions.fulskrin", {}, &err));
+        CHECK(e.saveProject(tmp + "/interactions.pinol", {}, &err));
         e.newProject();
         CHECK(e.interactions().empty());
-        CHECK(e.loadProject(tmp + "/interactions.fulskrin", nullptr, &err));
+        CHECK(e.loadProject(tmp + "/interactions.pinol", nullptr, &err));
         CHECK(e.interactions().size() == 1 && e.interactions()[0].source == InteractionSource::Internal &&
               e.interactions()[0].sourceLayer == a && e.interactions()[0].layer == b && e.interactions()[0].dstMin == 1);
         CHECK(e.addInteraction(Interaction::made(InteractionSource::Keyboard)) > e.interactions()[0].id);
@@ -4682,8 +4682,8 @@ int main(int argc, char **argv)
         CHECK(!value(f).enabled && !value(next).enabled);
         // The same once saved and opened again (a snapshot holding none stores no part for them)
         CHECK(e.setParameter(0, pre + "enable", true));
-        CHECK(e.saveProject(tmp + "/interactions-off.fulskrin", {}, &err));
-        CHECK(e.loadProject(tmp + "/interactions-off.fulskrin", nullptr, &err));
+        CHECK(e.saveProject(tmp + "/interactions-off.pinol", {}, &err));
+        CHECK(e.loadProject(tmp + "/interactions-off.pinol", nullptr, &err));
         CHECK(value(f).enabled);
         e.recallSnapshot(e.snapshotCount() - 1);
         CHECK(!value(f).enabled);
@@ -4810,17 +4810,17 @@ int main(int argc, char **argv)
         CHECK(!e.setLayerSourceLayer(e.indexOfId(idA), idG, LayerTap::PostFx, &err));
 
         // Saved and read back
-        CHECK(e.saveProject(tmp + "/layersrc.fulskrin", {}, &err));
-        const QJsonObject saved = readJson(tmp + "/layersrc.fulskrin");
+        CHECK(e.saveProject(tmp + "/layersrc.pinol", {}, &err));
+        const QJsonObject saved = readJson(tmp + "/layersrc.pinol");
         err.clear(); // the refusals above left their message there
-        CHECK(e.loadProject(tmp + "/layersrc.fulskrin", nullptr, &err) && err.isEmpty());
+        CHECK(e.loadProject(tmp + "/layersrc.pinol", nullptr, &err) && err.isEmpty());
         {
             Engine::Lock lk(&e.mutex());
             const Layer *l = e.layer(e.indexOfId(idB));
             CHECK(l && l->type == SourceType::Layer && l->sourceLayer == idG && l->sourceTap == LayerTap::PostFx);
         }
-        CHECK(e.saveProject(tmp + "/layersrc2.fulskrin", {}, &err));
-        CHECK(saved.value("layers") == readJson(tmp + "/layersrc2.fulskrin").value("layers"));
+        CHECK(e.saveProject(tmp + "/layersrc2.pinol", {}, &err));
+        CHECK(saved.value("layers") == readJson(tmp + "/layersrc2.pinol").value("layers"));
 
         // The layer it used is gone, or a hand-edited project loops: the source is dropped, with a warning
         e.removeLayer(e.indexOfId(idG)); // removes the group and its member

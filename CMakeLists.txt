@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Fulskrin VERSION 0.1.0 LANGUAGES CXX)
+project(Pinol VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,8 +8,8 @@ if(MSVC)
   add_compile_options(/utf-8 /W3)   # UTF-8 sources (UI strings contain non-ASCII characters)
   add_compile_definitions(NOMINMAX _USE_MATH_DEFINES)
 endif()
-# Warnings on Fulskrin's own code (the libraries fetched below keep theirs)
-set(FULSKRIN_WARNINGS $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wno-unused-parameter>)
+# Warnings on Pinol's own code (the libraries fetched below keep theirs)
+set(PINOL_WARNINGS $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wno-unused-parameter>)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -39,7 +39,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Engine: no dependency on widgets (reusable with another UI)
 # ---------------------------------------------------------------------------
-add_library(fulskrin_engine STATIC
+add_library(pinol_engine STATIC
   src/engine/Gl.cpp
   src/engine/Isf.cpp
   src/engine/IsfLibrary.cpp
@@ -80,14 +80,14 @@ add_library(fulskrin_engine STATIC
   src/engine/Parameter.cpp
   src/engine/LayerParams.cpp
 )
-target_include_directories(fulskrin_engine PUBLIC src/engine)
-target_link_libraries(fulskrin_engine PUBLIC Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::Network ffmpeg)
-target_compile_definitions(fulskrin_engine PUBLIC GL_SILENCE_DEPRECATION)
+target_include_directories(pinol_engine PUBLIC src/engine)
+target_link_libraries(pinol_engine PUBLIC Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::Network ffmpeg)
+target_compile_definitions(pinol_engine PUBLIC GL_SILENCE_DEPRECATION)
 # Cameras (live inputs): Qt Multimedia when it is there
 find_package(Qt6 QUIET COMPONENTS Multimedia)
 if(Qt6Multimedia_FOUND)
-  target_link_libraries(fulskrin_engine PRIVATE Qt6::Multimedia)
-  target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_CAMERA)
+  target_link_libraries(pinol_engine PRIVATE Qt6::Multimedia)
+  target_compile_definitions(pinol_engine PRIVATE PINOL_HAS_CAMERA)
 else()
   message(STATUS "Qt Multimedia not found: no camera inputs")
 endif()
@@ -95,7 +95,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Third-party sources: git submodules in third_party/ (git submodule update --init), built here
 # ---------------------------------------------------------------------------
-function(fulskrin_submodule name file)
+function(pinol_submodule name file)
   if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/${name}/${file}")
     message(FATAL_ERROR "third_party/${name} is empty: run  git submodule update --init")
   endif()
@@ -104,9 +104,9 @@ endfunction()
 # ---------------------------------------------------------------------------
 # Audio output: miniaudio (single header, public domain / MIT-0), compiled in src/engine/MiniaudioImpl.cpp
 # ---------------------------------------------------------------------------
-fulskrin_submodule(miniaudio miniaudio.h)
-target_include_directories(fulskrin_engine PRIVATE "${CMAKE_SOURCE_DIR}/third_party/miniaudio")
-target_compile_definitions(fulskrin_engine PRIVATE MA_NO_DECODING MA_NO_ENCODING MA_NO_GENERATION MA_NO_ENGINE
+pinol_submodule(miniaudio miniaudio.h)
+target_include_directories(pinol_engine PRIVATE "${CMAKE_SOURCE_DIR}/third_party/miniaudio")
+target_compile_definitions(pinol_engine PRIVATE MA_NO_DECODING MA_NO_ENCODING MA_NO_GENERATION MA_NO_ENGINE
   MA_NO_RESOURCE_MANAGER MA_NO_NODE_GRAPH)
 if(MSVC)
   set_source_files_properties(src/engine/MiniaudioImpl.cpp PROPERTIES COMPILE_OPTIONS "/W0")
@@ -115,80 +115,80 @@ else()
 endif()
 if(APPLE)
   # Link the Core Audio frameworks directly rather than loading them at runtime
-  target_compile_definitions(fulskrin_engine PRIVATE MA_NO_RUNTIME_LINKING)
-  target_link_libraries(fulskrin_engine PRIVATE "-framework CoreFoundation" "-framework CoreAudio"
+  target_compile_definitions(pinol_engine PRIVATE MA_NO_RUNTIME_LINKING)
+  target_link_libraries(pinol_engine PRIVATE "-framework CoreFoundation" "-framework CoreAudio"
     "-framework AudioToolbox" "-framework OpenGL")
 elseif(UNIX)
   find_package(Threads REQUIRED)
-  target_link_libraries(fulskrin_engine PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  target_link_libraries(pinol_engine PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
 endif()
 
 # ---------------------------------------------------------------------------
 # MIDI (the timecode's MTC): RtMidi (MIT), a submodule. CoreMIDI, Windows MM, ALSA (Linux: libasound2-dev; without it,
 # no MIDI port)
 # ---------------------------------------------------------------------------
-fulskrin_submodule(rtmidi RtMidi.cpp)
+pinol_submodule(rtmidi RtMidi.cpp)
 set(rtmidi_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/rtmidi")
-set(FULSKRIN_MIDI_API "")
+set(PINOL_MIDI_API "")
 if(APPLE)
-  set(FULSKRIN_MIDI_API __MACOSX_CORE__)
-  set(FULSKRIN_MIDI_LIBS "-framework CoreMIDI" "-framework CoreAudio" "-framework CoreFoundation")
+  set(PINOL_MIDI_API __MACOSX_CORE__)
+  set(PINOL_MIDI_LIBS "-framework CoreMIDI" "-framework CoreAudio" "-framework CoreFoundation")
 elseif(WIN32)
-  set(FULSKRIN_MIDI_API __WINDOWS_MM__)
-  set(FULSKRIN_MIDI_LIBS winmm)
+  set(PINOL_MIDI_API __WINDOWS_MM__)
+  set(PINOL_MIDI_LIBS winmm)
 else()
   find_package(ALSA QUIET)
   if(ALSA_FOUND)
-    set(FULSKRIN_MIDI_API __LINUX_ALSA__)
-    set(FULSKRIN_MIDI_LIBS ALSA::ALSA Threads::Threads)
+    set(PINOL_MIDI_API __LINUX_ALSA__)
+    set(PINOL_MIDI_LIBS ALSA::ALSA Threads::Threads)
   else()
     message(STATUS "ALSA not found: no MIDI ports (sudo apt install libasound2-dev)")
   endif()
 endif()
-if(FULSKRIN_MIDI_API)
+if(PINOL_MIDI_API)
   add_library(rtmidi_static STATIC "${rtmidi_SOURCE_DIR}/RtMidi.cpp")
   target_include_directories(rtmidi_static PUBLIC "${rtmidi_SOURCE_DIR}")
-  target_compile_definitions(rtmidi_static PUBLIC ${FULSKRIN_MIDI_API})
-  target_link_libraries(rtmidi_static PUBLIC ${FULSKRIN_MIDI_LIBS})
+  target_compile_definitions(rtmidi_static PUBLIC ${PINOL_MIDI_API})
+  target_link_libraries(rtmidi_static PUBLIC ${PINOL_MIDI_LIBS})
   if(MSVC)
     target_compile_options(rtmidi_static PRIVATE /W0)
   else()
     target_compile_options(rtmidi_static PRIVATE -w)
   endif()
-  target_link_libraries(fulskrin_engine PRIVATE rtmidi_static)
-  target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_MIDI)
+  target_link_libraries(pinol_engine PRIVATE rtmidi_static)
+  target_compile_definitions(pinol_engine PRIVATE PINOL_HAS_MIDI)
 endif()
 
 # ---------------------------------------------------------------------------
 # HAP: texture blocks decoded on the CPU when the GPU cannot sample them (BC7 and BC6 on macOS).
 # bcdec: single header, MIT or Unlicense, compiled in src/engine/Hap.cpp.
 # ---------------------------------------------------------------------------
-fulskrin_submodule(bcdec bcdec.h)
-target_include_directories(fulskrin_engine PRIVATE "${CMAKE_SOURCE_DIR}/third_party/bcdec")
+pinol_submodule(bcdec bcdec.h)
+target_include_directories(pinol_engine PRIVATE "${CMAKE_SOURCE_DIR}/third_party/bcdec")
 
 # ---------------------------------------------------------------------------
 # Output publishing
 #  - NDI and OMT: loaded at runtime (no build-time dependency)
-#  - Syphon (macOS) and Spout (Windows): sources downloaded and built with Fulskrin
+#  - Syphon (macOS) and Spout (Windows): sources downloaded and built with Pinol
 # ---------------------------------------------------------------------------
-option(FULSKRIN_SYPHON "Syphon publishing (macOS)" ON)
-option(FULSKRIN_SPOUT "Spout publishing (Windows)" ON)
+option(PINOL_SYPHON "Syphon publishing (macOS)" ON)
+option(PINOL_SPOUT "Spout publishing (Windows)" ON)
 
 # macOS: the output windows shown through Metal (OpenGL into a window only works on the main thread there)
 if(APPLE)
   enable_language(OBJCXX)
-  target_sources(fulskrin_engine PRIVATE src/engine/PresentMetal.mm src/engine/Permissions.mm src/engine/VideoSurfaceMac.cpp)
+  target_sources(pinol_engine PRIVATE src/engine/PresentMetal.mm src/engine/Permissions.mm src/engine/VideoSurfaceMac.cpp)
   set_source_files_properties(src/engine/PresentMetal.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-  target_compile_definitions(fulskrin_engine PRIVATE GL_SILENCE_DEPRECATION)
-  target_link_libraries(fulskrin_engine PRIVATE "-framework Metal" "-framework QuartzCore" "-framework IOSurface"
+  target_compile_definitions(pinol_engine PRIVATE GL_SILENCE_DEPRECATION)
+  target_link_libraries(pinol_engine PRIVATE "-framework Metal" "-framework QuartzCore" "-framework IOSurface"
     "-framework AppKit" "-framework Network" "-framework CoreVideo")
 else()
-  target_sources(fulskrin_engine PRIVATE src/engine/VideoSurfaceNone.cpp)
+  target_sources(pinol_engine PRIVATE src/engine/VideoSurfaceNone.cpp)
 endif()
 
-if(APPLE AND FULSKRIN_SYPHON)
+if(APPLE AND PINOL_SYPHON)
   enable_language(C OBJC OBJCXX) # Syphon: C and Objective-C sources
-  fulskrin_submodule(syphon SyphonServer.h)
+  pinol_submodule(syphon SyphonServer.h)
   set(syphon_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/syphon")
   # The sources import <Syphon/...>: expose the headers under this prefix.
   file(GLOB SYPHON_HEADERS "${syphon_SOURCE_DIR}/*.h")
@@ -202,23 +202,23 @@ if(APPLE AND FULSKRIN_SYPHON)
   target_compile_options(syphon PRIVATE -w "SHELL:-include ${syphon_SOURCE_DIR}/Syphon_Prefix.pch"
     $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>)
   target_link_libraries(syphon PUBLIC "-framework Cocoa" "-framework OpenGL" "-framework IOSurface" "-framework Foundation")
-  target_sources(fulskrin_engine PRIVATE src/engine/PublishSyphon.mm src/engine/LiveInputSyphon.mm)
+  target_sources(pinol_engine PRIVATE src/engine/PublishSyphon.mm src/engine/LiveInputSyphon.mm)
   set_source_files_properties(src/engine/PublishSyphon.mm src/engine/LiveInputSyphon.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-  target_link_libraries(fulskrin_engine PRIVATE syphon)
-  target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_SYPHON)
+  target_link_libraries(pinol_engine PRIVATE syphon)
+  target_compile_definitions(pinol_engine PRIVATE PINOL_HAS_SYPHON)
 endif()
 
 # DeckLink (Blackmagic SDI / HDMI cards): the SDK's headers are in third_party/decklink (Boost license), the driver
 # (Desktop Video) is loaded at run time. Windows: its interfaces come from the SDK's IDL, compiled by MIDL.
-option(FULSKRIN_DECKLINK "DeckLink outputs (Blackmagic Desktop Video)" ON)
-if(FULSKRIN_DECKLINK)
+option(PINOL_DECKLINK "DeckLink outputs (Blackmagic Desktop Video)" ON)
+if(PINOL_DECKLINK)
   set(DECKLINK_SDK "${CMAKE_SOURCE_DIR}/third_party/decklink")
   if(APPLE)
-    target_include_directories(fulskrin_engine PRIVATE "${DECKLINK_SDK}/mac")
-    target_sources(fulskrin_engine PRIVATE "${DECKLINK_SDK}/mac/DeckLinkAPIDispatch.cpp")
+    target_include_directories(pinol_engine PRIVATE "${DECKLINK_SDK}/mac")
+    target_sources(pinol_engine PRIVATE "${DECKLINK_SDK}/mac/DeckLinkAPIDispatch.cpp")
     set_source_files_properties("${DECKLINK_SDK}/mac/DeckLinkAPIDispatch.cpp" PROPERTIES COMPILE_OPTIONS "-w")
-    target_link_libraries(fulskrin_engine PRIVATE "-framework CoreFoundation")
-    target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_DECKLINK)
+    target_link_libraries(pinol_engine PRIVATE "-framework CoreFoundation")
+    target_compile_definitions(pinol_engine PRIVATE PINOL_HAS_DECKLINK)
   elseif(WIN32)
     find_program(MIDL_EXE midl)
     if(MIDL_EXE)
@@ -233,24 +233,24 @@ if(FULSKRIN_DECKLINK)
         DEPENDS ${DECKLINK_IDL}
         COMMENT "DeckLink SDK interfaces (MIDL)")
       add_custom_target(decklink_idl DEPENDS "${DECKLINK_GEN}/DeckLinkAPI_h.h" "${DECKLINK_GEN}/DeckLinkAPI_i.c")
-      add_dependencies(fulskrin_engine decklink_idl)
-      target_include_directories(fulskrin_engine PRIVATE "${DECKLINK_GEN}")
-      target_link_libraries(fulskrin_engine PRIVATE ole32 oleaut32)
-      target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_DECKLINK)
+      add_dependencies(pinol_engine decklink_idl)
+      target_include_directories(pinol_engine PRIVATE "${DECKLINK_GEN}")
+      target_link_libraries(pinol_engine PRIVATE ole32 oleaut32)
+      target_compile_definitions(pinol_engine PRIVATE PINOL_HAS_DECKLINK)
     else()
       message(WARNING "MIDL not found (run from a Visual Studio developer prompt): built without DeckLink outputs")
     endif()
   else()
-    target_include_directories(fulskrin_engine PRIVATE "${DECKLINK_SDK}/linux")
-    target_sources(fulskrin_engine PRIVATE "${DECKLINK_SDK}/linux/DeckLinkAPIDispatch.cpp")
+    target_include_directories(pinol_engine PRIVATE "${DECKLINK_SDK}/linux")
+    target_sources(pinol_engine PRIVATE "${DECKLINK_SDK}/linux/DeckLinkAPIDispatch.cpp")
     set_source_files_properties("${DECKLINK_SDK}/linux/DeckLinkAPIDispatch.cpp" PROPERTIES COMPILE_OPTIONS "-w")
-    target_link_libraries(fulskrin_engine PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
-    target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_DECKLINK)
+    target_link_libraries(pinol_engine PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    target_compile_definitions(pinol_engine PRIVATE PINOL_HAS_DECKLINK)
   endif()
 endif()
 
-if(WIN32 AND FULSKRIN_SPOUT)
-  fulskrin_submodule(spout2 SPOUTSDK/SpoutGL/Spout.cpp)
+if(WIN32 AND PINOL_SPOUT)
+  pinol_submodule(spout2 SPOUTSDK/SpoutGL/Spout.cpp)
   set(SPOUT_DIR "${CMAKE_SOURCE_DIR}/third_party/spout2/SPOUTSDK/SpoutGL")
   add_library(spout_gl STATIC
     ${SPOUT_DIR}/Spout.cpp ${SPOUT_DIR}/SpoutCopy.cpp ${SPOUT_DIR}/SpoutDirectX.cpp
@@ -263,9 +263,9 @@ if(WIN32 AND FULSKRIN_SPOUT)
     target_compile_options(spout_gl PRIVATE /W0)
   endif()
   target_link_libraries(spout_gl PUBLIC opengl32 d3d9 d3d11 dxgi version winmm shlwapi)
-  target_sources(fulskrin_engine PRIVATE src/engine/PublishSpout.cpp)
-  target_link_libraries(fulskrin_engine PRIVATE spout_gl)
-  target_compile_definitions(fulskrin_engine PRIVATE FULSKRIN_HAS_SPOUT)
+  target_sources(pinol_engine PRIVATE src/engine/PublishSpout.cpp)
+  target_link_libraries(pinol_engine PRIVATE spout_gl)
+  target_compile_definitions(pinol_engine PRIVATE PINOL_HAS_SPOUT)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -299,68 +299,68 @@ set(APP_SOURCES
 if(APPLE)
   enable_language(OBJCXX)
   list(APPEND APP_SOURCES src/ui/MacPresentation.mm)
-  add_executable(Fulskrin MACOSX_BUNDLE ${APP_SOURCES})
-  target_link_libraries(Fulskrin PRIVATE "-framework AppKit")
+  add_executable(Pinol MACOSX_BUNDLE ${APP_SOURCES})
+  target_link_libraries(Pinol PRIVATE "-framework AppKit")
   # The camera permission plugin (static, from Qt): without it Qt refuses the camera before macOS is asked
   find_package(Qt6QDarwinCameraPermissionPlugin QUIET)
   if(TARGET Qt6::QDarwinCameraPermissionPlugin)
-    target_link_libraries(Fulskrin PRIVATE Qt6::QDarwinCameraPermissionPlugin Qt6::QDarwinCameraPermissionPlugin_init)
+    target_link_libraries(Pinol PRIVATE Qt6::QDarwinCameraPermissionPlugin Qt6::QDarwinCameraPermissionPlugin_init)
     # Qt's permission handler is an Objective-C class in that static library: -ObjC keeps it in the link
-    target_link_options(Fulskrin PRIVATE "-ObjC")
+    target_link_options(Pinol PRIVATE "-ObjC")
   else()
     message(WARNING "Qt camera permission plugin not found: the camera will not be asked for on macOS")
   endif()
   # The microphone permission plugin, the same way
   find_package(Qt6QDarwinMicrophonePermissionPlugin QUIET)
   if(TARGET Qt6::QDarwinMicrophonePermissionPlugin)
-    target_link_libraries(Fulskrin PRIVATE Qt6::QDarwinMicrophonePermissionPlugin Qt6::QDarwinMicrophonePermissionPlugin_init)
+    target_link_libraries(Pinol PRIVATE Qt6::QDarwinMicrophonePermissionPlugin Qt6::QDarwinMicrophonePermissionPlugin_init)
   else()
     message(WARNING "Qt microphone permission plugin not found: the microphone will not be asked for on macOS")
   endif()
-  set_target_properties(Fulskrin PROPERTIES
-    MACOSX_BUNDLE_BUNDLE_NAME "Fulskrin"
-    MACOSX_BUNDLE_GUI_IDENTIFIER "fr.fulskrin.app"
+  set_target_properties(Pinol PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_NAME "Pinol"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "fr.pinol.app"
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in") # with the camera's usage text
-  set(ISF_DEST "$<TARGET_FILE_DIR:Fulskrin>/../Resources/isf")
+  set(ISF_DEST "$<TARGET_FILE_DIR:Pinol>/../Resources/isf")
 elseif(WIN32)
-  add_executable(Fulskrin WIN32 ${APP_SOURCES})
-  set(ISF_DEST "$<TARGET_FILE_DIR:Fulskrin>/isf")
+  add_executable(Pinol WIN32 ${APP_SOURCES})
+  set(ISF_DEST "$<TARGET_FILE_DIR:Pinol>/isf")
 else()
-  add_executable(Fulskrin ${APP_SOURCES})
-  set(ISF_DEST "$<TARGET_FILE_DIR:Fulskrin>/isf")
+  add_executable(Pinol ${APP_SOURCES})
+  set(ISF_DEST "$<TARGET_FILE_DIR:Pinol>/isf")
 endif()
 
-target_include_directories(Fulskrin PRIVATE src src/ui)
-target_link_libraries(Fulskrin PRIVATE fulskrin_engine Qt6::Widgets Qt6::OpenGLWidgets)
+target_include_directories(Pinol PRIVATE src src/ui)
+target_link_libraries(Pinol PRIVATE pinol_engine Qt6::Widgets Qt6::OpenGLWidgets)
 
 # Copy the bundled ISF shaders next to the executable (or into the macOS bundle).
 # The folder is emptied first so renamed or deleted shaders do not linger in the build.
-add_custom_command(TARGET Fulskrin POST_BUILD
+add_custom_command(TARGET Pinol POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E rm -rf "${ISF_DEST}"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/isf" "${ISF_DEST}")
 
-# Windows: the FFmpeg DLLs must be next to Fulskrin.exe
+# Windows: the FFmpeg DLLs must be next to Pinol.exe
 if(WIN32 AND FFMPEG_ROOT)
   file(GLOB FFMPEG_DLLS "${FFMPEG_ROOT}/bin/*.dll")
   if(FFMPEG_DLLS)
-    add_custom_command(TARGET Fulskrin POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_DLLS} "$<TARGET_FILE_DIR:Fulskrin>")
+    add_custom_command(TARGET Pinol POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_DLLS} "$<TARGET_FILE_DIR:Pinol>")
   endif()
 endif()
 
-target_compile_options(fulskrin_engine PRIVATE ${FULSKRIN_WARNINGS})
-target_compile_options(Fulskrin PRIVATE ${FULSKRIN_WARNINGS})
+target_compile_options(pinol_engine PRIVATE ${PINOL_WARNINGS})
+target_compile_options(Pinol PRIVATE ${PINOL_WARNINGS})
 
-install(TARGETS Fulskrin BUNDLE DESTINATION . RUNTIME DESTINATION bin)
+install(TARGETS Pinol BUNDLE DESTINATION . RUNTIME DESTINATION bin)
 
 # ---------------------------------------------------------------------------
 # Fuzzing (Clang, libFuzzer + ASan / UBSan): the HAP and Snappy readers against damaged files (test/fuzz_hap.cpp)
 # ---------------------------------------------------------------------------
-option(FULSKRIN_FUZZ "Build the fuzz targets (requires Clang)" OFF)
-if(FULSKRIN_FUZZ)
+option(PINOL_FUZZ "Build the fuzz targets (requires Clang)" OFF)
+if(PINOL_FUZZ)
   if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    message(FATAL_ERROR "FULSKRIN_FUZZ needs Clang (libFuzzer): -DCMAKE_CXX_COMPILER=clang++")
+    message(FATAL_ERROR "PINOL_FUZZ needs Clang (libFuzzer): -DCMAKE_CXX_COMPILER=clang++")
   endif()
   add_executable(fuzz_hap EXCLUDE_FROM_ALL test/fuzz_hap.cpp src/engine/Hap.cpp src/engine/Snappy.cpp
     src/engine/WorkerPool.cpp)
@@ -371,24 +371,24 @@ if(FULSKRIN_FUZZ)
 endif()
 
 # ---------------------------------------------------------------------------
-# Engine tests (headless): cmake --build build --target fulskrin_tests
+# Engine tests (headless): cmake --build build --target pinol_tests
 # ---------------------------------------------------------------------------
-option(FULSKRIN_TESTS "Build the engine tests" ON)
-if(FULSKRIN_TESTS)
-  add_executable(fulskrin_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp src/ui/Commands.cpp)
-  target_include_directories(fulskrin_tests PRIVATE src/ui)
-  target_link_libraries(fulskrin_tests PRIVATE fulskrin_engine)
-  target_compile_options(fulskrin_tests PRIVATE ${FULSKRIN_WARNINGS})
-  target_compile_definitions(fulskrin_tests PRIVATE TEST_DIR="${CMAKE_SOURCE_DIR}/test")
+option(PINOL_TESTS "Build the engine tests" ON)
+if(PINOL_TESTS)
+  add_executable(pinol_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp src/ui/Commands.cpp)
+  target_include_directories(pinol_tests PRIVATE src/ui)
+  target_link_libraries(pinol_tests PRIVATE pinol_engine)
+  target_compile_options(pinol_tests PRIVATE ${PINOL_WARNINGS})
+  target_compile_definitions(pinol_tests PRIVATE TEST_DIR="${CMAKE_SOURCE_DIR}/test")
   # CTest: each area in a process of its own (a new engine), then every bundled shader compiled and rendered.
   # Test media first: sh test/make_media.sh
   enable_testing()
   foreach(area video project playback undo structure compositing osc snapshots masks rendering thread publishing
           media sound layersource timecode interactions)
-    add_test(NAME ${area} COMMAND fulskrin_tests --area ${area})
+    add_test(NAME ${area} COMMAND pinol_tests --area ${area})
   endforeach()
-  add_test(NAME isf COMMAND fulskrin_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
-  # Several videos played together: cmake --build build --target fulskrin_bench
-  add_executable(fulskrin_bench EXCLUDE_FROM_ALL test/bench.cpp)
-  target_link_libraries(fulskrin_bench PRIVATE fulskrin_engine)
+  add_test(NAME isf COMMAND pinol_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
+  # Several videos played together: cmake --build build --target pinol_bench
+  add_executable(pinol_bench EXCLUDE_FROM_ALL test/bench.cpp)
+  target_link_libraries(pinol_bench PRIVATE pinol_engine)
 endif()

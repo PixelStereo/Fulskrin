@@ -13,7 +13,7 @@ namespace midi {
 
 bool available();          // built with a MIDI backend
 bool virtualPorts();       // ports of its own can be made (macOS, Linux)
-QStringList outputNames(); // the ports to send to (not Fulskrin's own virtual ones)
+QStringList outputNames(); // the ports to send to (not Pinol's own virtual ones)
 QStringList inputNames();  // the ports to receive from
 
 class Output
