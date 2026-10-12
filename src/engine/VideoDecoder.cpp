@@ -456,7 +456,10 @@ void VideoDecoder::recycleLocked(VideoFrame &&f)
         if (it != m_stagingById.end()) m_freeStaging.push_back(it->second);
         f.staging = -1;
     }
-    if (f.bytes.capacity() && m_bytePool.size() < kBytePool) {
+    // Only pool an allocation whose capacity is covered by a live global-budget reservation.
+    // In particular, a frame rejected by reserveFrameMemory() has budgetBytes == 0: pooling it
+    // would retain unaccounted memory and let repeated budget drops bypass the process-wide cap.
+    if (f.bytes.capacity() && f.budgetBytes > 0 && m_bytePool.size() < kBytePool) {
         m_bytePool.push_back(std::move(f.bytes));
         m_bytePoolBudgetBytes.push_back(f.budgetBytes);
         f.budgetBytes = 0; // the pool now owns the reservation with the allocation
