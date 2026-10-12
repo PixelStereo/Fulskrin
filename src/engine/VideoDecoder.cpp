@@ -36,6 +36,24 @@ static void releaseDecodedFrameBytes(size_t bytes)
     if (bytes) s_globalDecodedFrameBytes.fetch_sub(bytes, std::memory_order_relaxed);
 }
 
+// Keep reusable CPU buffers from monopolizing the decoded-frame budget across many streams.
+static constexpr size_t kGlobalBytePoolBudget = size_t(64) << 20;
+static std::atomic<size_t> s_globalBytePoolBytes{0};
+
+static bool reserveBytePoolBytes(size_t bytes)
+{
+    size_t used = s_globalBytePoolBytes.load(std::memory_order_relaxed);
+    for (;;) {
+        if (bytes > kGlobalBytePoolBudget || used > kGlobalBytePoolBudget - bytes) return false;
+        if (s_globalBytePoolBytes.compare_exchange_weak(used, used + bytes, std::memory_order_relaxed)) return true;
+    }
+}
+
+static void releaseBytePoolBytes(size_t bytes)
+{
+    if (bytes) s_globalBytePoolBytes.fetch_sub(bytes, std::memory_order_relaxed);
+}
+
 // A process-wide, fair concurrency limit around CPU-heavy decode/decompression calls.
 // Per-stream sequencing threads remain independent, but they cannot all enter FFmpeg/HAP at once.
 class DecodeGate
@@ -358,7 +376,10 @@ void VideoDecoder::close()
     // Upload buffers belong to the render thread: they are only forgotten here
     m_queue.clear();
     m_backStack.clear();
-    for (size_t reserved : m_bytePoolBudgetBytes) releaseDecodedFrameBytes(reserved);
+    for (size_t reserved : m_bytePoolBudgetBytes) {
+        releaseBytePoolBytes(reserved);
+        releaseDecodedFrameBytes(reserved);
+    }
     m_bytePool.clear();
     m_bytePoolBudgetBytes.clear();
     m_freeStaging.clear();
@@ -459,9 +480,11 @@ void VideoDecoder::recycleLocked(VideoFrame &&f)
     // Only pool an allocation whose capacity is covered by a live global-budget reservation.
     // In particular, a frame rejected by reserveFrameMemory() has budgetBytes == 0: pooling it
     // would retain unaccounted memory and let repeated budget drops bypass the process-wide cap.
-    if (f.bytes.capacity() && f.budgetBytes >= f.bytes.capacity() && m_bytePool.size() < kBytePool) {
+    const size_t pooledBytes = f.budgetBytes;
+    if (f.bytes.capacity() && f.budgetBytes >= f.bytes.capacity() && m_bytePool.size() < kBytePool
+        && reserveBytePoolBytes(pooledBytes)) {
         m_bytePool.push_back(std::move(f.bytes));
-        m_bytePoolBudgetBytes.push_back(f.budgetBytes);
+        m_bytePoolBudgetBytes.push_back(pooledBytes);
         f.budgetBytes = 0; // the pool now owns the reservation with the allocation
     } else {
         f.bytes = {};
