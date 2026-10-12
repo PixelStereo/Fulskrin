@@ -3,6 +3,7 @@ name: Build
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -51,6 +52,26 @@ jobs:
       - name: Engine tests
         run: |
           xvfb-run -a ctest --test-dir build --output-on-failure
+      - name: Package Linux archive
+        run: |
+          mkdir -p dist
+          install -Dm755 build/Fulskrin dist/Fulskrin
+          cp -R build/isf dist/isf
+          cat > dist/README-Linux.txt <<'EOF'
+          Fulskrin Linux x86_64 — runtime requirements
+
+          This archive is built on Ubuntu 24.04 and is not a fully self-contained AppImage.
+          On Ubuntu 24.04, install the runtime libraries with:
+            sudo apt install libqt6widgets6 libqt6openglwidgets6 libqt6opengl6 libqt6multimedia6 qt6-qpa-plugins libgl1 libasound2t64 libavformat60 libavcodec60 libswscale7 libswresample4 libavutil58
+
+          Extract the archive and run ./Fulskrin from this directory so the adjacent ./isf shaders can be found.
+          Other Linux distributions may require equivalent runtime packages.
+          EOF
+          tar -czf Fulskrin-linux-x86_64.tar.gz -C dist .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fulskrin-linux
+          path: Fulskrin-linux-x86_64.tar.gz
 
   # The HAP and Snappy readers against damaged files: a short libFuzzer run with ASan / UBSan, seeded with the
   # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
@@ -109,10 +130,63 @@ jobs:
       - name: Engine tests
         run: |
           ctest --test-dir build --output-on-failure
-      - name: Package .app
+      - name: Package .app with runtime dependencies
+        shell: bash
         run: |
-          "$(brew --prefix qt)/bin/macdeployqt" build/Fulskrin.app
-          ditto -c -k --keepParent build/Fulskrin.app Fulskrin-macos.zip
+          set -euo pipefail
+          APP="build/Fulskrin.app"
+          EXE="$APP/Contents/MacOS/Fulskrin"
+          QT_PREFIX="$(brew --prefix qt)"
+
+          test -d "$APP"
+          test -f "$EXE"
+
+          # macdeployqt preserves Qt's framework layout and handles its plugin deployment.
+          # Supply FFmpeg and every Homebrew runtime dependency as extra search paths,
+          # so its recursive dependency scan can copy them into the app bundle.
+          LIBPATH_ARGS=("-libpath=$QT_PREFIX/lib")
+          # Search every installed Homebrew formula: Qt's frameworks and FFmpeg's
+          # transitive libraries can come from different formula dependency trees.
+          while IFS= read -r formula; do
+            [[ -n "$formula" ]] || continue
+            prefix="$(brew --prefix "$formula")"
+            [[ -d "$prefix/lib" ]] && LIBPATH_ARGS+=("-libpath=$prefix/lib")
+            [[ -d "$prefix/Frameworks" ]] && LIBPATH_ARGS+=("-libpath=$prefix/Frameworks")
+          done < <(brew list --formula | sort -u)
+
+          "$QT_PREFIX/bin/macdeployqt" "$APP" -verbose=2 -always-overwrite "${LIBPATH_ARGS[@]}"
+
+          # Resolve and bundle every non-system dependency recursively, including @rpath libraries
+          # (e.g. WebP -> SharpYUV). The helper fails closed when a dependency is missing/ambiguous.
+          python3 scripts/macos_bundle_deps.py "$APP"
+          # macdeployqt may apply an ad-hoc signature before the dependency fixups above.
+          # Re-sign ad-hoc after all install_name_tool changes; Developer ID signing is a later step.
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          # No absolute Homebrew references may remain in the packaged Mach-O files.
+          while IFS= read -r -d '' binary; do
+            file "$binary" | grep -q "Mach-O" || continue
+            if otool -L "$binary" | grep -E '/opt/homebrew/(Cellar|opt)/|/usr/local/(Cellar|opt)/'; then
+              echo "Non-portable Homebrew dependency found in: $binary" >&2
+              exit 1
+            fi
+          done < <(find "$APP/Contents" -type f -print0)
+          test -x "$EXE"
+          test -d "$APP/Contents/Resources/isf"
+          cat > "$APP/Contents/Resources/README-Dependencies.txt" <<'EOF'
+          Fulskrin macOS runtime notes
+
+          The application bundle includes the Qt frameworks/plugins deployed by macdeployqt and the FFmpeg
+          dynamic libraries discovered during packaging. The workflow checks for unresolved absolute Homebrew paths.
+
+          Some optional hardware/network features may still require vendor software installed separately:
+          - Blackmagic DeckLink: Blackmagic Desktop Video driver/runtime.
+          - NDI / OMT: compatible vendor runtime libraries, subject to their own redistribution terms.
+
+          These vendor runtimes are not part of this repository and are not bundled automatically.
+          EOF
+          ditto -c -k --keepParent "$APP" Fulskrin-macos.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Fulskrin-macos
@@ -160,15 +234,87 @@ jobs:
           $env:PATH = "C:\ffmpeg\$env:FFMPEG_ZIP\bin;$env:PATH"
           ctest --test-dir build --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Package
+      - name: Package with runtime dependencies
         shell: pwsh
         run: |
-          New-Item -ItemType Directory dist | Out-Null
-          Copy-Item build\Fulskrin.exe, build\*.dll dist\
-          Copy-Item -Recurse build\isf dist\isf
-          windeployqt --release dist\Fulskrin.exe
-          Compress-Archive -Path dist\* -DestinationPath Fulskrin-windows.zip
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force dist | Out-Null
+
+          Copy-Item build\Fulskrin.exe dist\Fulskrin.exe -Force
+          Copy-Item -Recurse -Force build\isf dist\isf
+
+          # Deploy Qt libraries, platform plugins, multimedia plugins and the MSVC runtime.
+          # Use Fulskrin's FFmpeg DLLs, not Qt Multimedia's private FFmpeg build.
+          # Keep the official MSVC redistributable installer in the archive instead of copying
+          # compiler-runtime DLLs individually.
+          windeployqt --release --no-compiler-runtime --no-ffmpeg -multimedia dist\Fulskrin.exe
+
+          # Bundle the FFmpeg DLL set used by this build, including companion DLLs.
+          $ffmpegBin = "C:\ffmpeg\$env:FFMPEG_ZIP\bin"
+          if (-not (Test-Path $ffmpegBin)) {
+            throw "FFmpeg runtime directory not found: $ffmpegBin"
+          }
+          $ffmpegDlls = @(Get-ChildItem "$ffmpegBin\*.dll")
+          if ($ffmpegDlls.Count -eq 0) {
+            throw "No FFmpeg DLLs found in $ffmpegBin"
+          }
+          $ffmpegDlls | Copy-Item -Destination dist -Force
+
+          # Include Microsoft's official x64 Visual C++ Redistributable installer.
+          Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "dist\vc_redist.x64.exe"
+
+          # Basic packaging assertions.
+          if (-not (Test-Path dist\Fulskrin.exe)) { throw "Fulskrin.exe missing" }
+          if (-not (Test-Path dist\isf)) { throw "ISF assets missing" }
+          if (-not (Test-Path dist\platforms\qwindows.dll)) {
+            throw "Qt Windows platform plugin missing after windeployqt"
+          }
+          if (-not (Get-ChildItem dist -Filter "*.dll")) {
+            throw "No runtime DLLs were deployed"
+          }
+
+          @'
+          Fulskrin Windows x64 runtime notes
+
+          This archive bundles Fulskrin.exe, Qt runtime libraries/plugins, FFmpeg DLLs, ISF shaders,
+          and Microsoft's official vc_redist.x64.exe installer.
+          If Windows reports that the Visual C++ runtime is missing, run vc_redist.x64.exe, then start Fulskrin.exe.
+          Run Fulskrin.exe from this extracted directory.
+
+          Some optional hardware/network features may require vendor software installed separately:
+          - Blackmagic DeckLink: Blackmagic Desktop Video driver/runtime.
+          - NDI / OMT: compatible vendor runtime libraries, subject to their own redistribution terms.
+
+          These vendor runtimes are not part of this repository and are not bundled automatically.
+          '@ | Set-Content -Encoding utf8 dist\README-Dependencies.txt
+
+          Compress-Archive -Path dist\* -DestinationPath Fulskrin-windows.zip -Force
       - uses: actions/upload-artifact@v4
         with:
           name: Fulskrin-windows
           path: Fulskrin-windows.zip
+
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download platform packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: false
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Fulskrin ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/**/*.zip
+            dist/**/*.tar.gz
