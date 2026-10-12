@@ -137,6 +137,7 @@ jobs:
           APP="build/Fulskrin.app"
           EXE="$APP/Contents/MacOS/Fulskrin"
           FRAMEWORKS="$APP/Contents/Frameworks"
+          QT_PREFIX="$(brew --prefix qt)"
           QT_CELLAR="$(brew --cellar qt)"
           FFMPEG_LIB="$(brew --prefix ffmpeg)/lib"
 
