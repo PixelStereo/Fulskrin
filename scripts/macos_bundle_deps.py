@@ -219,6 +219,16 @@ def main() -> None:
             if resolved_inside is not None:
                 continue
 
+            # macdeployqt usually leaves @rpath framework references intact. Resolve those
+            # directly against Contents/Frameworks even if the original LC_RPATH chain is incomplete.
+            if dep.startswith("@rpath/"):
+                suffix = dep[len("@rpath/"):]
+                bundled_candidate = (FRAMEWORKS / suffix).resolve()
+                if bundled_candidate.is_file() and within_app(bundled_candidate):
+                    rel = os.path.relpath(bundled_candidate, binary.parent).replace(os.sep, "/")
+                    run("install_name_tool", "-change", dep, "@loader_path/" + rel, str(binary))
+                    continue
+
             source = resolve_brew_dependency(dep, binary)
             if source is None:
                 # Do not silently accept unresolved @rpath or external paths.
