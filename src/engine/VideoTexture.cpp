@@ -49,6 +49,18 @@ extern "C" {
 #define GL_TEXTURE_RECTANGLE 0x84F5
 #endif
 
+// Upload buffers of every video layer: 512 MiB shared fairly among the layers that have some (each keeps at least
+// two, so that none falls back to the slow path because others came first)
+static constexpr size_t kPboBudget = size_t(512) << 20;
+static std::atomic<int> s_pboStreams{0};
+
+static int fairPboCount(size_t size, int decoderWants)
+{
+    if (!size) return 0;
+    const size_t share = kPboBudget / size_t(std::max(1, s_pboStreams.load(std::memory_order_relaxed)));
+    return std::min(decoderWants, std::max(2, int(share / size)));
+}
+
 static constexpr GLenum kDxt1 = 0x83F0;  // GL_COMPRESSED_RGB_S3TC_DXT1_EXT
 static constexpr GLenum kDxt5 = 0x83F3;  // GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
 static constexpr GLenum kRgtc1 = 0x8DBB; // GL_COMPRESSED_RED_RGTC1 (OpenGL 3.0)
@@ -170,6 +182,7 @@ void VideoConverter::release()
 // ---------------------------------------------------------------------------
 void VideoTexture::createPbo(VideoDecoder &dec)
 {
+    if (!m_pboSize) return;
     auto f = gl();
     int id = -1;
     for (size_t i = 0; i < m_pbos.size(); ++i)
@@ -194,7 +207,7 @@ void VideoTexture::createPbo(VideoDecoder &dec)
         return;
     }
     b.mapped = true;
-    ++m_live;
+    if (m_live++ == 0) ++s_pboStreams;
     dec.addStaging(id, static_cast<uint8_t *>(ptr), m_pboSize);
 }
 
@@ -210,7 +223,7 @@ void VideoTexture::destroyPbo(int id)
     }
     f->glDeleteBuffers(1, &b.buffer);
     b = Pbo{};
-    --m_live;
+    if (--m_live == 0) --s_pboStreams;
 }
 
 void VideoTexture::feed(VideoDecoder &dec)
@@ -221,7 +234,8 @@ void VideoTexture::feed(VideoDecoder &dec)
         m_pboSize = want;
     }
     if (!want) return;
-    const int count = dec.stagingCount();
+    // Its share: fewer when other layers come (the extra ones go as they come back from an upload)
+    const int count = m_pboAllowed = fairPboCount(want, dec.stagingCount());
     for (int guard = 0; m_live < count && guard < count; ++guard) {
         const int before = m_live;
         createPbo(dec);
@@ -391,7 +405,7 @@ void VideoTexture::upload(VideoFrame &fr, VideoDecoder &dec, const VideoConverte
         }
         // Back to the decoder, mapped again on new storage (orphaned: the GPU keeps the old one until its copy is
         // done, so mapping does not wait for it)
-        if (b.size == m_pboSize && m_pboSize >= L.totalBytes) {
+        if (b.size == m_pboSize && m_pboSize >= L.totalBytes && m_live <= m_pboAllowed) {
             f->glBufferData(GL_PIXEL_UNPACK_BUFFER, GLsizeiptr(b.size), nullptr, GL_STREAM_DRAW);
             void *ptr = f->glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, GLsizeiptr(b.size),
                                             GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
@@ -404,7 +418,7 @@ void VideoTexture::upload(VideoFrame &fr, VideoDecoder &dec, const VideoConverte
             }
         } else {
             f->glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-            destroyPbo(id); // a size no longer used
+            destroyPbo(id); // a size no longer used, or more than its share
         }
         fr.staging = -1;
     } else if (fr.av) {

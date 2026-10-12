@@ -45,6 +45,12 @@ add_library(pinol_engine STATIC
   src/engine/IsfLibrary.cpp
   src/engine/Mapping.cpp
   src/engine/VideoDecoder.cpp
+  src/engine/VideoDecoderHap.cpp
+  src/engine/VideoDecoderDelivery.cpp
+  src/engine/VideoDecoderLayout.cpp
+  src/engine/VideoDecoderDemux.cpp
+  src/engine/VideoDecoderSeek.cpp
+  src/engine/VideoDecoderMetrics.cpp
   src/engine/VideoTexture.cpp
   src/engine/Hap.cpp
   src/engine/Snappy.cpp

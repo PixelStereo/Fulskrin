@@ -1,5 +1,6 @@
 #include "VideoDecoder.h"
 #include "Hap.h"
+#include "VideoDecoderInternal.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -17,8 +18,45 @@ extern "C" {
 #include <set>
 
 static constexpr size_t kMaxQueue = 6;
+static constexpr size_t kMinQueue = 2; // frames a stream keeps ahead whatever the memory used by the others
 static constexpr size_t kStagingBudget = size_t(128) << 20; // upload buffers of one stream, at most
 static constexpr size_t kBytePool = 8;
+
+// Decoded frames kept in memory, across every decoder: a soft limit (see VideoDecoderInternal.h)
+static std::atomic<size_t> s_decodedLimit{size_t(512) << 20};
+static std::atomic<size_t> s_decodedBytes{0};
+
+void decodedBudget::add(size_t bytes)
+{
+    if (bytes) s_decodedBytes.fetch_add(bytes, std::memory_order_relaxed);
+}
+void decodedBudget::remove(size_t bytes)
+{
+    if (bytes) s_decodedBytes.fetch_sub(bytes, std::memory_order_relaxed);
+}
+bool decodedBudget::over() { return s_decodedBytes.load(std::memory_order_relaxed) > s_decodedLimit.load(std::memory_order_relaxed); }
+void decodedBudget::setLimit(size_t bytes) { s_decodedLimit = bytes; }
+size_t decodedBudget::used() { return s_decodedBytes.load(std::memory_order_relaxed); }
+
+// Byte buffers kept for reuse, across every decoder
+static constexpr size_t kBytePoolBudget = size_t(64) << 20;
+static std::atomic<size_t> s_bytePoolBytes{0};
+
+bool bytePoolBudget::reserve(size_t bytes)
+{
+    size_t used = s_bytePoolBytes.load(std::memory_order_relaxed);
+    for (;;) {
+        if (bytes > kBytePoolBudget || used > kBytePoolBudget - bytes) return false;
+        if (s_bytePoolBytes.compare_exchange_weak(used, used + bytes, std::memory_order_relaxed)) return true;
+    }
+}
+void bytePoolBudget::release(size_t bytes)
+{
+    if (bytes) s_bytePoolBytes.fetch_sub(bytes, std::memory_order_relaxed);
+}
+
+// Software decoders open: the machine's cores are shared among them (FFmpeg's threads, per decoder)
+static std::atomic<int> s_softwareDecoders{0};
 
 static std::atomic<bool> s_hardware{true}, s_s3tc{true}, s_bptc{false}, s_zeroCopy{false};
 
@@ -57,11 +95,12 @@ void VideoDecoder::setGpuFormats(bool s3tc, bool bptc)
 VideoFrame::~VideoFrame() { releaseAv(); }
 
 VideoFrame::VideoFrame(VideoFrame &&o) noexcept
-    : pts(o.pts), layout(std::move(o.layout)), staging(o.staging), bytes(std::move(o.bytes)), av(o.av)
+    : pts(o.pts), layout(std::move(o.layout)), staging(o.staging), bytes(std::move(o.bytes)), av(o.av), budgetBytes(o.budgetBytes)
 {
     o.staging = -1;
     o.av = nullptr;
     o.bytes = {};
+    o.budgetBytes = 0;
 }
 
 VideoFrame &VideoFrame::operator=(VideoFrame &&o) noexcept
@@ -73,9 +112,11 @@ VideoFrame &VideoFrame::operator=(VideoFrame &&o) noexcept
         staging = o.staging;
         bytes = std::move(o.bytes);
         av = o.av;
+        budgetBytes = o.budgetBytes;
         o.staging = -1;
         o.av = nullptr;
         o.bytes = {};
+        o.budgetBytes = 0;
     }
     return *this;
 }
@@ -83,6 +124,8 @@ VideoFrame &VideoFrame::operator=(VideoFrame &&o) noexcept
 void VideoFrame::releaseAv()
 {
     if (av) av_frame_free(&av);
+    decodedBudget::remove(budgetBytes);
+    budgetBytes = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +242,17 @@ bool VideoDecoder::open(const QString &path, QString *err)
         avcodec_parameters_to_context(m_codec, par);
         m_codec->pkt_timebase = st->time_base;
         const bool hw = s_hardware && setupHardware(dec);
-        m_codec->thread_count = hw ? 4 : 0; // 0: as many as the machine has
+        // Hardware: a few threads feed it. Software: the first decoder takes every core (FFmpeg's choice, a 4K
+        // stream needs them); the next ones share them, so that many layers do not each start a machine-sized team
+        // of threads (they would multiply with the layers)
+        if (hw) {
+            m_codec->thread_count = 4;
+        } else {
+            const int others = s_softwareDecoders.fetch_add(1);
+            m_countedSoftware = true;
+            const int cores = int(std::max(2u, std::thread::hardware_concurrency()));
+            m_codec->thread_count = others == 0 ? 0 : std::max(2, cores / (others + 1));
+        }
         m_codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
         r = avcodec_open2(m_codec, dec, nullptr);
         if (r < 0) {
@@ -284,7 +337,14 @@ void VideoDecoder::close()
     // Upload buffers belong to the render thread: they are only forgotten here
     m_queue.clear();
     m_backStack.clear();
+    for (size_t reserved : m_bytePoolBudgetBytes) {
+        bytePoolBudget::release(reserved);
+        decodedBudget::remove(reserved);
+    }
+    if (m_countedSoftware) s_softwareDecoders.fetch_sub(1);
+    m_countedSoftware = false;
     m_bytePool.clear();
+    m_bytePoolBudgetBytes.clear();
     m_freeStaging.clear();
     m_stagingById.clear();
     m_stagingSize = 0;
@@ -319,37 +379,29 @@ void VideoDecoder::setTimeline(const Timeline &t)
     m_pendingTimeline.duration = m_duration;
 }
 
-void VideoDecoder::seek(double c)
-{
-    {
-        std::lock_guard<std::mutex> lk(m_mutex);
-        ++m_generation;
-        m_seekTarget = std::max(0.0, c);
-        m_seekPending = true;
-        m_needFirst = true;
-        m_eof = false;
-        for (VideoFrame &f : m_queue) recycleLocked(std::move(f));
-        m_queue.clear();
-    }
-    m_cv.notify_all();
-}
-
 // ---------------------------------------------------------------------------
 // Frames: delivery, recycling, upload buffers
 // ---------------------------------------------------------------------------
 bool VideoDecoder::fetch(double t, VideoFrame &out)
 {
     std::lock_guard<std::mutex> lk(m_mutex);
-    if (m_queue.empty()) return false;
+    if (m_queue.empty()) {
+        ++m_metricMisses;
+        return false;
+    }
     int pick = -1;
     for (size_t i = 0; i < m_queue.size(); ++i) {
         if (m_queue[i].pts <= t + 1e-4) pick = int(i);
         else break;
     }
     if (pick < 0) {
-        if (!m_needFirst) return false;
+        if (!m_needFirst) {
+            ++m_metricMisses;
+            return false;
+        }
         pick = 0;
     }
+    if (pick > 0) m_metricSkipped.fetch_add(uint64_t(pick), std::memory_order_relaxed);
     for (int i = 0; i < pick; ++i) {
         recycleLocked(std::move(m_queue.front()));
         m_queue.pop_front();
@@ -358,6 +410,13 @@ bool VideoDecoder::fetch(double t, VideoFrame &out)
     out = std::move(m_queue.front());
     m_queue.pop_front();
     m_needFirst = false;
+    ++m_metricFetched;
+    const double latenessMs = std::max(0.0, t - out.pts) * 1000.0;
+    const uint64_t latenessNs = uint64_t(latenessMs * 1000000.0);
+    m_metricLastLateNs.store(latenessNs, std::memory_order_relaxed);
+    uint64_t previous = m_metricMaxLateNs.load(std::memory_order_relaxed);
+    while (previous < latenessNs && !m_metricMaxLateNs.compare_exchange_weak(previous, latenessNs, std::memory_order_relaxed)) {}
+    if (m_fps > 0 && latenessMs > 1500.0 / m_fps) ++m_metricLate;
     m_cv.notify_all();
     return true;
 }
@@ -381,10 +440,31 @@ void VideoDecoder::recycleLocked(VideoFrame &&f)
         if (it != m_stagingById.end()) m_freeStaging.push_back(it->second);
         f.staging = -1;
     }
-    if (f.bytes.capacity() && m_bytePool.size() < kBytePool) m_bytePool.push_back(std::move(f.bytes));
-    f.bytes = {};
+    // Kept for reuse when its whole capacity is counted (its count goes to the pool with it)
+    const size_t pooledBytes = f.budgetBytes;
+    if (f.bytes.capacity() && f.budgetBytes >= f.bytes.capacity() && m_bytePool.size() < kBytePool
+        && bytePoolBudget::reserve(pooledBytes)) {
+        m_bytePool.push_back(std::move(f.bytes));
+        m_bytePoolBudgetBytes.push_back(pooledBytes);
+        f.budgetBytes = 0; // the pool now owns the reservation with the allocation
+    } else {
+        f.bytes = {};
+    }
     f.releaseAv();
     f.layout.reset();
+}
+
+// A byte buffer kept for reuse, if any, into f (its count goes with it: a frame's again, no longer the pool's)
+void VideoDecoder::takePooledBytes(VideoFrame &f)
+{
+    std::lock_guard<std::mutex> lk(m_mutex);
+    if (m_bytePool.empty()) return;
+    f.bytes = std::move(m_bytePool.back());
+    decodedBudget::remove(f.budgetBytes);
+    f.budgetBytes = m_bytePoolBudgetBytes.back();
+    bytePoolBudget::release(f.budgetBytes);
+    m_bytePool.pop_back();
+    m_bytePoolBudgetBytes.pop_back();
 }
 
 int VideoDecoder::stagingCount() const
@@ -430,35 +510,6 @@ bool VideoDecoder::takeStaging(size_t size, int *id, uint8_t **ptr)
 // ---------------------------------------------------------------------------
 // Layouts: how the GPU reads a frame
 // ---------------------------------------------------------------------------
-static void yuvMatrix(AVColorSpace space, int height, float m[9], QString *name)
-{
-    double kr, kb;
-    switch (space) {
-    case AVCOL_SPC_BT709: kr = 0.2126, kb = 0.0722, *name = QStringLiteral("BT.709"); break;
-    case AVCOL_SPC_BT470BG:
-    case AVCOL_SPC_SMPTE170M: kr = 0.299, kb = 0.114, *name = QStringLiteral("BT.601"); break;
-    case AVCOL_SPC_FCC: kr = 0.30, kb = 0.11, *name = QStringLiteral("FCC"); break;
-    case AVCOL_SPC_SMPTE240M: kr = 0.212, kb = 0.087, *name = QStringLiteral("SMPTE 240M"); break;
-    case AVCOL_SPC_BT2020_NCL:
-    case AVCOL_SPC_BT2020_CL: kr = 0.2627, kb = 0.0593, *name = QStringLiteral("BT.2020"); break;
-    default: // unspecified: HD and above are BT.709, smaller pictures BT.601
-        if (height >= 720) kr = 0.2126, kb = 0.0722, *name = QStringLiteral("BT.709");
-        else kr = 0.299, kb = 0.114, *name = QStringLiteral("BT.601");
-        break;
-    }
-    const double kg = 1.0 - kr - kb;
-    const double r[9] = {1, 0, 2 * (1 - kr), 1, -2 * kb * (1 - kb) / kg, -2 * kr * (1 - kr) / kg, 1, 2 * (1 - kb), 0};
-    for (int i = 0; i < 9; ++i) m[i] = float(r[i]);
-}
-
-std::shared_ptr<const VideoLayout> VideoDecoder::layoutFor(const AVFrame *fr)
-{
-    const LayoutKey key{fr->format, fr->width, fr->height, int(fr->colorspace), int(fr->color_range), int(fr->chroma_location)};
-    const auto found = m_layouts.find(key);
-    if (found != m_layouts.end()) return found->second;
-    return m_layouts[key] = layoutOf(fr);
-}
-
 // A VideoToolbox frame sampled in place: its planes as the copy path describes them (from the surface's format),
 // when each is one or two channels of 8 or 16 bits (NV12, P010, P210, P410, P216, P416…). Others are copied.
 std::shared_ptr<const VideoLayout> VideoDecoder::surfaceLayout(const AVFrame *hw)
@@ -498,116 +549,6 @@ std::shared_ptr<const VideoLayout> VideoDecoder::surfaceLayout(const AVFrame *hw
     (void)hw;
     return nullptr;
 #endif
-}
-
-std::shared_ptr<const VideoLayout> VideoDecoder::layoutOf(const AVFrame *fr)
-{
-    std::shared_ptr<VideoLayout> L;
-
-    const AVPixelFormat fmt = AVPixelFormat(fr->format);
-    const AVPixFmtDescriptor *d = av_pix_fmt_desc_get(fmt);
-    const uint64_t refused = AV_PIX_FMT_FLAG_BE | AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_BITSTREAM | AV_PIX_FMT_FLAG_HWACCEL
-                             | AV_PIX_FMT_FLAG_BAYER | AV_PIX_FMT_FLAG_FLOAT;
-    if (!d || (d->flags & refused) || fmt == AV_PIX_FMT_XYZ12LE || fmt == AV_PIX_FMT_XYZ12BE || d->nb_components < 1
-        || fr->width <= 0 || fr->height <= 0)
-        return nullptr;
-    const bool rgb = d->flags & AV_PIX_FMT_FLAG_RGB;
-    const bool alpha = d->flags & AV_PIX_FMT_FLAG_ALPHA;
-    const int nc = d->nb_components;
-    const bool gray = !rgb && nc <= 2;
-
-    struct PlaneInfo {
-        bool used = false, chroma = false;
-        int step = 0, bytes = 0;
-    } pi[4];
-    int planes = 0;
-    for (int c = 0; c < nc; ++c) {
-        const AVComponentDescriptor &cd = d->comp[c];
-        const int bits = cd.depth + cd.shift;
-        if (cd.plane < 0 || cd.plane > 3 || cd.depth <= 0 || bits > 16) return nullptr;
-        const int bytes = bits > 8 ? 2 : 1;
-        PlaneInfo &p = pi[cd.plane];
-        if (p.used && (p.step != cd.step || p.bytes != bytes)) return nullptr; // packed 4:2:2 and the like
-        if (cd.step <= 0 || cd.step % bytes || cd.offset % bytes || cd.step / bytes > 4) return nullptr;
-        for (int o = 0; o < c; ++o) // two components in the same bits (RGB565…)
-            if (d->comp[o].plane == cd.plane && d->comp[o].offset == cd.offset) return nullptr;
-        p.used = true;
-        p.step = cd.step;
-        p.bytes = bytes;
-        if (!rgb && !gray && (c == 1 || c == 2)) p.chroma = true;
-        planes = std::max(planes, cd.plane + 1);
-    }
-
-    L = std::make_shared<VideoLayout>();
-    L->width = fr->width;
-    L->height = fr->height;
-    L->planeCount = planes;
-    L->alpha = alpha;
-    L->mode = rgb ? VideoLayout::Mode::Rgb : gray ? VideoLayout::Mode::Gray : VideoLayout::Mode::Yuv;
-    size_t offset = 0;
-    for (int p = 0; p < planes; ++p) {
-        if (!pi[p].used) return nullptr;
-        VideoLayout::Plane &pl = L->plane[p];
-        pl.width = pi[p].chroma ? AV_CEIL_RSHIFT(fr->width, d->log2_chroma_w) : fr->width;
-        pl.height = pi[p].chroma ? AV_CEIL_RSHIFT(fr->height, d->log2_chroma_h) : fr->height;
-        pl.channels = pi[p].step / pi[p].bytes;
-        pl.texels = pi[p].bytes == 2 ? VideoLayout::Texels::U16 : VideoLayout::Texels::U8;
-        pl.rowBytes = size_t(pl.width) * size_t(pi[p].step);
-        pl.offset = offset;
-        pl.size = pl.rowBytes * size_t(pl.height);
-        offset += (pl.size + 63) & ~size_t(63);
-    }
-    L->totalBytes = offset;
-
-    // Output channels: Y U V A / R G B A / grey and A
-    auto use = [&](int out, int comp) {
-        const AVComponentDescriptor &cd = d->comp[comp];
-        const int bytes = pi[cd.plane].bytes;
-        L->srcPlane[out] = cd.plane;
-        L->srcChannel[out] = cd.offset / bytes;
-        const double full = bytes == 2 ? 65535.0 : 255.0;
-        L->scale[out] = float(full / double(((1 << cd.depth) - 1) << cd.shift));
-    };
-    if (gray) {
-        use(0, 0);
-        if (alpha && nc == 2) use(3, 1);
-    } else {
-        for (int c = 0; c < 3; ++c) use(c, c);
-        if (alpha && nc >= 4) use(3, 3);
-    }
-
-    QString space;
-    if (L->mode == VideoLayout::Mode::Yuv) {
-        yuvMatrix(fr->colorspace, fr->height, L->matrix, &space);
-        const int depth = d->comp[0].depth;
-        if (depth < 8) return nullptr;
-        const double max = double((1 << depth) - 1), k = double(1 << (depth - 8));
-        const bool full = fr->color_range == AVCOL_RANGE_JPEG || fmt == AV_PIX_FMT_YUVJ420P || fmt == AV_PIX_FMT_YUVJ422P
-                          || fmt == AV_PIX_FMT_YUVJ444P || fmt == AV_PIX_FMT_YUVJ440P || fmt == AV_PIX_FMT_YUVJ411P;
-        L->cOffset = float(128.0 * k / max);
-        if (full) {
-            L->yOffset = 0;
-            L->yScale = 1;
-            L->cScale = 1;
-        } else {
-            L->yOffset = float(16.0 * k / max);
-            L->yScale = float(max / (219.0 * k));
-            L->cScale = float(max / (224.0 * k));
-        }
-        // Chroma siting: MPEG-2 and later put it on the left (co-sited) unless the stream says otherwise
-        const AVChromaLocation loc = fr->chroma_location;
-        const double sx = d->log2_chroma_w ? (double(1 << d->log2_chroma_w) - 1) / double(2 << d->log2_chroma_w) : 0;
-        const double sy = d->log2_chroma_h ? (double(1 << d->log2_chroma_h) - 1) / double(2 << d->log2_chroma_h) : 0;
-        const bool left = loc == AVCHROMA_LOC_LEFT || loc == AVCHROMA_LOC_TOPLEFT || loc == AVCHROMA_LOC_BOTTOMLEFT
-                          || loc == AVCHROMA_LOC_UNSPECIFIED;
-        L->chromaShift[0] = left ? float(sx) : 0.0f;
-        L->chromaShift[1] = loc == AVCHROMA_LOC_TOPLEFT || loc == AVCHROMA_LOC_TOP           ? float(sy)
-                            : loc == AVCHROMA_LOC_BOTTOMLEFT || loc == AVCHROMA_LOC_BOTTOM ? -float(sy)
-                                                                                           : 0.0f;
-        if (full) space += QStringLiteral(" full range");
-    }
-    L->description = QString::fromUtf8(d->name) + (space.isEmpty() ? QString() : QStringLiteral(" · ") + space);
-    return L;
 }
 
 std::shared_ptr<const VideoLayout> VideoDecoder::hapLayout(int count, int f0, int f1)
@@ -669,189 +610,8 @@ std::shared_ptr<const VideoLayout> VideoDecoder::hapLayout(int count, int f0, in
 // ---------------------------------------------------------------------------
 // Decoding
 // ---------------------------------------------------------------------------
-void VideoDecoder::doSeek(double t)
-{
-    int64_t ts = int64_t((t + m_startTime) / m_timeBase);
-    if (av_seek_frame(m_fmt, m_stream, ts, AVSEEK_FLAG_BACKWARD) < 0)
-        av_seek_frame(m_fmt, -1, int64_t(t * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD);
-    if (m_codec) avcodec_flush_buffers(m_codec);
-    m_draining = false;
-}
-
 // Packed planes, at the layout's offsets
-static void packPlanes(const VideoLayout &L, const AVFrame *src, uint8_t *dst)
-{
-    for (int p = 0; p < L.planeCount; ++p) {
-        const VideoLayout::Plane &pl = L.plane[p];
-        uint8_t *o = dst + pl.offset;
-        if (src->linesize[p] == int(pl.rowBytes)) {
-            std::memcpy(o, src->data[p], pl.size);
-            continue;
-        }
-        for (int y = 0; y < pl.height; ++y)
-            std::memcpy(o + size_t(y) * pl.rowBytes, src->data[p] + ptrdiff_t(y) * src->linesize[p], pl.rowBytes);
-    }
-}
-
 // mapped: src is the hardware's memory seen in place (m_frame being the hardware frame)
-bool VideoDecoder::deliver(AVFrame *src, VideoFrame &f, bool mapped)
-{
-    if (auto L = layoutFor(src)) {
-        m_stagingSize = L->totalBytes;
-        f.layout = L;
-        int id;
-        uint8_t *ptr;
-        if (takeStaging(L->totalBytes, &id, &ptr)) {
-            packPlanes(*L, src, ptr);
-            f.staging = id;
-            return true;
-        }
-        // No free upload buffer: the frame is kept as it is (copied out of the hardware's memory)
-        AVFrame *keep = av_frame_alloc();
-        if (mapped) {
-            if (av_hwframe_transfer_data(keep, m_frame, 0) < 0) {
-                av_frame_free(&keep);
-                f.layout.reset();
-                return false;
-            }
-            av_frame_copy_props(keep, src);
-        } else {
-            av_frame_move_ref(keep, src);
-        }
-        f.av = keep;
-        return true;
-    }
-
-    // A format the GPU path does not take: RGBA on the CPU
-    const int w = src->width, h = src->height;
-    const AVPixFmtDescriptor *d = av_pix_fmt_desc_get(AVPixelFormat(src->format));
-    const bool alpha = d && (d->flags & AV_PIX_FMT_FLAG_ALPHA);
-    if (!m_rgbaLayout || m_rgbaLayout->width != w || m_rgbaLayout->height != h || m_rgbaLayout->alpha != alpha) {
-        auto L = std::make_shared<VideoLayout>();
-        L->mode = VideoLayout::Mode::Rgb;
-        L->width = w;
-        L->height = h;
-        L->planeCount = 1;
-        L->plane[0].width = w;
-        L->plane[0].height = h;
-        L->plane[0].channels = 4;
-        L->plane[0].rowBytes = size_t(w) * 4;
-        L->plane[0].size = L->plane[0].rowBytes * size_t(h);
-        L->totalBytes = L->plane[0].size;
-        for (int c = 0; c < 4; ++c) {
-            L->srcPlane[c] = 0;
-            L->srcChannel[c] = c;
-        }
-        L->alpha = alpha;
-        L->description = QString::fromUtf8(d ? d->name : "?") + QStringLiteral(" · converted on the CPU");
-        m_rgbaLayout = L;
-    }
-    m_stagingSize = m_rgbaLayout->totalBytes;
-    m_sws = sws_getCachedContext(m_sws, w, h, AVPixelFormat(src->format), w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr,
-                                 nullptr, nullptr);
-    if (!m_sws) return false;
-    {
-        // Same matrix as the GPU path would take
-        float unused[9];
-        QString name;
-        yuvMatrix(src->colorspace, h, unused, &name);
-        const int cs = name == QLatin1String("BT.709")      ? SWS_CS_ITU709
-                       : name == QLatin1String("BT.2020")   ? SWS_CS_BT2020
-                       : name == QLatin1String("FCC")       ? SWS_CS_FCC
-                       : name == QLatin1String("SMPTE 240M") ? SWS_CS_SMPTE240M
-                                                            : SWS_CS_ITU601;
-        int *inv, *tbl, srcRange, dstRange, bri, con, sat;
-        if (sws_getColorspaceDetails(m_sws, &inv, &srcRange, &tbl, &dstRange, &bri, &con, &sat) >= 0)
-            sws_setColorspaceDetails(m_sws, sws_getCoefficients(cs), src->color_range == AVCOL_RANGE_JPEG ? 1 : srcRange,
-                                     tbl, dstRange, bri, con, sat);
-    }
-    f.layout = m_rgbaLayout;
-    int id;
-    uint8_t *ptr = nullptr;
-    if (takeStaging(m_rgbaLayout->totalBytes, &id, &ptr)) {
-        f.staging = id;
-    } else {
-        {
-            std::lock_guard<std::mutex> lk(m_mutex);
-            if (!m_bytePool.empty()) {
-                f.bytes = std::move(m_bytePool.back());
-                m_bytePool.pop_back();
-            }
-        }
-        f.bytes.resize(m_rgbaLayout->totalBytes);
-        ptr = f.bytes.data();
-    }
-    uint8_t *dst[4] = {ptr, nullptr, nullptr, nullptr};
-    int dstStride[4] = {w * 4, 0, 0, 0};
-    sws_scale(m_sws, src->data, src->linesize, 0, h, dst, dstStride);
-    return true;
-}
-
-int VideoDecoder::decodeHap(VideoFrame &f, double skipBefore)
-{
-    for (;;) {
-        const int r = av_read_frame(m_fmt, m_packet);
-        if (r < 0) return 0;
-        if (m_packet->stream_index != m_stream) {
-            av_packet_unref(m_packet);
-            continue;
-        }
-        int64_t ts = m_packet->pts != AV_NOPTS_VALUE ? m_packet->pts : m_packet->dts;
-        const double local = ts != AV_NOPTS_VALUE ? ts * m_timeBase - m_startTime : m_lastPts + 1.0 / m_fps;
-        m_lastPts = local;
-        f.pts = local;
-        if (local < skipBefore - 0.25 / m_fps) { // not needed: not even decompressed
-            av_packet_unref(m_packet);
-            return 2;
-        }
-        hap::Frame hf;
-        QString err;
-        bool ok = hap::parse(m_packet->data, size_t(m_packet->size), &hf, &err);
-        std::shared_ptr<const VideoLayout> L;
-        if (ok) L = hapLayout(hf.count, int(hf.tex[0].format), hf.count > 1 ? int(hf.tex[1].format) : 0);
-        if (ok && L)
-            for (int i = 0; i < hf.count; ++i)
-                if (hf.tex[i].outSize != hap::textureBytes(hf.tex[i].format, m_width, m_height)) ok = false;
-        if (!ok || !L) {
-            av_packet_unref(m_packet);
-            return 2; // a damaged frame: skipped
-        }
-        m_stagingSize = L->totalBytes;
-        f.layout = L;
-        int id;
-        uint8_t *dst = nullptr;
-        if (takeStaging(L->totalBytes, &id, &dst)) {
-            f.staging = id;
-        } else {
-            {
-                std::lock_guard<std::mutex> lk(m_mutex);
-                if (!m_bytePool.empty()) {
-                    f.bytes = std::move(m_bytePool.back());
-                    m_bytePool.pop_back();
-                }
-            }
-            f.bytes.resize(L->totalBytes);
-            dst = f.bytes.data();
-        }
-        for (int i = 0; i < hf.count && ok; ++i) {
-            const VideoLayout::Plane &p = L->plane[i];
-            if (p.texels != VideoLayout::Texels::U8) {
-                ok = hap::decompress(hf.tex[i], dst + p.offset, p.size);
-            } else { // the GPU does not sample this format: its blocks decoded here
-                m_hapScratch.resize(hf.tex[i].outSize);
-                ok = hap::decompress(hf.tex[i], m_hapScratch.data(), m_hapScratch.size());
-                if (ok) hap::decodeBlocks(hf.tex[i].format, m_hapScratch.data(), m_width, m_height, dst + p.offset, p.rowBytes);
-            }
-        }
-        av_packet_unref(m_packet);
-        if (!ok) {
-            recycle(std::move(f));
-            return 2;
-        }
-        return 1;
-    }
-}
-
 int VideoDecoder::decodeNext(VideoFrame &f, double skipBefore)
 {
     if (m_hapTag) return decodeHap(f, skipBefore);
@@ -911,13 +671,13 @@ int VideoDecoder::decodeNext(VideoFrame &f, double skipBefore)
         if (r != AVERROR(EAGAIN)) return -1;
         if (m_draining) return 0;
 
-        r = av_read_frame(m_fmt, m_packet);
+        r = readVideoPacket();
         if (r < 0) {
             avcodec_send_packet(m_codec, nullptr); // flush
             m_draining = true;
             continue;
         }
-        if (m_packet->stream_index == m_stream) avcodec_send_packet(m_codec, m_packet);
+        avcodec_send_packet(m_codec, m_packet);
         av_packet_unref(m_packet);
     }
 }
@@ -960,9 +720,19 @@ void VideoDecoder::produceBackwardWindow()
     std::vector<VideoFrame> got;
     for (;;) {
         VideoFrame f;
-        const int r = decodeNext(f, a);
+        int r = 0;
+        uint64_t decodeNs = 0;
+        {
+            const auto decodeStarted = std::chrono::steady_clock::now();
+            r = decodeNext(f, a);
+            decodeNs = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - decodeStarted).count());
+        }
+        if (r == 1) recordDecodeTime(decodeNs);
         if (r == 2) continue;
         if (r != 1) break;
+        ++m_metricDecoded;
+        accountFrame(f);
         const double local = f.pts;
         if (local >= m_backEnd - 0.25 * dt) {
             recycle(std::move(f));
@@ -986,7 +756,19 @@ void VideoDecoder::run()
     for (;;) {
         {
             std::unique_lock<std::mutex> lk(m_mutex);
-            m_cv.wait(lk, [&] { return m_quit || m_seekPending || (!m_eof && m_queue.size() < kMaxQueue); });
+            // Fewer frames ahead while the decoded frames of every stream take more memory than the budget: each
+            // stream keeps its minimum (never dropped, never starved), the others wait for theirs to be shown
+            bool held = false;
+            m_cv.wait(lk, [&] {
+                if (m_quit || m_seekPending) return true;
+                if (m_eof || m_queue.size() >= kMaxQueue) return false;
+                if (m_queue.size() >= kMinQueue && decodedBudget::over()) {
+                    if (!held) ++m_metricBudgetHolds;
+                    held = true;
+                    return false;
+                }
+                return true;
+            });
             if (m_quit) return;
             if (m_seekPending) {
                 m_seekPending = false;
@@ -1005,7 +787,10 @@ void VideoDecoder::run()
                 m_backStack.pop_back();
                 std::lock_guard<std::mutex> lk(m_mutex);
                 if (gen != m_generation) recycleLocked(std::move(f));
-                else m_queue.push_back(std::move(f));
+                else {
+                    m_queue.push_back(std::move(f));
+                    recordQueueDepth(m_queue.size());
+                }
                 continue;
             }
             if (!m_legDone) produceBackwardWindow();
@@ -1014,8 +799,18 @@ void VideoDecoder::run()
         }
 
         VideoFrame f;
-        int r = decodeNext(f);
+        int r = 0;
+        uint64_t decodeNs = 0;
+        {
+            const auto decodeStarted = std::chrono::steady_clock::now();
+            r = decodeNext(f);
+            decodeNs = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - decodeStarted).count());
+        }
+        if (r == 1) recordDecodeTime(decodeNs);
         if (r == 1) {
+            ++m_metricDecoded;
+            accountFrame(f);
             const double local = f.pts;
             if (local < m_discardBefore) {
                 recycle(std::move(f));
@@ -1029,12 +824,27 @@ void VideoDecoder::run()
             f.pts = m_leg.clockStart + local - m_leg.from;
             std::lock_guard<std::mutex> lk(m_mutex);
             if (gen != m_generation) recycleLocked(std::move(f));
-            else m_queue.push_back(std::move(f));
+            else {
+                m_queue.push_back(std::move(f));
+                recordQueueDepth(m_queue.size());
+            }
             continue;
         }
         if (r == 2) continue;
         finishLeg(); // end of file (or error)
     }
+}
+
+// A decoded frame kept in memory, counted in the process-wide budget. Not counted: one in an upload buffer
+// (the upload buffers have their own), one the GPU samples where it was decoded (a hardware surface)
+void VideoDecoder::accountFrame(VideoFrame &frame)
+{
+    if (frame.staging >= 0 || !frame.layout) return;
+    if (frame.av && frame.av->hw_frames_ctx) return;
+    const size_t wanted = std::max(frame.layout->totalBytes, frame.bytes.capacity());
+    if (wanted > frame.budgetBytes) decodedBudget::add(wanted - frame.budgetBytes);
+    else decodedBudget::remove(frame.budgetBytes - wanted);
+    frame.budgetBytes = wanted;
 }
 
 // ---------------------------------------------------------------------------

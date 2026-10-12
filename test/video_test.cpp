@@ -5,6 +5,7 @@
 #include "Gl.h"
 #include "Hap.h"
 #include "Snappy.h"
+#include "VideoDecoderInternal.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -23,6 +24,7 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <memory>
 
 static int g_failures = 0;
 #define VCHECK(cond)                                                                                    \
@@ -744,6 +746,43 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         VCHECK(e.videoFramesShown(i) == hidden + 1);
         Engine::Lock lk(&e.mutex());
         VCHECK(e.layer(i)->finalTex != 0);
+    }
+    // Decoded frames over the memory budget: every stream keeps its minimum ahead and none is dropped; once closed,
+    // nothing is left counted
+    e.newProject();
+    {
+        VCHECK(decodedBudget::used() == 0); // the layers' videos closed: none left counted
+        decodedBudget::setLimit(1);
+        std::vector<std::unique_ptr<VideoDecoder>> decs;
+        for (int k = 0; k < 3; ++k) {
+            auto d = std::make_unique<VideoDecoder>();
+            QString err;
+            VCHECK(d->open(root + "/media/av.mp4", &err));
+            Timeline t;
+            t.mode = Timeline::Loop;
+            d->setTimeline(t);
+            d->seek(0);
+            decs.push_back(std::move(d));
+        }
+        VideoFrame out[3];
+        int got[3] = {0, 0, 0};
+        QElapsedTimer tm;
+        tm.start();
+        for (double t = 0; tm.elapsed() < 8000 && (got[0] < 12 || got[1] < 12 || got[2] < 12); t += 1.0 / 25) {
+            for (int k = 0; k < 3; ++k)
+                while (!decs[size_t(k)]->fetch(t, out[k]) && tm.elapsed() < 8000) QThread::msleep(1);
+            for (int &g : got) ++g;
+        }
+        VCHECK(got[0] >= 12 && got[1] >= 12 && got[2] >= 12);
+        VCHECK(decodedBudget::used() > 0);
+        for (const auto &d : decs) {
+            const VideoDecoder::Metrics m = d->metrics();
+            VCHECK(m.budgetHolds > 0 && m.queueHighWatermark <= 2 && m.fetchedFrames >= 12);
+        }
+        for (VideoFrame &f : out) f = VideoFrame();
+        decs.clear();
+        VCHECK(decodedBudget::used() == 0);
+        decodedBudget::setLimit(size_t(512) << 20);
     }
     e.newProject();
     return g_failures;

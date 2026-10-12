@@ -68,6 +68,7 @@ struct VideoFrame {
     int staging = -1;
     std::vector<uint8_t> bytes;
     AVFrame *av = nullptr;
+    size_t budgetBytes = 0; // reservation for decoded CPU frame memory, transferred on move
 
     VideoFrame() = default;
     ~VideoFrame();
