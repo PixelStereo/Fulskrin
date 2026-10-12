@@ -421,7 +421,9 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     }
     const QJsonObject root = doc.object();
     // A Pinol project, which this version reads, before anything of the current one is let go
-    if (root.value("app").toString() != QLatin1String("Pinol") || !root.value("layers").isArray()) {
+    const QString app = root.value("app").toString();
+    // Accept the former application marker so existing projects remain editable after the rename.
+    if ((app != QLatin1String("Pinol") && app != QLatin1String("Fulskrin")) || !root.value("layers").isArray()) {
         if (err) *err = QStringLiteral("Not a Pinol project: ") + QFileInfo(path).fileName();
         return false;
     }
