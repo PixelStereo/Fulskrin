@@ -1,6 +1,7 @@
 #include "PresetEditor.h"
 #include "Commands.h"
 #include "Engine.h"
+#include "Interactions.h"
 
 #include <QAbstractButton>
 #include <QEvent>
@@ -13,7 +14,7 @@
 #include <cmath>
 
 static PresetEditor *s_instance = nullptr;
-static const QColor kIn(76, 217, 100), kChanged(255, 159, 10);
+static const QColor kIn(76, 217, 100), kChanged(255, 159, 10), kDriven(135, 206, 250);
 
 PresetEditor::PresetEditor(Engine *engine, QUndoStack *undo, QObject *parent)
     : QObject(parent), m_engine(engine), m_undo(undo)
@@ -25,6 +26,9 @@ PresetEditor::PresetEditor(Engine *engine, QUndoStack *undo, QObject *parent)
         if (m_selected && m_engine->indexOfPreset(m_selected) < 0) select(0);
         updateMarks();
     });
+    connect(engine, &Engine::layerAnimsChanged, this, [this](quint64) { updateMarks(); });
+    connect(engine, &Engine::animationsChanged, this, [this] { updateMarks(); });
+    connect(engine, &Engine::interactionsChanged, this, [this] { updateMarks(); });
 }
 
 PresetEditor::~PresetEditor()
@@ -217,11 +221,11 @@ protected:
         QPainter p(this);
         QWidget *win = parentWidget();
         for (const Tracked &t : m_editor->m_tracked) {
-            if (!t.state || !t.widget || !t.widget->isVisible() || t.widget->window() != win) continue;
+            if ((!t.state && !t.driven) || !t.widget || !t.widget->isVisible() || t.widget->window() != win) continue;
             const QPoint at = t.widget->mapTo(win, QPoint(0, 0));
             const QRegion seen = t.widget->visibleRegion().translated(at);
             const QRect line(at.x(), at.y() + t.widget->height() - 2, t.widget->width(), 2);
-            const QColor c = t.state == 2 ? kChanged : kIn;
+            const QColor c = t.state == 2 ? kChanged : t.state == 1 ? kIn : kDriven;
             for (const QRect &r : seen.intersected(line)) p.fillRect(r, c);
         }
     }
@@ -244,8 +248,27 @@ void PresetEditor::updateMarks()
         return false;
     };
     QWidget *window = nullptr;
+    const std::vector<Interaction> interactions = m_engine->interactions();
     for (Tracked &t : m_tracked) {
         t.state = 0;
+        t.driven = false;
+        for (const Animation &animation : m_engine->layerAnims(t.layer)) {
+            for (const AnimTrack &track : animation.tracks) {
+                if (track.enabled && t.paths.contains(track.param)) {
+                    t.driven = true;
+                    break;
+                }
+            }
+            if (t.driven) break;
+        }
+        if (!t.driven) {
+            for (const Interaction &interaction : interactions) {
+                if (interaction.enabled && interaction.layer == t.layer && t.paths.contains(interaction.param)) {
+                    t.driven = true;
+                    break;
+                }
+            }
+        }
         if (m_editing && pi >= 0 && (t.name || !hasName(t)))
             for (const QString &path : t.paths) {
                 const int k = preset.indexOf(t.layer, path);
