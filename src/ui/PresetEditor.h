@@ -54,6 +54,7 @@ private:
         QStringList paths;
         bool name = false; // a label or a switch: its name, the one marked
         int state = 0;     // 0 not in the selected preset, 1 in it, 2 in it with another value now
+        bool driven = false; // an enabled animation track or interaction targets one of these values
     };
     QStringList stored(quint64 layer, const QStringList &paths) const;
     void toggle(const Tracked &t);
