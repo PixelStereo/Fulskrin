@@ -53,10 +53,10 @@ static int decodeOnly(const QStringList &files, double seconds)
     const double s = tm.elapsed() / 1000.0;
     std::printf("Decoding only, %.1f s, %d CPU threads\n", s, QThread::idealThreadCount());
     for (size_t i = 0; i < dec.size(); ++i) {
-        std::printf("  %-34s %-26s %5dx%-5d %6.1f frames/s (file: %.2f)\\n", qPrintable(QFileInfo(files[int(i)]).fileName()),
+        std::printf("  %-34s %-26s %5dx%-5d %6.1f frames/s (file: %.2f)\n", qPrintable(QFileInfo(files[int(i)]).fileName()),
                     qPrintable(dec[i]->codecName()), dec[i]->width(), dec[i]->height(), got[i] / s, dec[i]->fps());
         const VideoDecoder::Metrics m = dec[i]->metrics();
-        std::printf("      decode p95/max %.2f/%.2f ms; decoded %llu; memory-budget drops %llu\\n",
+        std::printf("      decode p95/max %.2f/%.2f ms; decoded %llu; memory-budget drops %llu\n",
                     m.decodeTimeP95Ms, m.decodeTimeMaxMs,
                     static_cast<unsigned long long>(m.decodedFrames),
                     static_cast<unsigned long long>(m.memoryBudgetDrops));
