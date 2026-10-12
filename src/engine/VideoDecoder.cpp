@@ -49,7 +49,7 @@ static bool reserveBytePoolBytes(size_t bytes)
     }
 }
 
-static void releaseBytePoolBytes(size_t bytes)
+void releaseBytePoolBytes(size_t bytes)
 {
     if (bytes) s_globalBytePoolBytes.fetch_sub(bytes, std::memory_order_relaxed);
 }
