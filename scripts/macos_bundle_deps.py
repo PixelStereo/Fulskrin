@@ -176,7 +176,7 @@ def resolve_brew_dependency(dep: str, binary: Path) -> Path | None:
 
 def bundled_framework_dependency(dep: str) -> Path | None:
     """Resolve a framework load command by bundle identity, not by basename or broken relative path."""
-    match = re.search(r"([^/]+\\.framework)/(.*)$", dep)
+    match = re.search(r"([^/]+\.framework)/(.*)$", dep)
     if not match:
         return None
     framework_name, inside = match.groups()
