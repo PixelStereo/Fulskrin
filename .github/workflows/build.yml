@@ -156,52 +156,9 @@ jobs:
 
           "$QT_PREFIX/bin/macdeployqt" "$APP" -verbose=2 -always-overwrite "${LIBPATH_ARGS[@]}"
 
-          # Second pass: resolve rpaths against libraries already copied into the app bundle.
-          # This is needed for transitive dependencies such as libwebp -> libsharpyuv.
-          "$QT_PREFIX/bin/macdeployqt" "$APP" -verbose=2 -always-overwrite \
-            "-libpath=$APP/Contents/Frameworks" "-libpath=$APP/Contents/lib"
-
-
-          # Rewrite Homebrew install IDs and dependency references, including nested framework binaries.
-          FRAMEWORKS="$APP/Contents/Frameworks"
-          while IFS= read -r -d '' binary; do
-            file "$binary" | grep -q "Mach-O" || continue
-
-            own_id="$(otool -D "$binary" 2>/dev/null | sed -n '2p' | sed -E 's/^[[:space:]]+//')"
-            case "$own_id" in
-              /opt/homebrew/*|/usr/local/*)
-                case "$binary" in
-                  "$FRAMEWORKS"/*)
-                    rel="${binary#"$FRAMEWORKS"/}"
-                    install_name_tool -id "@rpath/$rel" "$binary"
-                    ;;
-                esac
-                ;;
-            esac
-
-            while IFS= read -r dep; do
-              dep="$(printf '%s' "$dep" | sed -E 's/^[[:space:]]+//; s/ \(compatibility version.*$//')"
-              case "$dep" in
-                /opt/homebrew/*|/usr/local/*)
-                  # Preserve framework Versions/A paths instead of reducing everything to a basename.
-                  rel="$(printf '%s' "$dep" | sed -E 's#^.*/lib/##')"
-                  target="$FRAMEWORKS/$rel"
-                  if [[ ! -f "$target" ]]; then
-                    matches="$(find "$FRAMEWORKS" -type f -name "$(basename "$dep")" -print)"
-                    count="$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')"
-                    if [[ "$count" == "1" ]]; then
-                      target="$matches"
-                      rel="${target#"$FRAMEWORKS"/}"
-                    else
-                      echo "Homebrew dependency is missing or ambiguous in app bundle: $dep (referenced by $binary)" >&2
-                      exit 1
-                    fi
-                  fi
-                  install_name_tool -change "$dep" "@rpath/$rel" "$binary"
-                  ;;
-              esac
-            done < <(otool -L "$binary" | tail -n +2)
-          done < <(find "$APP/Contents" -type f -print0)
+          # Resolve and bundle every non-system dependency recursively, including @rpath libraries
+          # (e.g. WebP -> SharpYUV). The helper fails closed when a dependency is missing/ambiguous.
+          python3 scripts/macos_bundle_deps.py "$APP"
           # macdeployqt may apply an ad-hoc signature before the dependency fixups above.
           # Re-sign ad-hoc after all install_name_tool changes; Developer ID signing is a later step.
           codesign --force --deep --sign - "$APP"
