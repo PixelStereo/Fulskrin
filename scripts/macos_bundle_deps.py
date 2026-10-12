@@ -234,18 +234,30 @@ def main() -> None:
 
             requested_name = Path(dep[len("@rpath/"):] if dep.startswith("@rpath/") else dep).name
 
-            # macdeployqt may already have bundled the exact requested filename in Contents/Frameworks.
-            # Prefer that copy and rewrite the load command to it. Do not create a second copy under
-            # FulskrinDeps: versioned Homebrew symlinks can have different file hashes while exposing
-            # the same install name, and replacing the bundle's copy can invalidate Qt's ad-hoc signature.
-            existing = FRAMEWORKS / requested_name
-            if existing.is_file() and within_app(existing.resolve()):
-                relative_from_loader = os.path.relpath(existing.resolve(), binary.parent).replace(os.sep, "/")
+            # macdeployqt bundles Qt frameworks in nested directories, not at the
+            # Frameworks root. Find an already-deployed Mach-O by basename before copying
+            # a second copy into FulskrinDeps (which can collide with a framework binary).
+            existing_candidates: dict[str, Path] = {}
+            for candidate in FRAMEWORKS.rglob(requested_name):
+                if not candidate.is_file() or not is_macho(candidate):
+                    continue
+                resolved = candidate.resolve()
+                try:
+                    resolved.relative_to(DEPS_DIR.resolve())
+                    continue
+                except ValueError:
+                    pass
+                if within_app(resolved):
+                    existing_candidates[str(resolved)] = resolved
+
+            if len(existing_candidates) == 1:
+                existing = next(iter(existing_candidates.values()))
+                relative_from_loader = os.path.relpath(existing, binary.parent).replace(os.sep, "/")
                 replacement = "@loader_path/" + relative_from_loader
                 if dep != replacement:
                     run("install_name_tool", "-change", dep, replacement, str(binary))
-                if str(existing.resolve()) not in processed:
-                    queue.append(existing.resolve())
+                if str(existing) not in processed:
+                    queue.append(existing)
                 continue
 
             source = resolve_brew_dependency(dep, binary)
