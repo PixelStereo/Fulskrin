@@ -90,7 +90,7 @@ bool VideoDecoder::deliver(AVFrame *src, VideoFrame &f, bool mapped)
         // Same matrix as the GPU path would take
         float unused[9];
         QString name;
-        yuvMatrix(src->colorspace, h, unused, &name);
+        videoDecoderYuvMatrix(src->colorspace, h, unused, &name);
         const int cs = name == QLatin1String("BT.709")      ? SWS_CS_ITU709
                        : name == QLatin1String("BT.2020")   ? SWS_CS_BT2020
                        : name == QLatin1String("FCC")       ? SWS_CS_FCC
