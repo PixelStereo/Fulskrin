@@ -1618,7 +1618,7 @@ void MainWindow::openProjectDialog()
     if (!maybeSave()) return;
     QSettings s;
     const QString f = QFileDialog::getOpenFileName(this, QStringLiteral("Open Project"), s.value("dirs/project").toString(),
-                                                   QStringLiteral("Pinol Projects (*.pinol *.json)"));
+                                                   QStringLiteral("Pinol Projects (*.pinol *.json *.fulskrin)"));
     if (!f.isEmpty()) openProject(f);
 }
 
@@ -1795,7 +1795,8 @@ void MainWindow::dropEvent(QDropEvent *e)
     for (const QUrl &u : e->mimeData()->urls()) {
         const QString path = u.toLocalFile();
         if (path.isEmpty()) continue;
-        if (QFileInfo(path).suffix().toLower() == "pinol") {
+        if ((QFileInfo(path).suffix().compare("pinol", Qt::CaseInsensitive) == 0 ||
+            QFileInfo(path).suffix().compare("fulskrin", Qt::CaseInsensitive) == 0)) {
             if (maybeSave()) openProject(path);
             e->acceptProposedAction();
             return;
