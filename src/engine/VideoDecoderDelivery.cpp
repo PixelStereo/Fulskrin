@@ -11,6 +11,7 @@ extern "C" {
 
 // Shared color-matrix selection used by layout construction and CPU conversion.
 void videoDecoderYuvMatrix(AVColorSpace space, int height, float m[9], QString *name);
+void releaseBytePoolBytes(size_t bytes);
 
 // Packed planes, at the layout's offsets.
 static void packPlanes(const VideoLayout &L, const AVFrame *src, uint8_t *dst)
@@ -113,6 +114,7 @@ bool VideoDecoder::deliver(AVFrame *src, VideoFrame &f, bool mapped)
                 f.bytes = std::move(m_bytePool.back());
 
                 f.budgetBytes = m_bytePoolBudgetBytes.back();
+                releaseBytePoolBytes(f.budgetBytes); // now an active frame, no longer pooled
 
                 m_bytePool.pop_back();
 
