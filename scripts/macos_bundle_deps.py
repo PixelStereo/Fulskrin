@@ -229,12 +229,27 @@ def main() -> None:
                     run("install_name_tool", "-change", dep, "@loader_path/" + rel, str(binary))
                     continue
 
+            requested_name = Path(dep[len("@rpath/"):] if dep.startswith("@rpath/") else dep).name
+
+            # macdeployqt may already have bundled the exact requested filename in Contents/Frameworks.
+            # Prefer that copy and rewrite the load command to it. Do not create a second copy under
+            # FulskrinDeps: versioned Homebrew symlinks can have different file hashes while exposing
+            # the same install name, and replacing the bundle's copy can invalidate Qt's ad-hoc signature.
+            existing = FRAMEWORKS / requested_name
+            if existing.is_file() and within_app(existing.resolve()):
+                relative_from_loader = os.path.relpath(existing.resolve(), binary.parent).replace(os.sep, "/")
+                replacement = "@loader_path/" + relative_from_loader
+                if dep != replacement:
+                    run("install_name_tool", "-change", dep, replacement, str(binary))
+                if str(existing.resolve()) not in processed:
+                    queue.append(existing.resolve())
+                continue
+
             source = resolve_brew_dependency(dep, binary)
             if source is None:
                 # Do not silently accept unresolved @rpath or external paths.
                 raise RuntimeError(f"Unresolved non-system dependency: {dep}\n  referenced by: {binary}")
 
-            requested_name = Path(dep[len("@rpath/"):] if dep.startswith("@rpath/") else dep).name
             dest, relative_name = copy_dependency(source, requested_name)
             normalize_install_id(dest, relative_name)
             relative_from_loader = os.path.relpath(dest, binary.parent).replace(os.sep, "/")
