@@ -381,6 +381,10 @@ def main() -> None:
     # dependency rewriting alone does not change that ID, and the release portability
     # scan correctly rejects it. Framework IDs retain their internal Versions/A path.
     for binary in bundled_macho_files():
+        # The app executable lives under Contents/MacOS, not Frameworks, and
+        # is not a dylib with an LC_ID_DYLIB to normalize.
+        if not within_app(binary) or not binary.is_relative_to(FRAMEWORKS):
+            continue
         relative_name = binary.relative_to(FRAMEWORKS).as_posix()
         normalize_install_id(binary, relative_name)
 
