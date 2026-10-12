@@ -121,7 +121,7 @@ jobs:
           name: test-media
           path: test/media
       - name: Dependencies
-        run: brew install qt ffmpeg pkg-config dylibbundler
+        run: brew install qt ffmpeg pkg-config
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
@@ -136,28 +136,24 @@ jobs:
           set -euo pipefail
           APP="build/Fulskrin.app"
           EXE="$APP/Contents/MacOS/Fulskrin"
-          # Keep Fulskrin's FFmpeg build separate from Qt Multimedia's private FFmpeg libraries.
-          FFMPEG_BUNDLE="$APP/Contents/Frameworks/FulskrinFFmpeg"
           QT_PREFIX="$(brew --prefix qt)"
-          QT_CELLAR="$(brew --cellar qt)"
-          FFMPEG_LIB="$(brew --prefix ffmpeg)/lib"
 
           test -d "$APP"
           test -f "$EXE"
 
-          # Deploy Qt frameworks and the Qt plugins used by this application.
-          "$QT_PREFIX/bin/macdeployqt" "$APP" -always-overwrite
+          # macdeployqt preserves Qt's framework layout and handles its plugin deployment.
+          # Supply FFmpeg and every Homebrew runtime dependency as extra search paths,
+          # so its recursive dependency scan can copy them into the app bundle.
+          LIBPATH_ARGS=()
+          while IFS= read -r formula; do
+            [[ -n "$formula" ]] || continue
+            prefix="$(brew --prefix "$formula")"
+            [[ -d "$prefix/lib" ]] && LIBPATH_ARGS+=("-libpath=$prefix/lib")
+          done < <(printf '%s\n' ffmpeg $(brew deps ffmpeg) | sort -u)
 
-          # Bundle FFmpeg and its transitive non-system dylib dependencies.
-          # Keep Qt's already-deployed frameworks intact.
-          dylibbundler -b -cd \
-            -x "$EXE" \
-            -d "$FFMPEG_BUNDLE" \
-            -p "@executable_path/../Frameworks/FulskrinFFmpeg/" \
-            -i "$QT_CELLAR" \
-            -s "$FFMPEG_LIB"
+          "$QT_PREFIX/bin/macdeployqt" "$APP" -always-overwrite "${LIBPATH_ARGS[@]}"
 
-          # Fail if a bundled Mach-O file still points into the build runner's Homebrew Cellar.
+          # Fail if a bundled Mach-O file still points into Homebrew's machine-specific paths.
           while IFS= read -r -d '' binary; do
             if file "$binary" | grep -q "Mach-O"; then
               if otool -L "$binary" | grep -E '/opt/homebrew/(Cellar|opt)/|/usr/local/(Cellar|opt)/'; then
