@@ -219,36 +219,6 @@ def main() -> None:
             if dep.startswith(SYSTEM_PREFIXES):
                 continue
 
-            # Resolve framework dependencies from their source framework identity, not
-            # by basename alone. Multiple Qt frameworks can have nested/symlinked paths
-            # with the same executable name, and flattening them into FulskrinDeps is wrong.
-            source: Path | None = None
-            if dep.startswith("@rpath/") or dep.startswith("/"):
-                source = resolve_brew_dependency(dep, binary)
-
-            if source is not None:
-                source_framework = next(
-                    (parent for parent in source.parents if parent.name.endswith(".framework")),
-                    None,
-                )
-                if source_framework is not None:
-                    framework_dest = FRAMEWORKS / source_framework.name
-                    relative_binary = source.relative_to(source_framework)
-                    bundled_binary = framework_dest / relative_binary
-                    if not framework_dest.exists():
-                        shutil.copytree(source_framework, framework_dest, symlinks=True)
-                    if not bundled_binary.is_file():
-                        raise RuntimeError(
-                            f"Framework dependency was not bundled correctly: {source} -> {bundled_binary}"
-                        )
-                    relative_from_loader = os.path.relpath(bundled_binary, binary.parent).replace(os.sep, "/")
-                    replacement = "@loader_path/" + relative_from_loader
-                    if dep != replacement:
-                        run("install_name_tool", "-change", dep, replacement, str(binary))
-                    if str(bundled_binary) not in processed:
-                        queue.append(bundled_binary)
-                    continue
-
             # A reference that resolves to a file inside the app bundle is already portable.
             resolved_inside: Path | None = None
             if dep.startswith("@rpath/"):
@@ -279,6 +249,36 @@ def main() -> None:
                 if bundled_candidate.is_file() and within_app(bundled_candidate):
                     rel = os.path.relpath(bundled_candidate, binary.parent).replace(os.sep, "/")
                     run("install_name_tool", "-change", dep, "@loader_path/" + rel, str(binary))
+                    continue
+
+            # Resolve framework dependencies from their source framework identity, not
+            # by basename alone. Multiple Qt frameworks can have nested/symlinked paths
+            # with the same executable name, and flattening them into FulskrinDeps is wrong.
+            source: Path | None = None
+            if dep.startswith("@rpath/") or dep.startswith("/"):
+                source = resolve_brew_dependency(dep, binary)
+
+            if source is not None:
+                source_framework = next(
+                    (parent for parent in source.parents if parent.name.endswith(".framework")),
+                    None,
+                )
+                if source_framework is not None:
+                    framework_dest = FRAMEWORKS / source_framework.name
+                    relative_binary = source.relative_to(source_framework)
+                    bundled_binary = framework_dest / relative_binary
+                    if not framework_dest.exists():
+                        shutil.copytree(source_framework, framework_dest, symlinks=True)
+                    if not bundled_binary.is_file():
+                        raise RuntimeError(
+                            f"Framework dependency was not bundled correctly: {source} -> {bundled_binary}"
+                        )
+                    relative_from_loader = os.path.relpath(bundled_binary, binary.parent).replace(os.sep, "/")
+                    replacement = "@loader_path/" + relative_from_loader
+                    if dep != replacement:
+                        run("install_name_tool", "-change", dep, replacement, str(binary))
+                    if str(bundled_binary) not in processed:
+                        queue.append(bundled_binary)
                     continue
 
             requested_name = Path(dep[len("@rpath/"):] if dep.startswith("@rpath/") else dep).name
