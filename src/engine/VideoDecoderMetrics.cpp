@@ -12,7 +12,7 @@ VideoDecoder::Metrics VideoDecoder::metrics() const
     m.skippedFrames = m_metricSkipped.load(std::memory_order_relaxed);
     m.fetchMisses = m_metricMisses.load(std::memory_order_relaxed);
     m.lateFrames = m_metricLate.load(std::memory_order_relaxed);
-    m.memoryBudgetDrops = m_metricMemoryBudgetDrops.load(std::memory_order_relaxed);
+    m.budgetHolds = m_metricBudgetHolds.load(std::memory_order_relaxed);
     m.queueHighWatermark = m_metricQueueHigh.load(std::memory_order_relaxed);
     m.decodeTimeTotalMs = double(m_metricDecodeNsTotal.load(std::memory_order_relaxed)) / 1e6;
     m.decodeTimeMaxMs = double(m_metricDecodeNsMax.load(std::memory_order_relaxed)) / 1e6;
@@ -43,7 +43,7 @@ void VideoDecoder::resetMetrics()
     m_metricSkipped = 0;
     m_metricMisses = 0;
     m_metricLate = 0;
-    m_metricMemoryBudgetDrops = 0;
+    m_metricBudgetHolds = 0;
     m_metricQueueHigh = 0;
     m_metricDecodeNsTotal = 0;
     m_metricDecodeNsMax = 0;

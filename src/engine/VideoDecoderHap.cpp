@@ -42,18 +42,7 @@ int VideoDecoder::decodeHap(VideoFrame &f, double skipBefore)
         if (takeStaging(L->totalBytes, &id, &dst)) {
             f.staging = id;
         } else {
-            {
-                std::lock_guard<std::mutex> lk(m_mutex);
-                if (!m_bytePool.empty()) {
-                    f.bytes = std::move(m_bytePool.back());
-
-                    f.budgetBytes = m_bytePoolBudgetBytes.back();
-
-                    m_bytePool.pop_back();
-
-                    m_bytePoolBudgetBytes.pop_back();
-                }
-            }
+            takePooledBytes(f);
             f.bytes.resize(L->totalBytes);
             dst = f.bytes.data();
         }

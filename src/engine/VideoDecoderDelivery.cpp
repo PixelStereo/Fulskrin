@@ -1,4 +1,5 @@
 #include "VideoDecoder.h"
+#include "VideoDecoderInternal.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -9,9 +10,6 @@ extern "C" {
 #include <cstring>
 #include <utility>
 
-// Shared color-matrix selection used by layout construction and CPU conversion.
-void videoDecoderYuvMatrix(AVColorSpace space, int height, float m[9], QString *name);
-void releaseBytePoolBytes(size_t bytes);
 
 // Packed planes, at the layout's offsets.
 static void packPlanes(const VideoLayout &L, const AVFrame *src, uint8_t *dst)
@@ -108,19 +106,7 @@ bool VideoDecoder::deliver(AVFrame *src, VideoFrame &f, bool mapped)
     if (takeStaging(m_rgbaLayout->totalBytes, &id, &ptr)) {
         f.staging = id;
     } else {
-        {
-            std::lock_guard<std::mutex> lk(m_mutex);
-            if (!m_bytePool.empty()) {
-                f.bytes = std::move(m_bytePool.back());
-
-                f.budgetBytes = m_bytePoolBudgetBytes.back();
-                releaseBytePoolBytes(f.budgetBytes); // now an active frame, no longer pooled
-
-                m_bytePool.pop_back();
-
-                m_bytePoolBudgetBytes.pop_back();
-            }
-        }
+        takePooledBytes(f);
         f.bytes.resize(m_rgbaLayout->totalBytes);
         ptr = f.bytes.data();
     }

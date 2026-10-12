@@ -1,36 +1,52 @@
 # Real-time performance work
 
-This branch is an incremental foundation for making multi-video playback predictable under load.
+Making multi-video playback predictable under load, without slowing down the common case (one to three heavy
+layers).
 
-## Implemented in this tranche
+## In this change
 
-- A process-wide 512 MiB budget for mapped OpenGL upload/PBO buffers.
-- A separate process-wide 512 MiB budget for decoded frames that are retained in CPU memory, including pooled byte buffers. Frames that cannot be reserved are discarded rather than allowing unbounded retained memory; the benchmark reports those drops.
-- A fair process-wide gate limits concurrent CPU-heavy FFmpeg/HAP decode calls. FFmpeg is no longer asked to auto-create a machine-sized worker team for every stream, and the shared HAP/CPU-fallback pool is bounded.
-- Per-decoder metrics for decoded/fetched frames, skipped queued frames, fetch starvation, late frames, decode-time total/max and approximate p95, queue high-water mark, and memory-budget drops.
-- The existing playback benchmark prints these metrics per layer.
-- Metrics implementation is split into `VideoDecoderMetrics.cpp`.
-- The selected-stream FFmpeg packet reader is isolated in `VideoDecoderDemux.cpp` and is shared by normal codecs and HAP.
-- Specialized HAP packet parsing/decompression is isolated in `VideoDecoderHap.cpp`; the GPU-compressed texture path is retained.
-- Frame delivery/upload-buffer handling is isolated in `VideoDecoderDelivery.cpp`.
-- Pixel-format layout and colorimetry are isolated in `VideoDecoderLayout.cpp`.
-- Seek requests and codec flushing are isolated in `VideoDecoderSeek.cpp`.
+- **Threads.** The first software decoder takes every core (FFmpeg's automatic count: a single 4K HEVC or
+  ProRes stream needs them). Each next software decoder gets a share (`cores / open software decoders`, at
+  least 2), so many layers no longer each start a machine-sized team. Hardware decoders keep 4 threads.
+  There is no global decode gate: it serialized file reads and hardware waits behind a CPU limit. The HAP
+  worker pool keeps `min(16, cores - 1)` threads (parallel Snappy chunks are what makes 4K HAP real time).
+- **Decoded frames in memory.** They are counted process-wide against 512 MiB, as a soft limit. Over it, a
+  frame is never dropped. Instead, every stream keeps only 2 frames ahead (instead of 6) until its frames are
+  shown. A stream can never be starved by the others, and a paused layer keeps the right frame. Not counted:
+  frames in upload buffers (they have their own budget) and hardware surfaces sampled in place (GPU memory).
+- **Upload buffers (PBO).** 512 MiB shared fairly among the layers that have some. Each gets
+  `512 MiB / layers`, capped by its own 128 MiB, and always at least 2 buffers. A layer opened first no longer
+  keeps the whole budget, and the extra buffers go back as they return from an upload.
+- **Byte buffers kept for reuse.** At most 64 MiB across every decoder.
+- **Metrics per decoder.** Lock-free counters, no allocation per frame:
+  - decoded, fetched, skipped and late frames, fetch misses;
+  - decode time (total, max, approximate p95 from fixed buckets);
+  - queue high-water mark;
+  - budget holds: how many times the stream kept fewer frames ahead.
 
-## Important definitions and trade-offs
+  `pinol_bench` prints them.
+- **The decoder in focused files.** The split leaves behavior unchanged:
+  - `VideoDecoderDemux.cpp`: packets of the video stream;
+  - `VideoDecoderHap.cpp`: HAP, compressed textures for the GPU;
+  - `VideoDecoderDelivery.cpp`: upload buffers, CPU fallback;
+  - `VideoDecoderLayout.cpp`: pixel layouts, colorimetry;
+  - `VideoDecoderSeek.cpp`: seek and codec flush;
+  - `VideoDecoderMetrics.cpp`: metrics;
+  - `VideoDecoderInternal.h`: what they share.
 
-- The decode-time p95 is an approximation from fixed histogram buckets; it avoids allocating or retaining a sample for every frame.
-- “Late” means the fetched frame's age relative to the requested timeline clock exceeds 1.5 source-frame intervals. It is a useful warning signal, not a full render-deadline measurement.
-- The memory caps cover mapped upload buffers and retained decoded frame payload estimates. They do not include every allocation made by FFmpeg, the GPU's output textures, or driver-internal surfaces.
-- The gate bounds simultaneous decode/decompression work, not the number of lightweight per-stream sequencing threads. Replacing those threads with a shared scheduler would be a larger architectural step and should follow measurements rather than be mixed into this first patch.
-- A memory-budget rejection is visible as a drop counter. It is preferable to unbounded retained frame memory, but the cap and scheduling policy should be tuned against representative compositions.
+## Definitions
 
-## Validation still required
+- "Late": the fetched frame is older than the requested clock by more than 1.5 source frames.
+- The budgets cover the frame payloads Pinol keeps. They do not cover FFmpeg's or the driver's own
+  allocations.
 
-- Run CI on all supported platforms.
-- Run `pinol_bench` with mixed H.264/HEVC/ProRes/HAP compositions at 1080p and 4K, both with hardware decode and `--software`.
-- Compare p95/max decode times, late/missed/skipped frames, memory-budget drops, and render FPS before and after.
-- Stress open/close, seek, loop and ping-pong playback while the global budgets are under pressure.
+## Still to measure
 
-## Next extraction steps
+- `pinol_bench` with mixed H.264, HEVC, ProRes and HAP at 1080p and 4K, with hardware decoding and with
+  `--software`, on 8+ core machines.
+- Open, close, seek, loop and ping-pong stress with the budgets under pressure.
 
-The next seam is playback scheduling: `run()`, timeline-leg transitions, and backward-window production. Move those only after making the decode gate and resource-accounting ownership explicit across translation units. Codec setup/open/close can then be separated from the remaining controller. Keep each extraction behavior-preserving and benchmarkable; do not replace the specialized HAP compressed-texture path with generic CPU decoding without evidence.
+## Next steps
+
+Playback scheduling (`run()`, legs, backward windows), then codec setup. Keep each step behavior-preserving
+and benchmarked.

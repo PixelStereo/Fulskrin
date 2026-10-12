@@ -1,5 +1,6 @@
 #include "VideoDecoder.h"
 #include "Hap.h"
+#include "VideoDecoderInternal.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -17,93 +18,45 @@ extern "C" {
 #include <set>
 
 static constexpr size_t kMaxQueue = 6;
-static constexpr size_t kStagingBudget = size_t(128) << 20; // per-stream target, constrained by the global PBO budget
+static constexpr size_t kMinQueue = 2; // frames a stream keeps ahead whatever the memory used by the others
+static constexpr size_t kStagingBudget = size_t(128) << 20; // upload buffers of one stream, at most
 static constexpr size_t kBytePool = 8;
-static constexpr size_t kGlobalDecodedFrameBudget = size_t(512) << 20;
-static std::atomic<size_t> s_globalDecodedFrameBytes{0};
 
-static bool reserveDecodedFrameBytes(size_t bytes)
+// Decoded frames kept in memory, across every decoder: a soft limit (see VideoDecoderInternal.h)
+static std::atomic<size_t> s_decodedLimit{size_t(512) << 20};
+static std::atomic<size_t> s_decodedBytes{0};
+
+void decodedBudget::add(size_t bytes)
 {
-    size_t used = s_globalDecodedFrameBytes.load(std::memory_order_relaxed);
+    if (bytes) s_decodedBytes.fetch_add(bytes, std::memory_order_relaxed);
+}
+void decodedBudget::remove(size_t bytes)
+{
+    if (bytes) s_decodedBytes.fetch_sub(bytes, std::memory_order_relaxed);
+}
+bool decodedBudget::over() { return s_decodedBytes.load(std::memory_order_relaxed) > s_decodedLimit.load(std::memory_order_relaxed); }
+void decodedBudget::setLimit(size_t bytes) { s_decodedLimit = bytes; }
+size_t decodedBudget::used() { return s_decodedBytes.load(std::memory_order_relaxed); }
+
+// Byte buffers kept for reuse, across every decoder
+static constexpr size_t kBytePoolBudget = size_t(64) << 20;
+static std::atomic<size_t> s_bytePoolBytes{0};
+
+bool bytePoolBudget::reserve(size_t bytes)
+{
+    size_t used = s_bytePoolBytes.load(std::memory_order_relaxed);
     for (;;) {
-        if (bytes > kGlobalDecodedFrameBudget || used > kGlobalDecodedFrameBudget - bytes) return false;
-        if (s_globalDecodedFrameBytes.compare_exchange_weak(used, used + bytes, std::memory_order_relaxed)) return true;
+        if (bytes > kBytePoolBudget || used > kBytePoolBudget - bytes) return false;
+        if (s_bytePoolBytes.compare_exchange_weak(used, used + bytes, std::memory_order_relaxed)) return true;
     }
 }
-
-static void releaseDecodedFrameBytes(size_t bytes)
+void bytePoolBudget::release(size_t bytes)
 {
-    if (bytes) s_globalDecodedFrameBytes.fetch_sub(bytes, std::memory_order_relaxed);
+    if (bytes) s_bytePoolBytes.fetch_sub(bytes, std::memory_order_relaxed);
 }
 
-// Keep reusable CPU buffers from monopolizing the decoded-frame budget across many streams.
-static constexpr size_t kGlobalBytePoolBudget = size_t(64) << 20;
-static std::atomic<size_t> s_globalBytePoolBytes{0};
-
-static bool reserveBytePoolBytes(size_t bytes)
-{
-    size_t used = s_globalBytePoolBytes.load(std::memory_order_relaxed);
-    for (;;) {
-        if (bytes > kGlobalBytePoolBudget || used > kGlobalBytePoolBudget - bytes) return false;
-        if (s_globalBytePoolBytes.compare_exchange_weak(used, used + bytes, std::memory_order_relaxed)) return true;
-    }
-}
-
-void releaseBytePoolBytes(size_t bytes)
-{
-    if (bytes) s_globalBytePoolBytes.fetch_sub(bytes, std::memory_order_relaxed);
-}
-
-// A process-wide, fair concurrency limit around CPU-heavy decode/decompression calls.
-// Per-stream sequencing threads remain independent, but they cannot all enter FFmpeg/HAP at once.
-class DecodeGate
-{
-public:
-    static DecodeGate &instance()
-    {
-        static DecodeGate gate;
-        return gate;
-    }
-
-    void acquire()
-    {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        const uint64_t ticket = m_nextTicket++;
-        m_cv.wait(lock, [&] { return ticket == m_servingTicket && m_active < m_limit; });
-        ++m_servingTicket;
-        ++m_active;
-        m_cv.notify_all();
-    }
-
-    void release()
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_active) --m_active;
-        m_cv.notify_all();
-    }
-
-private:
-    DecodeGate()
-    {
-        const unsigned reported = std::thread::hardware_concurrency();
-        const unsigned hw = std::max(2u, reported);
-        m_limit = size_t(std::max(1u, std::min(4u, hw > 2 ? hw - 2 : 1u)));
-    }
-
-    std::mutex m_mutex;
-    std::condition_variable m_cv;
-    uint64_t m_nextTicket = 0, m_servingTicket = 0;
-    size_t m_active = 0, m_limit = 1;
-};
-
-class DecodeGateLease
-{
-public:
-    DecodeGateLease() { DecodeGate::instance().acquire(); }
-    ~DecodeGateLease() { DecodeGate::instance().release(); }
-    DecodeGateLease(const DecodeGateLease &) = delete;
-    DecodeGateLease &operator=(const DecodeGateLease &) = delete;
-};
+// Software decoders open: the machine's cores are shared among them (FFmpeg's threads, per decoder)
+static std::atomic<int> s_softwareDecoders{0};
 
 static std::atomic<bool> s_hardware{true}, s_s3tc{true}, s_bptc{false}, s_zeroCopy{false};
 
@@ -171,7 +124,7 @@ VideoFrame &VideoFrame::operator=(VideoFrame &&o) noexcept
 void VideoFrame::releaseAv()
 {
     if (av) av_frame_free(&av);
-    releaseDecodedFrameBytes(budgetBytes);
+    decodedBudget::remove(budgetBytes);
     budgetBytes = 0;
 }
 
@@ -289,9 +242,17 @@ bool VideoDecoder::open(const QString &path, QString *err)
         avcodec_parameters_to_context(m_codec, par);
         m_codec->pkt_timebase = st->time_base;
         const bool hw = s_hardware && setupHardware(dec);
-        // Decoder instances already run on dedicated threads. Never ask FFmpeg to
-        // auto-create a machine-sized team per video: that multiplies with layer count.
-        m_codec->thread_count = hw ? 2 : 1;
+        // Hardware: a few threads feed it. Software: the first decoder takes every core (FFmpeg's choice, a 4K
+        // stream needs them); the next ones share them, so that many layers do not each start a machine-sized team
+        // of threads (they would multiply with the layers)
+        if (hw) {
+            m_codec->thread_count = 4;
+        } else {
+            const int others = s_softwareDecoders.fetch_add(1);
+            m_countedSoftware = true;
+            const int cores = int(std::max(2u, std::thread::hardware_concurrency()));
+            m_codec->thread_count = others == 0 ? 0 : std::max(2, cores / (others + 1));
+        }
         m_codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
         r = avcodec_open2(m_codec, dec, nullptr);
         if (r < 0) {
@@ -377,9 +338,11 @@ void VideoDecoder::close()
     m_queue.clear();
     m_backStack.clear();
     for (size_t reserved : m_bytePoolBudgetBytes) {
-        releaseBytePoolBytes(reserved);
-        releaseDecodedFrameBytes(reserved);
+        bytePoolBudget::release(reserved);
+        decodedBudget::remove(reserved);
     }
+    if (m_countedSoftware) s_softwareDecoders.fetch_sub(1);
+    m_countedSoftware = false;
     m_bytePool.clear();
     m_bytePoolBudgetBytes.clear();
     m_freeStaging.clear();
@@ -477,12 +440,10 @@ void VideoDecoder::recycleLocked(VideoFrame &&f)
         if (it != m_stagingById.end()) m_freeStaging.push_back(it->second);
         f.staging = -1;
     }
-    // Only pool an allocation whose capacity is covered by a live global-budget reservation.
-    // In particular, a frame rejected by reserveFrameMemory() has budgetBytes == 0: pooling it
-    // would retain unaccounted memory and let repeated budget drops bypass the process-wide cap.
+    // Kept for reuse when its whole capacity is counted (its count goes to the pool with it)
     const size_t pooledBytes = f.budgetBytes;
     if (f.bytes.capacity() && f.budgetBytes >= f.bytes.capacity() && m_bytePool.size() < kBytePool
-        && reserveBytePoolBytes(pooledBytes)) {
+        && bytePoolBudget::reserve(pooledBytes)) {
         m_bytePool.push_back(std::move(f.bytes));
         m_bytePoolBudgetBytes.push_back(pooledBytes);
         f.budgetBytes = 0; // the pool now owns the reservation with the allocation
@@ -491,6 +452,19 @@ void VideoDecoder::recycleLocked(VideoFrame &&f)
     }
     f.releaseAv();
     f.layout.reset();
+}
+
+// A byte buffer kept for reuse, if any, into f (its count goes with it: a frame's again, no longer the pool's)
+void VideoDecoder::takePooledBytes(VideoFrame &f)
+{
+    std::lock_guard<std::mutex> lk(m_mutex);
+    if (m_bytePool.empty()) return;
+    f.bytes = std::move(m_bytePool.back());
+    decodedBudget::remove(f.budgetBytes);
+    f.budgetBytes = m_bytePoolBudgetBytes.back();
+    bytePoolBudget::release(f.budgetBytes);
+    m_bytePool.pop_back();
+    m_bytePoolBudgetBytes.pop_back();
 }
 
 int VideoDecoder::stagingCount() const
@@ -749,20 +723,16 @@ void VideoDecoder::produceBackwardWindow()
         int r = 0;
         uint64_t decodeNs = 0;
         {
-            DecodeGateLease gate;
             const auto decodeStarted = std::chrono::steady_clock::now();
             r = decodeNext(f, a);
             decodeNs = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - decodeStarted).count());
         }
-        recordDecodeTime(decodeNs);
+        if (r == 1) recordDecodeTime(decodeNs);
         if (r == 2) continue;
         if (r != 1) break;
         ++m_metricDecoded;
-        if (!reserveFrameMemory(f)) {
-            recycle(std::move(f));
-            continue;
-        }
+        accountFrame(f);
         const double local = f.pts;
         if (local >= m_backEnd - 0.25 * dt) {
             recycle(std::move(f));
@@ -786,7 +756,19 @@ void VideoDecoder::run()
     for (;;) {
         {
             std::unique_lock<std::mutex> lk(m_mutex);
-            m_cv.wait(lk, [&] { return m_quit || m_seekPending || (!m_eof && m_queue.size() < kMaxQueue); });
+            // Fewer frames ahead while the decoded frames of every stream take more memory than the budget: each
+            // stream keeps its minimum (never dropped, never starved), the others wait for theirs to be shown
+            bool held = false;
+            m_cv.wait(lk, [&] {
+                if (m_quit || m_seekPending) return true;
+                if (m_eof || m_queue.size() >= kMaxQueue) return false;
+                if (m_queue.size() >= kMinQueue && decodedBudget::over()) {
+                    if (!held) ++m_metricBudgetHolds;
+                    held = true;
+                    return false;
+                }
+                return true;
+            });
             if (m_quit) return;
             if (m_seekPending) {
                 m_seekPending = false;
@@ -820,21 +802,15 @@ void VideoDecoder::run()
         int r = 0;
         uint64_t decodeNs = 0;
         {
-            DecodeGateLease gate;
             const auto decodeStarted = std::chrono::steady_clock::now();
             r = decodeNext(f);
             decodeNs = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - decodeStarted).count());
         }
-        recordDecodeTime(decodeNs);
+        if (r == 1) recordDecodeTime(decodeNs);
         if (r == 1) {
             ++m_metricDecoded;
-            if (!reserveFrameMemory(f)) {
-                recycle(std::move(f));
-                continue;
-            }
-        }
-        if (r == 1) {
+            accountFrame(f);
             const double local = f.pts;
             if (local < m_discardBefore) {
                 recycle(std::move(f));
@@ -859,20 +835,16 @@ void VideoDecoder::run()
     }
 }
 
-bool VideoDecoder::reserveFrameMemory(VideoFrame &frame)
+// A decoded frame kept in memory, counted in the process-wide budget. Not counted: one in an upload buffer
+// (the upload buffers have their own), one the GPU samples where it was decoded (a hardware surface)
+void VideoDecoder::accountFrame(VideoFrame &frame)
 {
-    // PBO-backed frames are already covered by the process-wide upload-buffer budget.
-    // All other retained frames (including backward-window frames and pooled byte buffers)
-    // reserve against one process-wide CPU payload budget.
-    if (frame.staging >= 0 || !frame.layout) return true;
+    if (frame.staging >= 0 || !frame.layout) return;
+    if (frame.av && frame.av->hw_frames_ctx) return;
     const size_t wanted = std::max(frame.layout->totalBytes, frame.bytes.capacity());
-    if (wanted > frame.budgetBytes && !reserveDecodedFrameBytes(wanted - frame.budgetBytes)) {
-        ++m_metricMemoryBudgetDrops;
-        return false;
-    }
-    if (wanted < frame.budgetBytes) releaseDecodedFrameBytes(frame.budgetBytes - wanted);
+    if (wanted > frame.budgetBytes) decodedBudget::add(wanted - frame.budgetBytes);
+    else decodedBudget::remove(frame.budgetBytes - wanted);
     frame.budgetBytes = wanted;
-    return true;
 }
 
 // ---------------------------------------------------------------------------

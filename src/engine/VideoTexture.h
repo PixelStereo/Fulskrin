@@ -71,7 +71,6 @@ private:
         GLuint buffer = 0;
         size_t size = 0;
         bool mapped = false;
-        bool budgetReserved = false;
     };
     void createPbo(VideoDecoder &dec);
     void destroyPbo(int id);
@@ -90,6 +89,7 @@ private:
     std::vector<Pbo> m_pbos; // by id; buffer 0: a free slot
     size_t m_pboSize = 0;
     int m_live = 0;
+    int m_pboAllowed = 0; // its share of the upload buffers of every layer
     uint64_t m_uploads = 0, m_staged = 0, m_surfaced = 0, m_serial = 0;
     void shown(); // a new picture: counted, and a new serial
     std::vector<uint8_t> m_repack; // rows of a plane the GPU cannot read in place

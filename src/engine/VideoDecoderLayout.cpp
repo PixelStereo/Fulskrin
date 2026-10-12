@@ -1,4 +1,5 @@
 #include "VideoDecoder.h"
+#include "VideoDecoderInternal.h"
 
 extern "C" {
 #include <libavutil/frame.h>

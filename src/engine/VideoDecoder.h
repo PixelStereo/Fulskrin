@@ -89,7 +89,7 @@ public:
         uint64_t skippedFrames = 0;   // queued frames made obsolete by a later fetch
         uint64_t fetchMisses = 0;     // no frame available; caller may have to repeat the previous frame
         uint64_t lateFrames = 0;      // fetched frame lag exceeded 1.5 source-frame intervals
-        uint64_t memoryBudgetDrops = 0; // decoded frames discarded to stay within the process-wide CPU frame budget
+        uint64_t budgetHolds = 0;     // times the stream kept fewer frames ahead: decoded frames over the memory budget
         uint64_t queueHighWatermark = 0;
         double decodeTimeTotalMs = 0;
         double decodeTimeMaxMs = 0;
@@ -134,6 +134,7 @@ private:
     void finishLeg();                                          // decode thread: next leg, or end
     void recycle(VideoFrame &&f);       // takes the lock
     void recycleLocked(VideoFrame &&f); // lock held
+    void takePooledBytes(VideoFrame &f); // takes the lock
     bool takeStaging(size_t size, int *id, uint8_t **ptr);
     std::shared_ptr<const VideoLayout> layoutFor(const AVFrame *f);
     std::shared_ptr<const VideoLayout> surfaceLayout(const AVFrame *hw); // null: not sampled in place
@@ -188,13 +189,14 @@ private:
 
     // Metrics use atomics because decode and render/fetch run on different threads.
     std::atomic<uint64_t> m_metricDecoded{0}, m_metricFetched{0}, m_metricSkipped{0}, m_metricMisses{0};
-    std::atomic<uint64_t> m_metricLate{0}, m_metricMemoryBudgetDrops{0}, m_metricQueueHigh{0};
+    std::atomic<uint64_t> m_metricLate{0}, m_metricBudgetHolds{0}, m_metricQueueHigh{0};
     std::atomic<uint64_t> m_metricDecodeNsTotal{0}, m_metricDecodeNsMax{0};
     std::atomic<uint64_t> m_metricLastLateNs{0}, m_metricMaxLateNs{0};
     std::array<std::atomic<uint64_t>, 12> m_metricDecodeBuckets{};
     void recordQueueDepth(size_t depth);
     void recordDecodeTime(uint64_t nanoseconds);
-    bool reserveFrameMemory(VideoFrame &frame);
+    void accountFrame(VideoFrame &frame); // counted in the process-wide budget of decoded frames
+    bool m_countedSoftware = false;       // one of the software decoders sharing the cores
 
     bool m_quit = false, m_seekPending = false, m_eof = false, m_needFirst = true;
     double m_seekTarget = 0;
