@@ -23,7 +23,13 @@ static constexpr size_t kStagingBudget = size_t(128) << 20; // upload buffers of
 static constexpr size_t kBytePool = 8;
 
 // Decoded frames kept in memory, across every decoder: a soft limit (see VideoDecoderInternal.h)
-static std::atomic<size_t> s_decodedLimit{size_t(512) << 20};
+// PINOL_FRAME_BUDGET_MB overrides the 512 MiB (measurements)
+static size_t defaultDecodedLimit()
+{
+    const int mb = qEnvironmentVariableIntValue("PINOL_FRAME_BUDGET_MB");
+    return mb > 0 ? size_t(mb) << 20 : size_t(512) << 20;
+}
+static std::atomic<size_t> s_decodedLimit{defaultDecodedLimit()};
 static std::atomic<size_t> s_decodedBytes{0};
 
 void decodedBudget::add(size_t bytes)
@@ -55,8 +61,16 @@ void bytePoolBudget::release(size_t bytes)
     if (bytes) s_bytePoolBytes.fetch_sub(bytes, std::memory_order_relaxed);
 }
 
-// Software decoders open: the machine's cores are shared among them (FFmpeg's threads, per decoder)
-static std::atomic<int> s_softwareDecoders{0};
+// FFmpeg's threads of a software decoder: the same for every one, whatever the order they were opened in (half the
+// cores, 2 to 16: one heavy stream keeps most of the machine, several share it evenly). PINOL_DECODE_THREADS
+// overrides it (measurements)
+static int softwareThreads()
+{
+    static const int forced = qEnvironmentVariableIntValue("PINOL_DECODE_THREADS");
+    if (forced > 0) return std::min(forced, 64);
+    const int cores = int(std::max(1u, std::thread::hardware_concurrency()));
+    return std::min(std::max(1, cores), std::clamp(cores / 2, 2, 16));
+}
 
 static std::atomic<bool> s_hardware{true}, s_s3tc{true}, s_bptc{false}, s_zeroCopy{false};
 
@@ -242,17 +256,8 @@ bool VideoDecoder::open(const QString &path, QString *err)
         avcodec_parameters_to_context(m_codec, par);
         m_codec->pkt_timebase = st->time_base;
         const bool hw = s_hardware && setupHardware(dec);
-        // Hardware: a few threads feed it. Software: the first decoder takes every core (FFmpeg's choice, a 4K
-        // stream needs them); the next ones share them, so that many layers do not each start a machine-sized team
-        // of threads (they would multiply with the layers)
-        if (hw) {
-            m_codec->thread_count = 4;
-        } else {
-            const int others = s_softwareDecoders.fetch_add(1);
-            m_countedSoftware = true;
-            const int cores = int(std::max(2u, std::thread::hardware_concurrency()));
-            m_codec->thread_count = others == 0 ? 0 : std::max(2, cores / (others + 1));
-        }
+        // Hardware: a few threads feed it. Software: an even share of the cores (see softwareThreads)
+        m_codec->thread_count = hw ? 4 : softwareThreads();
         m_codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
         r = avcodec_open2(m_codec, dec, nullptr);
         if (r < 0) {
@@ -341,8 +346,6 @@ void VideoDecoder::close()
         bytePoolBudget::release(reserved);
         decodedBudget::remove(reserved);
     }
-    if (m_countedSoftware) s_softwareDecoders.fetch_sub(1);
-    m_countedSoftware = false;
     m_bytePool.clear();
     m_bytePoolBudgetBytes.clear();
     m_freeStaging.clear();
@@ -366,6 +369,8 @@ void VideoDecoder::close()
     m_stream = -1;
     m_width = m_height = 0;
 }
+
+int VideoDecoder::decodeThreads() const { return m_codec ? m_codec->thread_count : 0; }
 
 QString VideoDecoder::codecName() const
 {

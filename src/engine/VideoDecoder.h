@@ -64,6 +64,7 @@ public:
     QString codecName() const;
     bool isHap() const { return m_hapTag != 0; }
     bool hardwareActive() const { return m_hwActive.load(); }
+    int decodeThreads() const; // FFmpeg's threads for this video (0: HAP, decoded here)
 
     // Timeline followed by the next seek (mode, origin, direction). Its duration is set by the decoder.
     void setTimeline(const Timeline &t);
@@ -196,7 +197,6 @@ private:
     void recordQueueDepth(size_t depth);
     void recordDecodeTime(uint64_t nanoseconds);
     void accountFrame(VideoFrame &frame); // counted in the process-wide budget of decoded frames
-    bool m_countedSoftware = false;       // one of the software decoders sharing the cores
 
     bool m_quit = false, m_seekPending = false, m_eof = false, m_needFirst = true;
     double m_seekTarget = 0;

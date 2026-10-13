@@ -56,10 +56,10 @@ static int decodeOnly(const QStringList &files, double seconds)
         std::printf("  %-34s %-26s %5dx%-5d %6.1f frames/s (file: %.2f)\n", qPrintable(QFileInfo(files[int(i)]).fileName()),
                     qPrintable(dec[i]->codecName()), dec[i]->width(), dec[i]->height(), got[i] / s, dec[i]->fps());
         const VideoDecoder::Metrics m = dec[i]->metrics();
-        std::printf("      decode p95/max %.2f/%.2f ms; decoded %llu; budget holds %llu\n",
+        std::printf("      decode p95/max %.2f/%.2f ms; decoded %llu; budget holds %llu; threads %d\n",
                     m.decodeTimeP95Ms, m.decodeTimeMaxMs,
                     static_cast<unsigned long long>(m.decodedFrames),
-                    static_cast<unsigned long long>(m.budgetHolds));
+                    static_cast<unsigned long long>(m.budgetHolds), dec[i]->decodeThreads());
     }
     return 0;
 }
@@ -182,10 +182,15 @@ int main(int argc, char **argv)
         const bool good = rate >= want * 0.95;
         allGood = allGood && good;
         VideoDecoder::Metrics m;
+        uint64_t uploads = 0, fast = 0;
         {
             Engine::Lock lk(&e.mutex());
             const Layer *l = e.layer(i);
             if (l && l->video) m = l->video->metrics();
+            if (l && l->videoTex) {
+                uploads = l->videoTex->uploads();
+                fast = l->videoTex->stagedUploads() + l->videoTex->surfaceUploads();
+            }
         }
         std::printf("  %-34s %-26s %6.1f frames/s of %.2f  %s  [%s]\n", qPrintable(QFileInfo(files[k]).fileName()),
                     qPrintable(codec), rate, fileFps, good ? "ok" : "DROPS", qPrintable(format));
@@ -195,9 +200,11 @@ int main(int argc, char **argv)
                     static_cast<unsigned long long>(m.skippedFrames),
                     static_cast<unsigned long long>(m.fetchMisses),
                     static_cast<unsigned long long>(m.queueHighWatermark));
-        std::printf("      decoded %llu; budget holds %llu; decode total %.1f ms\n",
+        std::printf("      decoded %llu; budget holds %llu; decode total %.1f ms; slow uploads %llu of %llu\n",
                     static_cast<unsigned long long>(m.decodedFrames),
-                    static_cast<unsigned long long>(m.budgetHolds), m.decodeTimeTotalMs);
+                    static_cast<unsigned long long>(m.budgetHolds), m.decodeTimeTotalMs,
+                    static_cast<unsigned long long>(uploads - std::min(uploads, fast)),
+                    static_cast<unsigned long long>(uploads));
     }
     e.stop();
     std::printf(allGood ? "Every layer kept its rate.\n" : "Some layers dropped frames.\n");
