@@ -49,15 +49,20 @@ extern "C" {
 #define GL_TEXTURE_RECTANGLE 0x84F5
 #endif
 
-// Upload buffers of every video layer: 512 MiB shared fairly among the layers that have some (each keeps at least
-// two, so that none falls back to the slow path because others came first)
-static constexpr size_t kPboBudget = size_t(512) << 20;
+// Upload buffers of every video layer: shared fairly among the layers that have some once they would take more than
+// 2 GiB (each keeps at least two). Fewer buffers than a stream's queue send its frames through the slow path (uploaded
+// from the decoder's memory by the render thread). PINOL_PBO_BUDGET_MB overrides it (measurements)
+static size_t pboBudget()
+{
+    static const size_t forced = size_t(std::max(0, qEnvironmentVariableIntValue("PINOL_PBO_BUDGET_MB"))) << 20;
+    return forced ? forced : size_t(2048) << 20;
+}
 static std::atomic<int> s_pboStreams{0};
 
 static int fairPboCount(size_t size, int decoderWants)
 {
     if (!size) return 0;
-    const size_t share = kPboBudget / size_t(std::max(1, s_pboStreams.load(std::memory_order_relaxed)));
+    const size_t share = pboBudget() / size_t(std::max(1, s_pboStreams.load(std::memory_order_relaxed)));
     return std::min(decoderWants, std::max(2, int(share / size)));
 }
 

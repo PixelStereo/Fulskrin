@@ -23,7 +23,13 @@ static constexpr size_t kStagingBudget = size_t(128) << 20; // upload buffers of
 static constexpr size_t kBytePool = 8;
 
 // Decoded frames kept in memory, across every decoder: a soft limit (see VideoDecoderInternal.h)
-static std::atomic<size_t> s_decodedLimit{size_t(512) << 20};
+// PINOL_FRAME_BUDGET_MB overrides the 512 MiB (measurements)
+static size_t defaultDecodedLimit()
+{
+    const int mb = qEnvironmentVariableIntValue("PINOL_FRAME_BUDGET_MB");
+    return mb > 0 ? size_t(mb) << 20 : size_t(512) << 20;
+}
+static std::atomic<size_t> s_decodedLimit{defaultDecodedLimit()};
 static std::atomic<size_t> s_decodedBytes{0};
 
 void decodedBudget::add(size_t bytes)
