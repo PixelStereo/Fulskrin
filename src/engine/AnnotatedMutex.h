@@ -16,6 +16,21 @@ extern "C" void __tsan_acquire(void *addr);
 extern "C" void __tsan_release(void *addr);
 #endif
 
+// An ordering ThreadSanitizer cannot see by itself (a QThread joined: QThread::wait waits on a futex): what one thread
+// did before tsanRelease(x) happens before what another does after tsanAcquire(x)
+inline void tsanRelease([[maybe_unused]] void *x)
+{
+#ifdef PINOL_TSAN
+    __tsan_release(x);
+#endif
+}
+inline void tsanAcquire([[maybe_unused]] void *x)
+{
+#ifdef PINOL_TSAN
+    __tsan_acquire(x);
+#endif
+}
+
 template <typename Mutex>
 class Annotated
 {

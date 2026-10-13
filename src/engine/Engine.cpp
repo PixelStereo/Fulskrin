@@ -338,6 +338,7 @@ void Engine::stop()
     m_quit = true;
     m_taskCv.notify_all();
     m_thread->wait();
+    tsanAcquire(&m_thread);
     delete m_thread;
     m_thread = nullptr;
     m_threaded = false;
@@ -416,6 +417,7 @@ void Engine::renderLoop()
         }
         m_taskCv.notify_all();
         m_context->moveToThread(m_ownerThread);
+        tsanRelease(&m_thread);
         return;
     }
     m_currentSurface = m_surface;
@@ -448,6 +450,7 @@ void Engine::renderLoop()
     m_context->doneCurrent();
     m_currentSurface = nullptr;
     m_context->moveToThread(m_ownerThread);
+    tsanRelease(&m_thread); // what the render thread did is done before stop() goes on
 }
 
 void Engine::releaseAll()

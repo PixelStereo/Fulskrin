@@ -48,6 +48,9 @@ Requires Qt 6.2+, FFmpeg 4+, CMake 3.21+, C++17, OpenGL 3.3 core.
 
 Tests: `sh test/make_media.sh && cmake --build build --target pinol_tests && ctest --test-dir build`
 (one process per area; `pinol_tests --area snapshots` runs one; CI runs them on the three platforms).
+ThreadSanitizer: build with `-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_FLAGS=-fsanitize=thread
+-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`, run with `TSAN_OPTIONS=suppressions=test/tsan.supp` (Qt, Mesa and FFmpeg
+are not built with it; CI runs the thread, sound, video, OSC and publishing areas this way).
 Headless render: `Pinol --render out.png [--frames N] [--strict] project.pinol`. Exit code 0 rendered, 1 OpenGL
 unavailable, 2 output not written, 3 project not loaded, 4 a layer or an effect in error (with `--strict`).
 Playback benchmark: `cmake --build build --target pinol_bench && sh test/bench_4k.sh build` (how many 4K files

@@ -75,6 +75,42 @@ jobs:
           name: Pinol-linux
           path: Pinol-linux-x86_64*.tar.gz
 
+  # The threads that share data (render, decoders, sound callback, OSC) under ThreadSanitizer: a race in Pinol's code
+  # fails the job. Libraries not built with it (Qt, Mesa, FFmpeg) are suppressed in test/tsan.supp; the engine's
+  # Qt mutexes and the render thread's join are annotated (src/engine/AnnotatedMutex.h).
+  tsan:
+    name: ThreadSanitizer (render, video, sound, OSC)
+    runs-on: ubuntu-24.04
+    needs: media
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-media
+          path: test/media
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config clang-18 libclang-rt-18-dev qt6-base-dev libqt6opengl6-dev \
+            qt6-multimedia-dev libgl1-mesa-dev libgl1-mesa-dri libavformat-dev libavcodec-dev libswscale-dev \
+            libswresample-dev libavutil-dev libasound2-dev xvfb
+      - name: Build
+        run: |
+          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_CXX_FLAGS=-fsanitize=thread -DCMAKE_C_FLAGS=-fsanitize=thread \
+            -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+          cmake --build build-tsan --target pinol_tests -j4
+      - name: Tests under ThreadSanitizer
+        run: |
+          export TSAN_OPTIONS="halt_on_error=1 exitcode=66 suppressions=$PWD/test/tsan.supp"
+          for area in thread sound video osc publishing; do
+            echo "::group::$area"
+            xvfb-run -a ./build-tsan/pinol_tests --area $area
+            echo "::endgroup::"
+          done
+
   # The HAP and Snappy readers against damaged files: a short libFuzzer run with ASan / UBSan, seeded with the
   # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
   fuzz:
