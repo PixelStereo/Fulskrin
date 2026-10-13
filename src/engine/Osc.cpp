@@ -1105,32 +1105,60 @@ bool OscServer::handleMessage(const osc::Message &m)
     QStringList args;
     for (const QVariant &arg : m.args) args << arg.toString();
     emit eventObserved(QStringLiteral("OSC IN"), m.address + (args.isEmpty() ? QString() : QStringLiteral("  ") + args.join(QStringLiteral(", "))));
-    // Every number it carries is also an interaction's source (Interactions.h), the show's own addresses included
+    // A full OSC RGB(A) value must remain one Interaction event, so it can
+    // drive a complete ISF color. Individual scalar arguments remain learnable.
+    const auto numeric = [](const QVariant &a) {
+        switch (a.metaType().id()) {
+        case QMetaType::Int:
+        case QMetaType::Double:
+        case QMetaType::Float:
+        case QMetaType::Bool:
+        case QMetaType::LongLong: return true;
+        default: return false;
+        }
+    };
     for (int k = 0; k < m.args.size(); ++k) {
         const QVariant &a = m.args[k];
-        const int t = a.typeId();
-        if (t != QMetaType::Int && t != QMetaType::Double && t != QMetaType::Float && t != QMetaType::Bool &&
-            t != QMetaType::LongLong)
-            continue;
-        InteractionEvent e;
-        e.source = InteractionSource::Osc;
-        e.address = m.address;
-        e.argument = k;
-        e.value = a.typeId() == QMetaType::Bool ? (a.toBool() ? 1.0 : 0.0) : a.toDouble();
-        // Native OSC 'r' is a packed RGBA value. Publish four normalized
-        // component events so Interaction Learn can bind each color channel
-        // independently, instead of learning the packed 32-bit integer.
+        if (!numeric(a)) continue;
+        InteractionEvent event;
+        event.source = InteractionSource::Osc;
+        event.address = m.address;
+        event.argument = k;
+        event.value = a.metaType().id() == QMetaType::Bool ? (a.toBool() ? 1.0 : 0.0) : a.toDouble();
         if (k < m.types.size() && m.types.at(k) == QLatin1Char('r')) {
+            // OSC type 'r': 0xRRGGBBAA, in network byte order.
             const quint32 rgba = quint32(a.toULongLong());
-            for (int channel = 0; channel < 4; ++channel) {
-                InteractionEvent component = e;
-                component.argument = k * 4 + channel;
-                component.value = double((rgba >> (24 - channel * 8)) & 0xff) / 255.0;
-                m_e->feedInteraction(component);
-            }
-            continue;
+            for (int c = 0; c < 4; ++c)
+                event.color[size_t(c)] = double((rgba >> (24 - c * 8)) & 0xff) / 255.0;
+            event.colorComponents = 4;
+            event.value = event.color[0]; // scalar interactions still get a normalized first channel
         }
-        m_e->feedInteraction(e);
+        m_e->feedInteraction(event);
+    }
+    // Chataigne and other OSC senders may send R,G,B[,A] as 3/4 numeric
+    // arguments rather than the OSC 'r' typetag. Publish a composite event
+    // for argument zero *after* the scalar events; the other arguments still
+    // work independently (and OSC Learn can still select them).
+    if ((m.args.size() == 3 || m.args.size() == 4) &&
+        std::all_of(m.args.cbegin(), m.args.cend(), numeric) &&
+        (m.types.isEmpty() ||
+         std::all_of(m.types.cbegin(), m.types.cend(), [](QChar tag) {
+             return tag == QLatin1Char('f') || tag == QLatin1Char('d') ||
+                    tag == QLatin1Char('i') || tag == QLatin1Char('h');
+         }))) {
+        InteractionEvent event;
+        event.source = InteractionSource::Osc;
+        event.address = m.address;
+        event.argument = 0;
+        event.colorComponents = int(m.args.size());
+        // Four integer channels are often sent in 0..255 rather than 0..1.
+        bool bytes = false;
+        for (int c = 0; c < event.colorComponents; ++c)
+            bytes |= m.args[c].toDouble() > 1.0;
+        for (int c = 0; c < event.colorComponents; ++c)
+            event.color[size_t(c)] = std::clamp(m.args[c].toDouble() / (bytes ? 255.0 : 1.0), 0.0, 1.0);
+        event.value = event.color[0];
+        m_e->feedInteraction(event);
     }
     m_ns.refresh();
     static const QString kPattern = QStringLiteral("*?[]{}");

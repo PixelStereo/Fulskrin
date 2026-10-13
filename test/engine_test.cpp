@@ -4564,6 +4564,77 @@ int main(int argc, char **argv)
         e.renderFrame();
         CHECK(std::abs(opacity(b) - 0.4) < 1e-6);
 
+        // OSC -> whole ISF color: a Chataigne scalar maps to grayscale,
+        // 3/4 numeric channels preserve hue, and native OSC 'r' carries RGBA.
+        const quint64 colorLayer = e.layerId(e.addLayer("Interaction Color"));
+        CHECK(e.setLayerIsf(e.indexOfId(colorLayer), root + "/../isf/generators/SolidColor.fs", &err));
+        auto component = [&](const char *channel) {
+            return e.parameterValue(colorLayer, QStringLiteral("param/color/") + QString::fromLatin1(channel)).toDouble();
+        };
+        Interaction color = Interaction::made(InteractionSource::Osc);
+        color.oscAddress = QStringLiteral("/chataigne/color");
+        color.layer = colorLayer;
+        color.param = QStringLiteral("param/color"); // the natural group address
+        color.takeover = Takeover::Jump;
+        e.addInteraction(color);
+
+        osc::Message colorMessage;
+        colorMessage.address = color.oscAddress;
+        colorMessage.types = QStringLiteral("f");
+        colorMessage.args = {QVariant(0.25)};
+        server.handleMessage(colorMessage);
+        e.renderFrame();
+        CHECK(std::abs(component("r") - 0.25) < 1e-6 &&
+              std::abs(component("g") - 0.25) < 1e-6 &&
+              std::abs(component("b") - 0.25) < 1e-6);
+        CHECK(std::abs(component("a") - 1.0) < 1e-6); // grayscale leaves alpha untouched
+
+        colorMessage.types = QStringLiteral("fff");
+        colorMessage.args = {QVariant(0.1), QVariant(0.6), QVariant(0.9)};
+        server.handleMessage(colorMessage);
+        e.renderFrame();
+        CHECK(std::abs(component("r") - 0.1) < 1e-6 &&
+              std::abs(component("g") - 0.6) < 1e-6 &&
+              std::abs(component("b") - 0.9) < 1e-6 &&
+              std::abs(component("a") - 1.0) < 1e-6);
+
+        colorMessage.types = QStringLiteral("ffff");
+        colorMessage.args = {QVariant(0.8), QVariant(0.2), QVariant(0.4), QVariant(0.5)};
+        server.handleMessage(colorMessage);
+        e.renderFrame();
+        CHECK(std::abs(component("r") - 0.8) < 1e-6 &&
+              std::abs(component("g") - 0.2) < 1e-6 &&
+              std::abs(component("b") - 0.4) < 1e-6 &&
+              std::abs(component("a") - 0.5) < 1e-6);
+
+        // Decode from real OSC bytes (r = 0xRRGGBBAA).
+        colorMessage.types = QStringLiteral("r");
+        colorMessage.args = {QVariant(qlonglong(0x3366CC80))};
+        CHECK(server.handlePacket(osc::encode(colorMessage)) == 0);
+        e.renderFrame();
+        CHECK(std::abs(component("r") - 0x33 / 255.0) < 1e-6 &&
+              std::abs(component("g") - 0x66 / 255.0) < 1e-6 &&
+              std::abs(component("b") - 0xCC / 255.0) < 1e-6 &&
+              std::abs(component("a") - 0x80 / 255.0) < 1e-6);
+
+        // Existing scalar OSC argument mapping continues to work alongside
+        // composite colors; only the selected component is changed.
+        e.setInteractions({});
+        Interaction green = Interaction::made(InteractionSource::Osc);
+        green.oscAddress = QStringLiteral("/chataigne/components");
+        green.oscArgument = 1;
+        green.layer = colorLayer;
+        green.param = QStringLiteral("param/color/g");
+        green.takeover = Takeover::Jump;
+        e.addInteraction(green);
+        colorMessage.address = green.oscAddress;
+        colorMessage.types = QStringLiteral("fff");
+        colorMessage.args = {QVariant(0.2), QVariant(0.7), QVariant(0.4)};
+        server.handleMessage(colorMessage);
+        e.renderFrame();
+        CHECK(std::abs(component("g") - 0.7) < 1e-6 &&
+              std::abs(component("r") - 0x33 / 255.0) < 1e-6);
+
         // Internal: B's opacity follows A's, inverted
         e.setInteractions({});
         Interaction link = Interaction::made(InteractionSource::Internal);

@@ -385,8 +385,15 @@ QString InteractionPanel::targetLabel(quint64 layer, const QString &param) const
         owner = l ? l->name : QStringLiteral("(layer gone)");
     }
     ParamInfo info;
-    const QString name = m_engine->parameterInfo(layer, param, &info) ? info.label : param;
-    return owner + QStringLiteral(" › ") + name;
+    if (m_engine->parameterInfo(layer, param, &info))
+        return owner + QStringLiteral(" › ") + info.label;
+    // Complete ISF colors are grouped under the parent of their R/G/B/A
+    // scalar parameters. Keep old interaction targets readable too.
+    if (m_engine->parameterInfo(layer, param + QStringLiteral("/r"), &info)) {
+        const QString label = info.label.endsWith(QStringLiteral(" R")) ? info.label.chopped(2) : info.label;
+        return owner + QStringLiteral(" › ") + label;
+    }
+    return owner + QStringLiteral(" › ") + param;
 }
 
 QString InteractionPanel::describe(const Interaction &it) const
@@ -903,8 +910,28 @@ void InteractionPanel::rebuildSettings()
         targetMenu->clear();
         auto fill = [&](QMenu *into, quint64 layer) {
             std::vector<ParamInfo> params;
-            for (const ParamInfo &p : m_engine->parameters(layer))
-                if ((p.access & ParamInfo::Write) && p.type != ParamInfo::Type::Text) params.push_back(p);
+            const std::vector<ParamInfo> available = m_engine->parameters(layer);
+            QSet<QString> writable;
+            for (const ParamInfo &p : available) {
+                if (!(p.access & ParamInfo::Write) || p.type == ParamInfo::Type::Text) continue;
+                writable.insert(p.path);
+                params.push_back(p);
+            }
+            // Add one selectable composite target above its individually
+            // addressable channels (e.g. param/color as well as /r, /g, /b).
+            for (const ParamInfo &p : available) {
+                if (!p.path.endsWith(QStringLiteral("/r"))) continue;
+                const QString base = p.path.chopped(2);
+                if (!writable.contains(base + QStringLiteral("/r")) ||
+                    !writable.contains(base + QStringLiteral("/g")) ||
+                    !writable.contains(base + QStringLiteral("/b")) ||
+                    writable.contains(base)) continue;
+                ParamInfo color = p;
+                color.path = base;
+                if (color.label.endsWith(QStringLiteral(" R"))) color.label.chop(2);
+                color.animatable = false;
+                params.push_back(color);
+            }
             addParamMenu(into, params, [this, edit, layer](QMenu *m, const ParamInfo &p, const QString &text) {
                 m->addAction(text, this, [this, edit, layer, p] {
                     edit(QStringLiteral("Change Interaction Target"), [layer, p](Interaction &x) {

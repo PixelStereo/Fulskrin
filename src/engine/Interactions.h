@@ -24,6 +24,7 @@
 
 #include <QJsonObject>
 #include <QString>
+#include <array>
 #include <deque>
 #include <optional>
 
@@ -54,6 +55,10 @@ struct InteractionEvent {
     int number = 0;    // MIDI: the controller, the note, the program
     int argument = 0;  // OSC: which argument of the message
     double value = 0;  // Keyboard: 1 pressed, 0 released; MIDI: 0..1; OSC: the value as sent
+    // A composite OSC color (native type 'r' or an RGB/RGBA number tuple).
+    // 0: scalar event, 3: RGB with target alpha preserved, 4: RGBA.
+    std::array<double, 4> color{{0, 0, 0, 1}};
+    int colorComponents = 0;
     QString describe() const; // "MIDI · ch 1 · CC 7", "Key Space", "OSC /fader/1"
 };
 

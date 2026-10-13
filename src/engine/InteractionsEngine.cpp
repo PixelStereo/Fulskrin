@@ -127,7 +127,9 @@ void Engine::feedInteraction(const InteractionEvent &e)
     for (InteractionEvent &x : m_learned)
         if (x.source == e.source && x.address == e.address && x.port == e.port && x.channel == e.channel &&
             x.message == e.message && x.number == e.number && x.argument == e.argument) {
-            x.value = e.value; // the same source again
+            x.value = e.value;
+            x.color = e.color;
+            x.colorComponents = e.colorComponents; // update tuple after scalar arg 0
             return;
         }
     if (m_learned.empty()) m_learnClock.start();
@@ -275,6 +277,8 @@ void Engine::stepInteractions(double dt)
             for (const InteractionEvent &e : events)
                 if (it.matches(e)) {
                     run.proc.input(it, e.value);
+                    run.color = e.color;
+                    run.colorComponents = e.colorComponents;
                     fresh = true;
                 }
         }
@@ -288,7 +292,38 @@ void Engine::stepInteractions(double dt)
             if (li < 0 || m_layers[size_t(li)]->locked) continue; // a locked layer is left alone
         }
         Parameter *p = findParameter(it.layer, it.param);
-        if (!p || !(p->info().access & ParamInfo::Write)) continue;
+        if (!p) {
+            // An ISF color has four scalar Parameter entries but OSC and the
+            // ColorPicker expose the natural group address (param/color).
+            // Resolve that group here without changing scalar parameter storage
+            // or disrupting existing animations, snapshots and presets.
+            const QString prefix = it.param + QLatin1Char('/');
+            std::array<Parameter *, 4> channels{};
+            for (int c = 0; c < 4; ++c)
+                channels[size_t(c)] = findParameter(it.layer, prefix + QChar("rgba"[c]));
+            bool valid = true;
+            for (int c = 0; c < 3; ++c)
+                valid &= channels[size_t(c)] && (channels[size_t(c)]->info().access & ParamInfo::Write) &&
+                         channels[size_t(c)]->info().isNumber();
+            if (!valid) continue;
+            // A scalar OSC value becomes gray, through the usual source range,
+            // filter, curve, master and target range. Native RGBA ('r') and
+            // three/four-value OSC tuples keep their distinct color channels.
+            const double gray = std::clamp(it.dstMin + *out * (it.dstMax - it.dstMin), 0.0, 1.0);
+            for (int c = 0; c < 4; ++c) {
+                Parameter *ch = channels[size_t(c)];
+                if (!ch || !(ch->info().access & ParamInfo::Write)) continue;
+                // Without explicit alpha the current alpha is never changed.
+                if (c == 3 && run.colorComponents < 4) continue;
+                const double value = run.colorComponents >= 3
+                    ? std::clamp(run.color[size_t(c)] * (c == 3 ? 1.0 : it.master), 0.0, 1.0)
+                    : gray;
+                if (std::abs(ch->number() - value) > 1e-6 && ch->setNumber(value) && it.layer)
+                    releaseFromFades(it.layer, prefix + QChar("rgba"[c]));
+            }
+            continue;
+        }
+        if (!(p->info().access & ParamInfo::Write)) continue;
         const ParamInfo info = p->info();
         bool wrote = false;
         switch (info.type) {

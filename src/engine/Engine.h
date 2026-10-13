@@ -808,6 +808,8 @@ private:
         bool choiceSet = false;
         int lastChoice = -1;
         bool lastBool = false;
+        std::array<double, 4> color{{0, 0, 0, 1}};
+        int colorComponents = 0; // last OSC message: RGB(A), or 0 for scalar
     };
     std::map<quint64, InteractionRun> m_interactionRun; // render thread (m_mutex held)
     std::mutex m_interactionEventsMutex;
