@@ -42,6 +42,7 @@ public:
     }
 
     std::function<void(const QColor &)> onEdited;
+    int hue() const { return m_hue; }
 
     void setColor(const QColor &c)
     {
@@ -207,7 +208,7 @@ ColorPicker::ColorPicker(bool withAlpha, QWidget *parent) : QWidget(parent), m_w
     m_wheel = new HueWheelWidget;
     wheelLayout->addWidget(m_wheel, 0, Qt::AlignHCenter);
     m_wheel->onEdited = [this](const QColor &c) {
-        m_hue = m_wheel->color().hsvHue() >= 0 ? m_wheel->color().hsvHue() : m_hue;
+        m_hue = m_wheel->hue();
         editColor(c);
     };
     if (m_withAlpha) {
@@ -334,7 +335,7 @@ void ColorPicker::updateControls()
     m_swatch->setToolTip(m_color.name(m_withAlpha ? QColor::HexArgb : QColor::HexRgb).toUpper());
     for (int i = 0; i < (m_withAlpha ? 4 : 3); ++i) {
         const bool hsv = m_view == HSV;
-        m_labels[i]->setText(QString(hsv ? "HSVA"[i] : "RGBA"[i]));
+        m_labels[i]->setText(QString::fromLatin1(hsv ? "HSVA" : "RGBA").mid(i, 1));
         m_fields[i]->setRange(0, hsv && i == 0 ? 359 : 255);
         m_fields[i]->setValue(i == 3 ? m_color.alpha()
                                       : hsv ? (i == 0 ? m_hue : i == 1 ? m_color.hsvSaturation() : m_color.value())
