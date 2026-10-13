@@ -357,3 +357,45 @@ std::optional<double> InteractionTargetState::numberToWrite(const Interaction &i
     written = v;
     return v;
 }
+
+std::optional<std::array<double, 4>> InteractionColorTargetState::toWrite(const Interaction &it, const std::array<double, 4> &v,
+                                                                          const std::array<double, 4> &current, int channels,
+                                                                          double tolerance)
+{
+    channels = std::clamp(channels, 1, 4);
+    auto farFrom = [&](const std::array<double, 4> &a, const std::array<double, 4> &b) {
+        for (int c = 0; c < channels; ++c)
+            if (std::abs(a[size_t(c)] - b[size_t(c)]) > tolerance) return true;
+        return false;
+    };
+    if (it.takeover == Takeover::Jump) {
+        caught = true;
+    } else {
+        // Moved by something else since it was written: let go, every channel has to meet it again
+        if (caught && written && farFrom(current, *written)) {
+            caught = false;
+            met = {{false, false, false, false}};
+        }
+        if (!caught) {
+            bool all = true;
+            for (int c = 0; c < channels; ++c) {
+                const size_t k = size_t(c);
+                const bool crossed = prevOut && ((*prevOut)[k] - current[k]) * (v[k] - current[k]) <= 0;
+                met[k] = met[k] || std::abs(v[k] - current[k]) <= tolerance || crossed;
+                all = all && met[k];
+            }
+            prevOut = v;
+            if (!all) return std::nullopt;
+            caught = true;
+        }
+    }
+    prevOut = v;
+    if (written && !farFrom(*written, v) && !farFrom(current, v)) {
+        bool same = true; // within a hair: nothing to write
+        for (int c = 0; c < channels; ++c) same = same && std::abs((*written)[size_t(c)] - v[size_t(c)]) < 1e-9 &&
+                                                 std::abs(current[size_t(c)] - v[size_t(c)]) < 1e-9;
+        if (same) return std::nullopt;
+    }
+    written = v;
+    return v;
+}

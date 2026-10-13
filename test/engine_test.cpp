@@ -3171,6 +3171,21 @@ int main(int argc, char **argv)
         e.setRenderSettings(rs);
         const auto [lo, hi] = spread();
         CHECK(lo > 90 && hi < 165); // grey everywhere
+        // Made once per frame of the render, however many viewports draw the layer (audit P2; before: each one)
+        {
+            const int v2 = e.addViewport(QStringLiteral("Twin"), QSize(64, 64));
+            {
+                Engine::Lock lk(&e.mutex());
+                e.layer(v2)->mapping = e.layer(e.viewports().first() == v2 ? e.viewports()[1] : e.viewports().first())->mapping;
+            }
+            e.renderFrame();
+            const quint64 before = e.mipmapsMade();
+            for (int k = 0; k < 3; ++k) e.renderFrame();
+            std::printf("       mipmaps made in 3 frames with 2 viewports: %llu\n", (unsigned long long)(e.mipmapsMade() - before));
+            CHECK(e.mipmapsMade() - before == 3);
+            CHECK(spread().first > 90 && spread().second < 165); // still grey in the first viewport
+            e.removeLayer(e.indexOfId(e.layerId(v2)));
+        }
         // The frame rate is the project's (composition/fps); samples, mipmaps and depth are the machine's
         rs = Engine::RenderSettings{30, 8, 1};
         e.setRenderSettings(rs);
@@ -4917,6 +4932,89 @@ int main(int argc, char **argv)
             CHECK(server.handleMessage(direct) && std::abs(ch("a") - 0.9) < 1e-6);
             // A scalar of the same layer, not listened to, is still written directly
             CHECK(server.handleMessage({"/layer/Chataigne/opacity", "f", {0.5}}));
+            e.setInteractions({});
+        }
+
+        // A whole color through the whole chain (audit P1/P2): each channel with its own target range, master,
+        // curve and filter; pick-up on the whole color; the alpha without the master
+        {
+            e.setInteractions({});
+            CHECK(e.setParameter(colorLayer, "param/color/a", 0.75));
+            Interaction chain = Interaction::made(InteractionSource::Osc);
+            chain.oscAddress = QStringLiteral("/chataigne/chain");
+            chain.layer = colorLayer;
+            chain.param = QStringLiteral("param/color");
+            chain.takeover = Takeover::Jump;
+            chain.srcMin = 0;
+            chain.srcMax = 1;
+            chain.dstMin = 0.2;
+            chain.dstMax = 0.6;
+            chain.id = e.addInteraction(chain);
+            osc::Message cm;
+            cm.address = chain.oscAddress;
+            cm.types = QStringLiteral("fff");
+            auto send = [&](double r, double g, double b) {
+                cm.args = {QVariant(r), QVariant(g), QVariant(b)};
+                server.handleMessage(cm);
+                e.renderFrame();
+            };
+            auto rgbNear = [&](double r, double g, double b, double tol = 1e-6) {
+                return std::abs(component("r") - r) < tol && std::abs(component("g") - g) < tol &&
+                       std::abs(component("b") - b) < tol;
+            };
+            send(0.0, 0.5, 1.0); // the target range, per channel
+            CHECK(rgbNear(0.2, 0.4, 0.6) && std::abs(component("a") - 0.75) < 1e-6);
+            chain.dstMin = 0;
+            chain.dstMax = 1;
+            chain.master = 0.5;
+            chain.colorMapAlpha = true;
+            CHECK(e.setInteraction(chain));
+            cm.types = QStringLiteral("ffff");
+            cm.args = {QVariant(1.0), QVariant(1.0), QVariant(1.0), QVariant(1.0)};
+            server.handleMessage(cm);
+            e.renderFrame();
+            CHECK(rgbNear(0.5, 0.5, 0.5) && std::abs(component("a") - 1.0) < 1e-6); // master on RGB, not on alpha
+            chain.master = 1;
+            chain.colorMapAlpha = false;
+            chain.curveOn = true;
+            chain.curve = Interaction::straightCurve();
+            chain.curve.keys[0].v = 1; // inverted: 0 → 1, 1 → 0
+            chain.curve.keys[1].v = 0;
+            CHECK(e.setInteraction(chain));
+            cm.types = QStringLiteral("fff");
+            send(0.25, 0.5, 1.0); // the curve, per channel
+            CHECK(rgbNear(0.75, 0.5, 0.0, 1e-3));
+            // A filter: every channel smoothed by its own state, together
+            chain.curveOn = false;
+            chain.filterOn = true;
+            chain.filter = InteractionFilter::WeightedAverage;
+            chain.filterA = 1.0; // ~95% of the way in a second
+            CHECK(e.setInteraction(chain)); // the filter changed: its state starts again
+            send(0.0, 0.0, 0.0);
+            CHECK(rgbNear(0.0, 0.0, 0.0, 1e-3));
+            send(1.0, 1.0, 1.0);
+            const double first = component("r");
+            CHECK(first < 0.9 && std::abs(component("g") - first) < 1e-9 && std::abs(component("b") - first) < 1e-9);
+            for (int k = 0; k < 10; ++k) { // no message any more: the filter keeps moving the color
+                QThread::msleep(200);
+                e.renderFrame();
+            }
+            CHECK(component("r") > 0.97 && component("r") > first && std::abs(component("g") - component("r")) < 1e-9);
+            // Pick-up: the color moved elsewhere is held until every channel has met it
+            chain.filterOn = false;
+            chain.takeover = Takeover::PickUp;
+            CHECK(e.setInteraction(chain));
+            send(0.9, 0.9, 0.9);
+            CHECK(e.setParameter(colorLayer, "param/color/r", 0.3) && e.setParameter(colorLayer, "param/color/g", 0.3) &&
+                  e.setParameter(colorLayer, "param/color/b", 0.3)); // moved by something else (a snapshot)
+            send(0.8, 0.8, 0.8);
+            CHECK(rgbNear(0.3, 0.3, 0.3)); // not met: left alone
+            send(0.3, 0.3, 0.8); // red and green met, not blue
+            CHECK(rgbNear(0.3, 0.3, 0.3));
+            send(0.2, 0.2, 0.1); // blue crossed it: the whole color is taken over
+            CHECK(rgbNear(0.2, 0.2, 0.1));
+            send(0.6, 0.7, 0.8); // and follows from now on
+            CHECK(rgbNear(0.6, 0.7, 0.8));
             e.setInteractions({});
         }
 

@@ -576,6 +576,7 @@ public:
     // GPU); true the previous frame is shared, no wait on the render path, one frame later for the receivers
     void setGpuShareOneFrameLate(bool on) { m_shareOneFrameLate = on; }
     bool gpuShareOneFrameLate() const { return m_shareOneFrameLate.load(); }
+    quint64 mipmapsMade() const { return m_mipmapsMade.load(); } // layers' mipmaps generated since the start
     QImage grabOutput();                 // the whole composition (interface preview)
     QImage grabViewport(quint64 viewport);
     QImage grabLayerSource(int index); // a layer's source picture, full size, before its ROI (tests, tools)
@@ -817,6 +818,7 @@ private:
     std::atomic<quint64> m_outputsDropped{0}; // frames an output window could not show (Metal: surfaces in use)
     std::atomic<quint64> m_sharesSkipped{0};  // Syphon / Spout one frame later: the previous frame not finished
     std::atomic<bool> m_shareOneFrameLate{false};
+    std::atomic<quint64> m_mipmapsMade{0}; // glGenerateMipmap calls (tests: once per layer and frame at most)
     void sampleResources(); // render thread, context current: once a second
     qint64 m_resourcesSampledNs = 0;
     int m_vramQuery = -1; // -1 not looked at yet, 0 none, 1 NVX, 2 ATI
@@ -838,6 +840,9 @@ private:
         bool lastBool = false;
         std::array<double, 4> color{{0, 0, 0, 1}};
         int colorComponents = 0; // last OSC message: RGB(A), or 0 for scalar
+        std::array<InteractionProcessor, 4> channels;  // a whole color: each channel's chain (Interactions.h)
+        std::array<std::optional<double>, 4> channelOut; // their last results
+        InteractionColorTargetState colorTarget;          // its pick-up
     };
     std::map<quint64, InteractionRun> m_interactionRun; // render thread (m_mutex held)
     std::mutex m_interactionEventsMutex;

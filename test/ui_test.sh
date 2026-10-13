@@ -1,6 +1,10 @@
 #!/bin/bash
 # UI scenario driven by xdotool (Linux + Xvfb + openbox). Usage: test/ui_test.sh [output folder]
 # Requirements: Xvfb, openbox, xdotool, ImageMagick; media (make_media.sh) and test projects (make_tests.py).
+# The pixel measures are printed (their coordinates depend on the layout); what fails it (exit 1, the CI job):
+# the application gone before the scenario's end (a crash), no autosave, no recovery after the forced kill.
+FAILED=0
+fail() { echo "FAIL: $*"; FAILED=1; }
 cd "$(dirname "$0")"
 OUT=${1:-out/ui}; mkdir -p "$OUT"
 export DISPLAY=:97
@@ -78,12 +82,14 @@ echo "preview after restore: $(lum 11_lights_up "$PREVIEW")"
 
 # --- Windowed output, autosave, crash, recovery in blackout
 xdotool key ctrl+shift+f; sleep 12
-ls "$AUTOSAVE" >/dev/null 2>&1 && echo "autosave: yes" || echo "autosave: NO"
+ls "$AUTOSAVE" >/dev/null 2>&1 && echo "autosave: yes" || fail "no autosave after 12 s"
+kill -0 $APP 2>/dev/null || fail "the application exited during the scenario (log: $OUT/log1.txt)"
 kill -9 $APP; sleep 1
 ../build/Pinol >"$OUT/log2.txt" 2>&1 & APP=$!
 sleep 4; shot 12_recovery
 xdotool key Return; sleep 4; shot 13_restored
+kill -0 $APP 2>/dev/null || fail "the application exited after the recovery (log: $OUT/log2.txt)"
 kill $APP 2>/dev/null; sleep 1; kill -9 $APP 2>/dev/null
 kill $XV
 grep -v "XDG\|^OpenGL" "$OUT/log1.txt" "$OUT/log2.txt"
-exit 0
+exit $FAILED
