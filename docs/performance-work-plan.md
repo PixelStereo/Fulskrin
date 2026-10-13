@@ -15,9 +15,9 @@ layers).
   frame is never dropped. Instead, every stream keeps only 2 frames ahead (instead of 6) until its frames are
   shown. A stream can never be starved by the others, and a paused layer keeps the right frame. Not counted:
   frames in upload buffers (they have their own budget) and hardware surfaces sampled in place (GPU memory).
-- **Upload buffers (PBO).** 512 MiB shared fairly among the layers that have some. Each gets
-  `512 MiB / layers`, capped by its own 128 MiB, and always at least 2 buffers. A layer opened first no longer
-  keeps the whole budget, and the extra buffers go back as they return from an upload.
+- **Upload buffers (PBO).** Each stream gets up to 128 MiB of them. They are shared fairly among the layers only
+  once they would take more than 2 GiB in all (each layer keeps at least 2). `PINOL_PBO_BUDGET_MB` overrides the
+  2 GiB, and `PINOL_FRAME_BUDGET_MB` the 512 MiB of decoded frames (measurements).
 - **Byte buffers kept for reuse.** At most 64 MiB across every decoder.
 - **Metrics per decoder.** Lock-free counters, no allocation per frame:
   - decoded, fetched, skipped and late frames, fetch misses;
@@ -68,6 +68,21 @@ Decode-only runs are throughput tests: every stream decodes as fast as it can, s
 time and the heaviest stream gets the lowest rate. In playback, a stream that is far enough ahead waits, which
 leaves the CPU to the others. Playback with many layers is the test that decides.
 
+### Apple M3 Ultra, playback under load (software decoding, 8 s, render asked 60 fps)
+
+The slowest layer and the render rate. "Slow uploads": frames the render thread uploaded from the decoder's
+memory because no upload buffer was free.
+
+| Layers | before #117 | #117 (512 MiB of buffers) | 2 GiB of buffers | 2 GiB, but 512 MiB forced |
+|---|---|---|---|---|
+| 12 × HEVC 4K | 30 / 56.6 | 22 / 24.1 | 30 / 56.7, 0 slow uploads | 23 / 24.2, 1319 of 2602 slow |
+| 20 × HEVC 4K | 29 / 56.5 | 16 / 17.2 | 30 / 56.6, 7 of 5573 slow | 16 / 16.8, 1268 of 3100 slow |
+| 18-layer mix | 30 / 51.9 | 26 / 28.3 | 30 / 46.6 | 26 / 29.5 |
+
+The 512 MiB budget of #117 was the cause: forced back, it brings the drop back. 8 GiB of buffers, 8 GiB of
+decoded frames or 4 threads change nothing more. With hardware decoding (20 × HEVC 4K, 18-layer mix) and with
+16 × HAP Q 4K, every version keeps 30 fps.
+
 ## Definitions
 
 - "Late": the fetched frame is older than the requested clock by more than 1.5 source frames.
@@ -76,7 +91,7 @@ leaves the CPU to the others. Playback with many layers is the test that decides
 
 ## Still to measure
 
-- The same with hardware decoding, on 8+ core machines, and the full playback (GPU) bench.
+- The same on a machine with less memory and fewer cores (the 2 GiB of upload buffers is the trade-off).
 - Open, close, seek, loop and ping-pong stress with the budgets under pressure.
 
 ## Next steps
