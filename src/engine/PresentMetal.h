@@ -24,6 +24,7 @@ public:
     // over its pixels. waitForScreen: this one is synchronised with the display (the last window of the frame).
     bool present(unsigned framebuffer, int w, int h, QSize pixels, bool waitForScreen);
     void releaseGl(); // its surfaces' OpenGL side (render thread, context current), before it goes
+    quint64 droppedFrames() const; // frames not shown because every shared surface was still read by Metal
 
 private:
     MetalOutput();
@@ -34,5 +35,6 @@ private:
     static std::shared_ptr<MetalOutput> forWindow(QWindow *) { return nullptr; }
     bool present(unsigned, int, int, QSize, bool) { return false; }
     void releaseGl() {}
+    quint64 droppedFrames() const { return 0; }
 #endif
 };

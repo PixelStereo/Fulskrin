@@ -57,7 +57,8 @@ struct Slot {
     GLuint tex = 0, fbo = 0;
     id<MTLTexture> mtl = nil;
     int w = 0, h = 0;
-    std::atomic<bool> busy{false};
+    std::atomic<bool> busy{false};    // Metal still reads it (set at commit, cleared by the completion handler)
+    id<MTLCommandBuffer> cmd = nil;   // the last command buffer that read it: waited for before the slot goes
 };
 
 struct MetalOutput::D {
@@ -75,13 +76,35 @@ struct MetalOutput::D {
         warned = true;
     }
 
-    void waitIdle(Slot &s)
+    quint64 dropped = 0; // frames not shown: every surface was still read by Metal
+
+    // Waits at most `maxUs` for Metal to let go of the slot. True: it is free (OpenGL may write it)
+    static bool waitIdle(const Slot &s, int maxUs)
     {
-        for (int k = 0; s.busy.load() && k < 2000; ++k) QThread::usleep(50); // 100 ms at most
+        for (int k = 0; s.busy.load() && k * 50 < maxUs; ++k) QThread::usleep(50);
+        return !s.busy.load();
+    }
+    // A free slot of the ring, the next one first; none after `maxUs`: null (the frame is dropped). A slot still read
+    // is never written again: OpenGL would tear the picture Metal is drawing.
+    Slot *freeSlot(int maxUs)
+    {
+        for (int k = 0; k < 3; ++k) {
+            Slot &s = ring[(next + k) % 3];
+            if (!s.busy.load()) {
+                next = (next + k) % 3;
+                return &s;
+            }
+        }
+        Slot &oldest = ring[next];
+        return waitIdle(oldest, maxUs) ? &oldest : nullptr;
     }
     void releaseSlot(Slot &s, QOpenGLExtraFunctions *f)
     {
-        waitIdle(s);
+        // Gone for good (resized, closed): wait for Metal to finish with it, however long. Its completion handler
+        // writes into the slot, and its texture must not be deleted under a draw.
+        if (s.cmd) [s.cmd waitUntilCompleted];
+        s.cmd = nil;
+        s.busy = false;
         if (f) {
             if (s.fbo) f->glDeleteFramebuffers(1, &s.fbo);
             if (s.tex) f->glDeleteTextures(1, &s.tex);
@@ -138,6 +161,8 @@ struct MetalOutput::D {
         return true;
     }
 };
+
+quint64 MetalOutput::droppedFrames() const { return d->dropped; }
 
 bool MetalOutput::available() { return sharedDevice() != nil; }
 
@@ -205,8 +230,15 @@ bool MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool
     if (!ctx || !framebuffer || w <= 0 || h <= 0 || pixels.isEmpty()) return false;
     auto *f = ctx->extraFunctions();
     @autoreleasepool {
-        Slot &s = d->ring[d->next];
-        d->waitIdle(s);
+        // At most 8 ms for a surface (half a frame at 60 Hz): beyond, the frame is dropped rather than the render
+        // thread held up, or a surface still on screen written over
+        Slot *free = d->freeSlot(8000);
+        if (!free) {
+            ++d->dropped;
+            d->warnOnce("every shared surface is still read by Metal: frame dropped");
+            return false;
+        }
+        Slot &s = *free;
         if (!d->ensure(s, w, h, f)) return false;
         d->next = (d->next + 1) % 3;
         // OpenGL: the picture into the shared surface, turned upside down (OpenGL's rows go up, the surface's down)
@@ -242,6 +274,7 @@ bool MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool
         [cmd addCompletedHandler:^(id<MTLCommandBuffer>) { slot->busy = false; }];
         [cmd presentDrawable:drawable];
         [cmd commit];
+        s.cmd = cmd;
     }
     return true;
 }

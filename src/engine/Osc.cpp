@@ -23,6 +23,15 @@
 // Namespace
 // ---------------------------------------------------------------------------
 
+// An RGB(A) tuple whose channels are bytes (0..255) rather than 0..1: one of them above 1. The interactions
+// (OscServer::handleMessage) and the native color addresses read a tuple the same way.
+static bool oscColorTupleIsBytes(const QVariantList &a, int channels)
+{
+    for (int c = 0; c < channels && c < a.size(); ++c)
+        if (a[c].toDouble() > 1.0) return true;
+    return false;
+}
+
 static double num(const QVariant &v)
 {
     if (v.typeId() == QMetaType::Bool) return v.toBool() ? 1.0 : 0.0;
@@ -583,9 +592,12 @@ struct LayerNodes {
                                            return true;
                                        }
                                        if (a.size() < paths.size() - (paths.size() == 4 ? 1 : 0)) return false; // alpha may be left out
+                                       // A color sent as bytes (Chataigne, consoles: 0..255) is read as the
+                                       // interactions read it: any channel above 1 means the whole tuple is 0..255
+                                       const double scale = rgb && oscColorTupleIsBytes(a, int(paths.size())) ? 1.0 / 255.0 : 1.0;
                                        for (int k = 0; k < paths.size() && k < a.size(); ++k) {
                                            Parameter *x = l.parameter(paths[k]);
-                                           if (!x || !x->setNumber(num(a[k]))) return false;
+                                           if (!x || !x->setNumber(num(a[k]) * scale)) return false;
                                        }
                                        return true;
                                    }));
@@ -1152,14 +1164,16 @@ bool OscServer::handleMessage(const osc::Message &m)
         event.argument = 0;
         event.colorComponents = int(m.args.size());
         // Four integer channels are often sent in 0..255 rather than 0..1.
-        bool bytes = false;
-        for (int c = 0; c < event.colorComponents; ++c)
-            bytes |= m.args[c].toDouble() > 1.0;
+        const bool bytes = oscColorTupleIsBytes(m.args, event.colorComponents);
         for (int c = 0; c < event.colorComponents; ++c)
             event.color[size_t(c)] = std::clamp(m.args[c].toDouble() / (bytes ? 255.0 : 1.0), 0.0, 1.0);
         event.value = event.color[0];
         m_e->feedInteraction(event);
     }
+    // One writer per value: an address an enabled OSC interaction listens on belongs to that interaction. Its own
+    // chain (ranges, Map alpha, pick-up…) decides what reaches the show, the native value of the same address is not
+    // also written directly (the direct write would land first, and an alpha of 0 would stay).
+    if (m_e->oscAddressClaimed(m.address)) return false;
     m_ns.refresh();
     static const QString kPattern = QStringLiteral("*?[]{}");
     bool pattern = false;

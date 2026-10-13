@@ -4646,6 +4646,74 @@ int main(int argc, char **argv)
         e.renderFrame();
         CHECK(std::abs(component("a") - 0x80 / 255.0) < 1e-6);
 
+        // The native OSCQuery address of a color, and an interaction listening on that same address (audit P0):
+        // the interaction owns it, the direct write is not made as well, so its alpha stays as Map alpha says.
+        {
+            e.setInteractions({});
+            const quint64 cl = e.layerId(e.addLayer("Chataigne"));
+            CHECK(e.setLayerIsf(e.indexOfId(cl), root + "/../isf/generators/SolidColor.fs", &err));
+            auto ch = [&](const char *c) {
+                return e.parameterValue(cl, QStringLiteral("param/color/") + QString::fromLatin1(c)).toDouble();
+            };
+            const QString native = QStringLiteral("/layer/Chataigne/param/color");
+            osc::Message direct;
+            direct.address = native;
+            // No interaction: the address writes RGBA directly (its public API), bytes read as 0..255
+            direct.types = QStringLiteral("iiii");
+            direct.args = {QVariant(255), QVariant(0), QVariant(51), QVariant(204)};
+            CHECK(server.handleMessage(direct));
+            CHECK(std::abs(ch("r") - 1.0) < 1e-6 && std::abs(ch("g")) < 1e-6 &&
+                  std::abs(ch("b") - 0.2) < 1e-6 && std::abs(ch("a") - 0.8) < 1e-6);
+            direct.types = QStringLiteral("ffff");
+            direct.args = {QVariant(0.5), QVariant(0.5), QVariant(0.5), QVariant(0.6)};
+            CHECK(server.handleMessage(direct) && std::abs(ch("a") - 0.6) < 1e-6);
+
+            Interaction own = Interaction::made(InteractionSource::Osc);
+            own.oscAddress = native;
+            own.layer = cl;
+            own.param = QStringLiteral("param/color");
+            own.takeover = Takeover::Jump;
+            own.id = e.addInteraction(own);
+            CHECK(e.oscAddressClaimed(native) && !e.oscAddressClaimed(native + "/r"));
+            // Chataigne's RGBA with an unused alpha of 0: RGB follows, alpha stays (Map alpha off)
+            direct.args = {QVariant(0.1), QVariant(0.2), QVariant(0.3), QVariant(0.0)};
+            CHECK(!server.handleMessage(direct)); // nothing written directly
+            CHECK(std::abs(ch("a") - 0.6) < 1e-6); // not even before the frame
+            e.renderFrame();
+            CHECK(std::abs(ch("r") - 0.1) < 1e-6 && std::abs(ch("g") - 0.2) < 1e-6 &&
+                  std::abs(ch("b") - 0.3) < 1e-6 && std::abs(ch("a") - 0.6) < 1e-6);
+            // The same as raw bytes, and as OSC 'r'
+            CHECK(server.handlePacket(osc::encode(direct)) == 0);
+            direct.types = QStringLiteral("r");
+            direct.args = {QVariant(qlonglong(0x3366CC00))};
+            CHECK(server.handlePacket(osc::encode(direct)) == 0);
+            e.renderFrame();
+            CHECK(std::abs(ch("r") - 0x33 / 255.0) < 1e-6 && std::abs(ch("a") - 0.6) < 1e-6);
+            // Bytes reach the interaction as they reach the native address: 0..255
+            direct.types = QStringLiteral("iiii");
+            direct.args = {QVariant(0), QVariant(255), QVariant(0), QVariant(0)};
+            CHECK(!server.handleMessage(direct));
+            e.renderFrame();
+            CHECK(std::abs(ch("g") - 1.0) < 1e-6 && std::abs(ch("r")) < 1e-6 && std::abs(ch("a") - 0.6) < 1e-6);
+            // Map alpha on: the zero alpha is meant, it is applied — by the interaction, still the only writer
+            own.colorMapAlpha = true;
+            CHECK(e.setInteraction(own));
+            direct.types = QStringLiteral("ffff");
+            direct.args = {QVariant(0.4), QVariant(0.4), QVariant(0.4), QVariant(0.0)};
+            CHECK(!server.handleMessage(direct));
+            e.renderFrame();
+            CHECK(std::abs(ch("a")) < 1e-6);
+            // Disabled, it lets the address go: the direct write is back
+            own.enabled = false;
+            CHECK(e.setInteraction(own));
+            CHECK(!e.oscAddressClaimed(native));
+            direct.args = {QVariant(0.4), QVariant(0.4), QVariant(0.4), QVariant(0.9)};
+            CHECK(server.handleMessage(direct) && std::abs(ch("a") - 0.9) < 1e-6);
+            // A scalar of the same layer, not listened to, is still written directly
+            CHECK(server.handleMessage({"/layer/Chataigne/opacity", "f", {0.5}}));
+            e.setInteractions({});
+        }
+
         // Existing scalar OSC argument mapping continues to work alongside
         // composite colors; only the selected component is changed.
         e.setInteractions({});

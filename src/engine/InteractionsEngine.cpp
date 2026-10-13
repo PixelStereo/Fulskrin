@@ -114,6 +114,15 @@ bool Engine::interactionLevels(quint64 id, double *level, double *output, double
     return true;
 }
 
+bool Engine::oscAddressClaimed(const QString &address) const
+{
+    Lock lk(&m_mutex);
+    return std::any_of(m_interactions.cbegin(), m_interactions.cend(), [&](const Interaction &it) {
+        return it.enabled && it.source == InteractionSource::Osc && !it.oscAddress.isEmpty() &&
+               it.oscAddress == address;
+    });
+}
+
 void Engine::feedInteraction(const InteractionEvent &e)
 {
     if (e.source == InteractionSource::Keyboard || e.source == InteractionSource::Midi) {
