@@ -67,11 +67,13 @@ jobs:
           Extract the archive and run ./Pinol from this directory so the adjacent ./isf shaders can be found.
           Other Linux distributions may require equivalent runtime packages.
           EOF
-          tar -czf Pinol-linux-x86_64.tar.gz -C dist .
+          TAG_SUFFIX=""
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then TAG_SUFFIX="-$GITHUB_REF_NAME"; fi
+          tar -czf "Pinol-linux-x86_64${TAG_SUFFIX}.tar.gz" -C dist .
       - uses: actions/upload-artifact@v4
         with:
           name: Pinol-linux
-          path: Pinol-linux-x86_64.tar.gz
+          path: Pinol-linux-x86_64*.tar.gz
 
   # The HAP and Snappy readers against damaged files: a short libFuzzer run with ASan / UBSan, seeded with the
   # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
@@ -201,11 +203,13 @@ jobs:
 
           These vendor runtimes are not part of this repository and are not bundled automatically.
           EOF
-          ditto -c -k --keepParent "$APP" Pinol-macos.zip
+          TAG_SUFFIX=""
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then TAG_SUFFIX="-$GITHUB_REF_NAME"; fi
+          ditto -c -k --keepParent "$APP" "Pinol-macos${TAG_SUFFIX}.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: Pinol-macos
-          path: Pinol-macos.zip
+          path: Pinol-macos*.zip
 
   windows:
     name: Windows (MSVC 2022) + tests
@@ -303,11 +307,13 @@ jobs:
           These vendor runtimes are not part of this repository and are not bundled automatically.
           '@ | Set-Content -Encoding utf8 dist\README-Dependencies.txt
 
-          Compress-Archive -Path dist\* -DestinationPath Pinol-windows.zip -Force
+          $tagSuffix = ""
+          if ($env:GITHUB_REF_TYPE -eq "tag") { $tagSuffix = "-$env:GITHUB_REF_NAME" }
+          Compress-Archive -Path dist\* -DestinationPath "Pinol-windows$tagSuffix.zip" -Force
       - uses: actions/upload-artifact@v4
         with:
           name: Pinol-windows
-          path: Pinol-windows.zip
+          path: Pinol-windows*.zip
 
 
   release:
