@@ -10,6 +10,7 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <array>
+#include <memory>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -225,9 +226,11 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, in
             auto *channels = new QWidget;
             auto *rows = new QFormLayout(channels);
             rows->setContentsMargins(0, 0, 0, 0);
-            std::array<QSlider *, 4> sliders{};
-            std::array<QLabel *, 4> captions{};
-            std::array<QSpinBox *, 4> numbers{};
+            // Callbacks capture these arrays before the widgets are populated.
+            // Keep shared arrays so the captures see the initialized pointers.
+            auto sliders = std::make_shared<std::array<QSlider *, 4>>();
+            auto captions = std::make_shared<std::array<QLabel *, 4>>();
+            auto numbers = std::make_shared<std::array<QSpinBox *, 4>>();
             auto current = [=]() -> QColor {
                 Engine::Lock lk(&m_engine->mutex());
                 IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
@@ -246,29 +249,29 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, in
                 const char *rgbNames[] = {"R", "G", "B", "A"};
                 const char *hsvNames[] = {"H", "S", "V", "A"};
                 for (int k = 0; k < 4; ++k) {
-                    captions[k]->setText(QLatin1String(hsv ? hsvNames[k] : rgbNames[k]));
+                    (*captions)[k]->setText(QLatin1String(hsv ? hsvNames[k] : rgbNames[k]));
                     const int maximum = hsv && k == 0 ? 359 : 255;
                     // Block range-change signals as well as value-change signals.
                     // Otherwise setMaximum can trigger a reentrant refresh while
                     // the color editor is still being constructed.
-                    QSignalBlocker bs(sliders[k]), bn(numbers[k]);
-                    sliders[k]->setMaximum(maximum);
-                    numbers[k]->setMaximum(maximum);
-                    sliders[k]->setValue(std::max(0, values[k]));
-                    numbers[k]->setValue(std::max(0, values[k]));
+                    QSignalBlocker bs((*sliders)[k]), bn((*numbers)[k]);
+                    (*sliders)[k]->setMaximum(maximum);
+                    (*numbers)[k]->setMaximum(maximum);
+                    (*sliders)[k]->setValue(std::max(0, values[k]));
+                    (*numbers)[k]->setValue(std::max(0, values[k]));
                 }
             };
             for (int k = 0; k < 4; ++k) {
                 auto *line = new QWidget;
                 auto *h = new QHBoxLayout(line);
                 h->setContentsMargins(0, 0, 0, 0);
-                captions[k] = new QLabel;
-                sliders[k] = new QSlider(Qt::Horizontal);
-                numbers[k] = new QSpinBox;
-                numbers[k]->setFixedWidth(65);
-                h->addWidget(sliders[k], 1);
-                h->addWidget(numbers[k]);
-                rows->addRow(captions[k], line);
+                (*captions)[k] = new QLabel;
+                (*sliders)[k] = new QSlider(Qt::Horizontal);
+                (*numbers)[k] = new QSpinBox;
+                (*numbers)[k]->setFixedWidth(65);
+                h->addWidget((*sliders)[k], 1);
+                h->addWidget((*numbers)[k]);
+                rows->addRow((*captions)[k], line);
                 auto update = [=](int value) {
                     QColor c = current();
                     if (!c.isValid()) return;
@@ -288,8 +291,8 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, in
                     setValue(idx, label, [rgba](IsfValue &x) { std::copy(rgba, rgba + 4, x.c); });
                     refresh(c);
                 };
-                connect(sliders[k], &QSlider::valueChanged, editor, update);
-                connect(numbers[k], qOverload<int>(&QSpinBox::valueChanged), editor, update);
+                connect((*sliders)[k], &QSlider::valueChanged, editor, update);
+                connect((*numbers)[k], qOverload<int>(&QSpinBox::valueChanged), editor, update);
             }
             layout->addWidget(channels);
             auto *palette = new QWidget;
