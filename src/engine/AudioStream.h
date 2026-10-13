@@ -124,6 +124,12 @@ private:
     uint64_t m_seekSeen = 0;                         // decode thread: the last request handled
     uint64_t m_generation = 0;                       // decode thread: the generation of what it pushes
     bool m_eof = false;                              // decode thread
+    // Waking the decode thread: the callback only notifies (never waits for the mutex), the decode thread waits a
+    // bounded time (a notify that came between its check and its wait is not lost for long)
+    std::mutex m_wakeMutex;
+    std::condition_variable m_wake;
+    void waitForWork();                              // decode thread
+    void wakeDecoder() { m_wake.notify_one(); }      // any thread, the callback included
     bool seekAsked() const { return (m_seekSeq.load(std::memory_order_acquire) & ~uint64_t(1)) != m_seekSeen; }
     bool takeSeek(double *target, Timeline *timeline, uint64_t *generation); // decode thread
     Timeline m_timeline; // decode thread

@@ -162,6 +162,7 @@ void AudioStream::close()
 {
     if (m_thread.joinable()) {
         m_quit = true;
+        wakeDecoder();
         m_thread.join();
     }
     m_ring.clear();
@@ -214,7 +215,7 @@ void AudioStream::pushSamples(const float *s, int frames, double pts)
     const size_t head = m_head.load(std::memory_order_relaxed);
     while (head - m_tail.load(std::memory_order_acquire) >= kSlots) {
         if (m_quit || seekAsked()) return; // obsolete
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        waitForWork();
     }
     if (seekAsked()) return;
     Chunk &c = m_ring[head % kSlots];
@@ -224,6 +225,12 @@ void AudioStream::pushSamples(const float *s, int frames, double pts)
     c.samples.assign(s, s + size_t(frames) * 2);
     m_queuedFrames.fetch_add(size_t(frames), std::memory_order_relaxed);
     m_head.store(head + 1, std::memory_order_release);
+}
+
+void AudioStream::waitForWork()
+{
+    std::unique_lock<std::mutex> lk(m_wakeMutex);
+    m_wake.wait_for(lk, std::chrono::milliseconds(5));
 }
 
 // Decode thread: the seek the callback asked for, if a new one (a sequence lock: read again if written meanwhile)
@@ -390,9 +397,9 @@ void AudioStream::run()
             atEnd = false;
             continue;
         }
-        // Enough ahead, or at the end: wait (a few ms: the callback never signals, it does not take locks)
+        // Enough ahead, or at the end: wait for the callback to take some, or to ask for a seek
         if (m_eof || m_queuedFrames.load(std::memory_order_relaxed) >= maxFrames) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            waitForWork();
             continue;
         }
         const double d = m_info.duration;
@@ -448,6 +455,7 @@ void AudioStream::requestSeek(double t)
     r.dir.store(tl.dir, std::memory_order_relaxed);
     r.generation.store(m_mixGeneration, std::memory_order_relaxed);
     m_seekSeq.store(s + 2, std::memory_order_release);
+    wakeDecoder();
     m_bufFrames = 0;
     m_bufPos = 0;
     m_aligning = true;
@@ -487,6 +495,7 @@ void AudioStream::mix(float *out, int frames, double latency)
     // 1. Pull decoded chunks into the mixer buffer
     const size_t capacity = m_buf.size() / 2;
     const size_t want = size_t(frames * std::max(1.0, t.speed) * 1.02) + 4;
+    bool pulled = false;
     {
         size_t tail = m_tail.load(std::memory_order_relaxed);
         const size_t head = m_head.load(std::memory_order_acquire);
@@ -511,8 +520,10 @@ void AudioStream::mix(float *out, int frames, double latency)
             m_queuedFrames.fetch_sub(n, std::memory_order_relaxed); // added before the slot was published
             ++tail;
             m_tail.store(tail, std::memory_order_release); // the slot goes back to the decode thread
+            pulled = true;
         }
     }
+    if (pulled) wakeDecoder(); // room again: the decode thread goes on at once
 
     // 2. After open or seek: skip to the target position
     if (m_aligning && m_bufFrames > 0) {
