@@ -248,9 +248,12 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, in
                 for (int k = 0; k < 4; ++k) {
                     captions[k]->setText(QLatin1String(hsv ? hsvNames[k] : rgbNames[k]));
                     const int maximum = hsv && k == 0 ? 359 : 255;
+                    // Block range-change signals as well as value-change signals.
+                    // Otherwise setMaximum can trigger a reentrant refresh while
+                    // the color editor is still being constructed.
+                    QSignalBlocker bs(sliders[k]), bn(numbers[k]);
                     sliders[k]->setMaximum(maximum);
                     numbers[k]->setMaximum(maximum);
-                    QSignalBlocker bs(sliders[k]), bn(numbers[k]);
                     sliders[k]->setValue(std::max(0, values[k]));
                     numbers[k]->setValue(std::max(0, values[k]));
                 }
