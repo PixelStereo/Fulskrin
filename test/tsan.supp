@@ -4,6 +4,9 @@
 # code is never suppressed: a report with Pinol on both sides fails the job.
 called_from_lib:libQt6Core
 called_from_lib:libQt6Gui
-called_from_lib:libgallium*
+# Mesa is loaded and unloaded at run time (dlopen): called_from_lib would abort at exit ("library ... is
+# unloaded"), so its reports are matched by module instead
+race:libgallium*
+mutex:libgallium*
 called_from_lib:libavcodec
 called_from_lib:libavutil
