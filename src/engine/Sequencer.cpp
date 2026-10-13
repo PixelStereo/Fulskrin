@@ -9,7 +9,7 @@
 #include <cmath>
 #include <QTimer>
 
-Sequencer::Sequencer(Engine &engine, QRecursiveMutex &mutex) : QObject(&engine), m_engine(engine), m_mutex(mutex) {}
+Sequencer::Sequencer(Engine &engine, Annotated<QRecursiveMutex> &mutex) : QObject(&engine), m_engine(engine), m_mutex(mutex) {}
 
 int Sequencer::count() const
 {

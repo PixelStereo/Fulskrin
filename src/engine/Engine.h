@@ -34,6 +34,7 @@
 #include <QMutex>
 #include <QObject>
 #include <QRecursiveMutex>
+#include "AnnotatedMutex.h"
 #include <limits>
 #include <QSet>
 #include <QSize>
@@ -62,8 +63,9 @@ public:
     explicit Engine(QObject *parent = nullptr);
     ~Engine() override;
 
-    using Lock = QMutexLocker<QRecursiveMutex>;
-    QRecursiveMutex &mutex() { return m_mutex; }
+    using Mutex = Annotated<QRecursiveMutex>; // ThreadSanitizer sees what it orders (AnnotatedMutex.h)
+    using Lock = QMutexLocker<Mutex>;
+    Mutex &mutex() { return m_mutex; }
 
     bool initialize(QString *err);
     bool start();          // starts the render thread (returns false if the platform does not support it)
@@ -639,7 +641,7 @@ private:
     void layerFromJson(int index, const QJsonObject &o, const QString &projectDir, QStringList *warnings);
     double nextDt();
 
-    mutable QRecursiveMutex m_mutex;
+    mutable Mutex m_mutex;
 
     QOpenGLContext *m_context = nullptr;
     QOffscreenSurface *m_surface = nullptr;
