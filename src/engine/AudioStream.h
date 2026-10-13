@@ -14,7 +14,6 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
-#include <deque>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -65,10 +64,20 @@ public:
     int resyncCount() const { return m_resyncs.load(); }
 
 private:
+    // Decoded samples handed from the decode thread to the audio callback: a ring of slots, one writer (the decode
+    // thread) and one reader (the callback), no lock. A slot keeps its buffer: no allocation once warmed up.
     struct Chunk {
-        double pts = 0;            // timeline clock of the first sample, seconds
-        uint64_t generation = 0;
-        std::vector<float> samples; // stereo interleaved
+        double pts = 0;             // timeline clock of the first sample, seconds
+        uint64_t generation = 0;    // the seek it follows (older ones are dropped by the callback)
+        size_t frames = 0;
+        std::vector<float> samples; // stereo interleaved, capacity kept
+    };
+    static constexpr size_t kSlots = 128;
+    // A seek asked by the callback, read by the decode thread (a sequence lock over atomics: never waits)
+    struct SeekRequest {
+        std::atomic<double> target{0}, duration{0}, origin{0}, in{0}, out{-1};
+        std::atomic<int> mode{Timeline::Loop}, dir{1};
+        std::atomic<uint64_t> generation{0};
     };
     struct Transport {
         double clock = 0, speed = 1;
@@ -106,15 +115,18 @@ private:
     std::vector<float> m_convert;
 
     std::thread m_thread;
-    std::mutex m_mutex;
-    std::condition_variable m_cv;
-    std::deque<Chunk> m_queue;
-    std::vector<std::vector<float>> m_pool; // recycled buffers (no allocation in the audio callback)
-    size_t m_queuedFrames = 0;
-    bool m_quit = false, m_seekPending = false, m_eof = false;
-    double m_seekTarget = 0;
-    uint64_t m_generation = 0;
-    Timeline m_timeline, m_seekTimeline; // decode thread / given with the seek request
+    std::atomic<bool> m_quit{false};
+    std::vector<Chunk> m_ring;                       // kSlots slots
+    std::atomic<size_t> m_head{0}, m_tail{0};        // chunks written (decode thread), read (callback)
+    std::atomic<size_t> m_queuedFrames{0};
+    SeekRequest m_seekReq;
+    std::atomic<uint64_t> m_seekSeq{0};              // 2 × requests made (callback); odd: one being written
+    uint64_t m_seekSeen = 0;                         // decode thread: the last request handled
+    uint64_t m_generation = 0;                       // decode thread: the generation of what it pushes
+    bool m_eof = false;                              // decode thread
+    bool seekAsked() const { return (m_seekSeq.load(std::memory_order_acquire) & ~uint64_t(1)) != m_seekSeen; }
+    bool takeSeek(double *target, Timeline *timeline, uint64_t *generation); // decode thread
+    Timeline m_timeline; // decode thread
     Timeline::Leg m_leg;
     double m_trimBefore = 0; // forward leg: samples before this position are dropped (seek lands earlier)
     double m_backEnd = 0;
@@ -130,7 +142,7 @@ private:
     size_t m_bufFrames = 0;
     double m_bufPos = 0;      // fractional read index in m_buf
     double m_bufPts = 0;      // monotonic time of m_buf frame 0
-    uint64_t m_mixGeneration = 0;
+    uint64_t m_mixGeneration = 0; // the generation the callback keeps (its last seek)
     bool m_aligning = true;   // waiting for data at the target position (after open or seek)
     bool m_fadingForSeek = false;
     float m_gain = 0;         // current gain (ramped)

@@ -13,6 +13,7 @@ extern "C" {
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <thread>
 
 namespace {
 constexpr double kBufferSeconds = 0.5;   // decoded audio kept ahead of the mixer
@@ -134,20 +135,22 @@ bool AudioStream::open(const QString &path, int outputRate, QString *err)
     m_bufFrames = 0;
     m_bufPos = 0;
     m_bufPts = 0;
-    m_pool.reserve(256);
+    m_ring.assign(kSlots, Chunk{});
+    m_head = m_tail = 0;
     m_aligning = true;
     m_fadingForSeek = false;
     m_gain = 0;
 
     m_quit = false;
     m_eof = false;
-    m_seekPending = false;
+    m_seekSeq = 0;
+    m_seekSeen = 0;
     m_generation = m_mixGeneration = 0;
     m_queuedFrames = 0;
     m_draining = false;
     m_nextPts = 0;
-    m_timeline = m_seekTimeline = Timeline{};
-    m_timeline.duration = m_seekTimeline.duration = m_info.duration;
+    m_timeline = Timeline{};
+    m_timeline.duration = m_info.duration;
     m_leg = m_timeline.firstLeg();
     m_mixTimelineId = ~0ull;
     m_timelineChanged = false;
@@ -158,15 +161,11 @@ bool AudioStream::open(const QString &path, int outputRate, QString *err)
 void AudioStream::close()
 {
     if (m_thread.joinable()) {
-        {
-            std::lock_guard<std::mutex> lk(m_mutex);
-            m_quit = true;
-        }
-        m_cv.notify_all();
+        m_quit = true;
         m_thread.join();
     }
-    m_queue.clear();
-    m_pool.clear();
+    m_ring.clear();
+    m_head = m_tail = 0;
     m_queuedFrames = 0;
     if (m_swr) swr_free(&m_swr);
     if (m_frame) av_frame_free(&m_frame);
@@ -208,21 +207,50 @@ void AudioStream::doSeek(double t)
     m_nextPts = t;
 }
 
+// Decode thread: into the next slot of the ring (waits while the ring is full; dropped if a seek came meanwhile)
 void AudioStream::pushSamples(const float *s, int frames, double pts)
 {
     if (frames <= 0) return;
-    std::lock_guard<std::mutex> lk(m_mutex);
-    if (m_seekPending) return; // obsolete: a seek is waiting
-    Chunk c;
+    const size_t head = m_head.load(std::memory_order_relaxed);
+    while (head - m_tail.load(std::memory_order_acquire) >= kSlots) {
+        if (m_quit || seekAsked()) return; // obsolete
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (seekAsked()) return;
+    Chunk &c = m_ring[head % kSlots];
     c.pts = pts;
     c.generation = m_generation;
-    if (!m_pool.empty()) {
-        c.samples = std::move(m_pool.back());
-        m_pool.pop_back();
-    }
+    c.frames = size_t(frames);
     c.samples.assign(s, s + size_t(frames) * 2);
-    m_queuedFrames += size_t(frames);
-    m_queue.push_back(std::move(c));
+    m_queuedFrames.fetch_add(size_t(frames), std::memory_order_relaxed);
+    m_head.store(head + 1, std::memory_order_release);
+}
+
+// Decode thread: the seek the callback asked for, if a new one (a sequence lock: read again if written meanwhile)
+bool AudioStream::takeSeek(double *target, Timeline *timeline, uint64_t *generation)
+{
+    for (;;) {
+        const uint64_t s1 = m_seekSeq.load(std::memory_order_acquire);
+        if ((s1 & ~uint64_t(1)) == m_seekSeen) return false;
+        if (s1 & 1) {
+            std::this_thread::yield(); // being written
+            continue;
+        }
+        const SeekRequest &r = m_seekReq;
+        *target = r.target.load(std::memory_order_relaxed);
+        timeline->duration = r.duration.load(std::memory_order_relaxed);
+        timeline->origin = r.origin.load(std::memory_order_relaxed);
+        timeline->in = r.in.load(std::memory_order_relaxed);
+        timeline->out = r.out.load(std::memory_order_relaxed);
+        timeline->mode = r.mode.load(std::memory_order_relaxed);
+        timeline->dir = r.dir.load(std::memory_order_relaxed);
+        *generation = r.generation.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (m_seekSeq.load(std::memory_order_relaxed) == s1) {
+            m_seekSeen = s1;
+            return true;
+        }
+    }
 }
 
 void AudioStream::pushSilence(int frames, double pts)
@@ -350,20 +378,22 @@ void AudioStream::run()
     const size_t maxFrames = size_t(m_rate * kBufferSeconds);
     bool atEnd = false;
     for (;;) {
-        {
-            std::unique_lock<std::mutex> lk(m_mutex);
-            m_cv.wait(lk, [&] { return m_quit || m_seekPending || (!m_eof && m_queuedFrames < maxFrames); });
-            if (m_quit) return;
-            if (m_seekPending) {
-                const double c = m_seekTarget;
-                m_timeline = m_seekTimeline;
-                lk.unlock();
-                startLeg(m_timeline.legAt(c), m_timeline.position(c));
-                atEnd = false;
-                lk.lock();
-                m_seekPending = false; // chunks pushed from now on belong to the new generation
-                continue;
-            }
+        if (m_quit) return;
+        double c = 0;
+        Timeline tl;
+        uint64_t gen = 0;
+        if (takeSeek(&c, &tl, &gen)) {
+            m_timeline = tl;
+            m_generation = gen; // chunks pushed from now on belong to the new generation
+            m_eof = false;
+            startLeg(m_timeline.legAt(c), m_timeline.position(c));
+            atEnd = false;
+            continue;
+        }
+        // Enough ahead, or at the end: wait (a few ms: the callback never signals, it does not take locks)
+        if (m_eof || m_queuedFrames.load(std::memory_order_relaxed) >= maxFrames) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            continue;
         }
         const double d = m_info.duration;
         if (!m_leg.forward) {
@@ -386,7 +416,6 @@ void AudioStream::run()
         }
         // End of the leg: the next one, or the end of playback
         if (m_timeline.mode == Timeline::Once || d <= 0) {
-            std::lock_guard<std::mutex> lk(m_mutex);
             m_eof = true;
             continue;
         }
@@ -402,19 +431,23 @@ void AudioStream::run()
 
 void AudioStream::requestSeek(double t)
 {
-    {
-        std::lock_guard<std::mutex> lk(m_mutex);
-        ++m_generation;
-        m_mixGeneration = m_generation;
-        m_seekTarget = std::max(0.0, t);
-        m_seekTimeline = m_snapshot.timeline;
-        m_seekPending = true;
-        m_eof = false;
-        for (Chunk &c : m_queue) m_pool.push_back(std::move(c.samples));
-        m_queue.clear();
-        m_queuedFrames = 0;
-    }
-    m_cv.notify_all();
+    // Handed to the decode thread without waiting for it: what is queued now belongs to the old generation and is
+    // dropped as it comes
+    ++m_mixGeneration;
+    const uint64_t s = m_seekSeq.load(std::memory_order_relaxed);
+    m_seekSeq.store(s + 1, std::memory_order_relaxed); // odd: being written
+    std::atomic_thread_fence(std::memory_order_release);
+    SeekRequest &r = m_seekReq;
+    const Timeline &tl = m_snapshot.timeline;
+    r.target.store(std::max(0.0, t), std::memory_order_relaxed);
+    r.duration.store(tl.duration, std::memory_order_relaxed);
+    r.origin.store(tl.origin, std::memory_order_relaxed);
+    r.in.store(tl.in, std::memory_order_relaxed);
+    r.out.store(tl.out, std::memory_order_relaxed);
+    r.mode.store(tl.mode, std::memory_order_relaxed);
+    r.dir.store(tl.dir, std::memory_order_relaxed);
+    r.generation.store(m_mixGeneration, std::memory_order_relaxed);
+    m_seekSeq.store(s + 2, std::memory_order_release);
     m_bufFrames = 0;
     m_bufPos = 0;
     m_aligning = true;
@@ -454,14 +487,14 @@ void AudioStream::mix(float *out, int frames, double latency)
     // 1. Pull decoded chunks into the mixer buffer
     const size_t capacity = m_buf.size() / 2;
     const size_t want = size_t(frames * std::max(1.0, t.speed) * 1.02) + 4;
-    bool pulled = false;
     {
-        std::lock_guard<std::mutex> lk(m_mutex);
-        while (!m_queue.empty()) {
+        size_t tail = m_tail.load(std::memory_order_relaxed);
+        const size_t head = m_head.load(std::memory_order_acquire);
+        while (tail != head) {
             const size_t avail = m_bufFrames - std::min(m_bufFrames, size_t(m_bufPos));
             if (avail >= want) break;
-            Chunk &c = m_queue.front();
-            const size_t n = c.samples.size() / 2;
+            const Chunk &c = m_ring[tail % kSlots];
+            const size_t n = c.frames;
             if (c.generation == m_mixGeneration) {
                 // Aligning: a chunk that ends before the target position is useless
                 const bool behind = m_aligning && m_bufFrames == 0 && gap(c.pts) >= double(n) / m_rate;
@@ -475,13 +508,11 @@ void AudioStream::mix(float *out, int frames, double latency)
                     m_bufFrames += n;
                 }
             }
-            m_queuedFrames -= std::min(m_queuedFrames, n);
-            m_pool.push_back(std::move(c.samples));
-            m_queue.pop_front();
-            pulled = true;
+            m_queuedFrames.fetch_sub(n, std::memory_order_relaxed); // added before the slot was published
+            ++tail;
+            m_tail.store(tail, std::memory_order_release); // the slot goes back to the decode thread
         }
     }
-    if (pulled) m_cv.notify_one();
 
     // 2. After open or seek: skip to the target position
     if (m_aligning && m_bufFrames > 0) {

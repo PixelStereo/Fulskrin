@@ -53,9 +53,17 @@ private:
     void render(float *out, int frames);
 
     std::unique_ptr<AudioOutputPrivate> d;
-    std::mutex m_streamsMutex;
-    std::vector<std::shared_ptr<AudioStream>> m_streams;
-    std::function<void(const float *, int)> m_tap;
+    // What the callback mixes: an immutable list, replaced as a whole (the callback never takes a lock). A writer
+    // publishes the new one, then waits for a callback that read the old one to end before freeing it.
+    struct Mix {
+        std::vector<std::shared_ptr<AudioStream>> streams;
+        std::function<void(const float *, int)> tap;
+    };
+    void publish(std::shared_ptr<const Mix> next); // m_streamsMutex held
+    std::mutex m_streamsMutex;                     // writers only
+    std::shared_ptr<const Mix> m_owned = std::make_shared<Mix>();
+    std::atomic<const Mix *> m_mix{m_owned.get()};
+    std::atomic<uint64_t> m_epoch{0};              // odd while the callback mixes
     std::atomic<float> m_volume{1.0f};
     float m_gain = 1.0f; // ramped composition gain (audio thread)
     std::atomic<float> m_fadeTarget{1.0f}, m_fadeStep{1.0f}; // blackout: target and step per sample

@@ -2,6 +2,8 @@
 #include "Commands.h"
 #include "DeckLink.h"
 #include "Engine.h"
+#include "AudioOutput.h"
+#include "AudioStream.h"
 #include "LayerTree.h"
 #include "Osc.h"
 #include "Parameter.h"
@@ -3537,6 +3539,40 @@ int main(int argc, char **argv)
         AudioStream::Info ai;
         CHECK(AudioStream::probe(root + "/media/tone.wav", &ai) && ai.sampleRate == 44100 && ai.channels == 1);
         CHECK(!AudioStream::probe(root + "/media/h264.mp4", &ai));
+
+        // The audio callback takes no lock: streams added and removed from another thread while it mixes, and
+        // streams seeking all the time, never stop it (it keeps its pace) and nothing is used after removal
+        {
+            AudioOutput out;
+            CHECK(out.start(QString(), &err, true));
+            std::atomic<long long> mixed{0};
+            out.setTap([&](const float *, int n) { mixed += n; });
+            std::vector<std::shared_ptr<AudioStream>> streams;
+            for (int k = 0; k < 4; ++k) {
+                auto st = std::make_shared<AudioStream>();
+                CHECK(st->open(root + "/media/tone.wav", AudioOutput::kSampleRate, &err));
+                streams.push_back(st);
+            }
+            QElapsedTimer t;
+            t.start();
+            uint64_t id = 1;
+            int cycles = 0;
+            while (t.elapsed() < 1500) {
+                for (auto &st : streams) {
+                    // A new timeline id each time: the callback asks its stream to seek
+                    st->setTransport(double(cycles % 7) * 0.3, true, 1.0, Timeline{}, ++id, 1.0f);
+                    out.addStream(st);
+                }
+                QThread::msleep(3);
+                for (auto &st : streams) out.removeStream(st.get());
+                ++cycles;
+            }
+            const double expected = t.elapsed() / 1000.0 * AudioOutput::kSampleRate;
+            CHECK(cycles > 50 && double(mixed.load()) > expected * 0.8); // the callback kept its pace
+            for (auto &st : streams) st->close(); // removed: closing cannot race the callback
+            out.setTap(nullptr);
+            out.stop();
+        }
 
         // --- Play modes (the video with sound of the previous test is muted meanwhile)
         e.setLayerMuted(v, true);
