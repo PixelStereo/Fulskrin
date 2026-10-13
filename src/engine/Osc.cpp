@@ -1353,7 +1353,7 @@ bool OscServer::handleMessage(const osc::Message &m)
         // Native OSC 'r' is a packed RGBA value. Publish four normalized
         // component events so Interaction Learn can bind each color channel
         // independently, instead of learning the packed 32-bit integer.
-        if (m.types.value(k) == QLatin1Char('r')) {
+        if (k < m.types.size() && m.types.at(k) == QLatin1Char('r')) {
             const quint32 rgba = quint32(a.toULongLong());
             for (int channel = 0; channel < 4; ++channel) {
                 InteractionEvent component = e;
