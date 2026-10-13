@@ -24,6 +24,7 @@
 
 #include <QJsonObject>
 #include <QString>
+#include <array>
 #include <deque>
 #include <optional>
 
