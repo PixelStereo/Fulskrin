@@ -1,82 +1,166 @@
-# Pinol
+<div align="center">
 
-Video mapping for stage, installations and live shows: layers of video, images, sound, text and ISF shaders, warped onto
-surfaces, sent to several outputs, recalled as snapshots and driven by OSC. Qt 6, FFmpeg, OpenGL 3.3 (Metal output on
-macOS). macOS, Windows, Linux.
+# PINOL
 
-## Features
+### Make space move.
 
-- **Layers and groups**: video (any FFmpeg codec, HAP, with sound), image, ISF generator, text, live input (camera, NDI, OMT, Syphon), another layer. ROI, color, ISF effect chain, blend modes.
-- **Mapping**: position, scale, rotation, pivot, corner pin, warp mesh. Viewports send parts of the composition to screens.
-- **Snapshots, presets and sequences**: every value fades to the snapshot's own way (time and easing per value or group); snapshots in nested groups, reordered by dragging; presets hold only the values put in them; cue lists with waits and auto-follows.
-- **Animations**: any number animated by a waveform or Bézier keys, per layer or in timelines.
-- **Outputs**: fullscreen windows, Syphon, Spout, NDI, OMT, Blackmagic DeckLink / UltraStudio (SDI, HDMI).
-- **Timecode**: a generator layer per clock (time of day, a free run with its own transport — play, pause, seek, in / out,
-  loop, ping-pong — held by snapshots and presets, or LTC / MTC / ATC received). Each layer drives one of the
-  composition's named timecode outputs; the patch (Composition tab) sends an output to any number of destinations, and the
-  destination gives the protocol: a named MIDI output (MTC, on a port or a virtual port), a named audio channel (LTC, a
-  channel of any output device), a viewport (ATC in its NDI frames and DeckLink SDI: RP188, VITC in SD).
-- **Interactions** (left tab): any value of the show driven by a key, a MIDI controller (CC, note, pitch bend, program),
-  an OSC message, or by another value of the show (Internal, no protocol in between), with Learn. Each through a chain:
-  source range, toggle, filter (average, weighted average, pulse detection, attack / release, damper), a drawn curve,
-  master level, target range, and pick-up (a fader waits to meet the value a snapshot left) or jump. Each one is named
-  (its OSC address: `/interaction/<name>/master`…); snapshots keep them in a part of their own, presets hold any of
-  their values, both faded in their time. Any value's right-click: its OSC address, and Learn Interaction (a new one
-  driving it, its source learnt; several sources at once: you choose).
-  An interaction listening on a value's own OSC address takes that address over: the message goes through the
-  interaction's chain only, the value is not also written directly (one writer per value). Disabled, it lets the
-  address go. A color tuple with a channel above 1 is read as 0..255, by the interactions and the native address alike.
-- **Control**: OSC and OSCQuery (UDP 1234, TCP 5678, Zeroconf). One address per value everywhere: OSC, project file, snapshots, timelines (`/layer/<name>/position/x`, `…/fx/<fx>/param/<input>`, `…/<param>/anim/play`). No password: in Settings › OSC, *Listen on* limits it to one network interface or to this computer.
+**Real-time video mapping, playback and show control.**  
+One place to build the picture, shape the stage and run the show.
 
-## Build
+[![Build](https://github.com/PixelStereo/Pinol/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/PixelStereo/Pinol/actions/workflows/build.yml)
+![Platforms](https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-24272C?style=flat-square)
+![Built with Qt](https://img.shields.io/badge/Qt%206%20%C2%B7%20C%2B%2B17%20%C2%B7%20FFmpeg-24272C?style=flat-square)
 
-The libraries Pinol builds from source are git submodules in `third_party/` (miniaudio, bcdec, Syphon, Spout,
-RtMidi): clone with `git clone --recursive`, or run `git submodule update --init` in a clone.
+**[Explore the features](#built-for-the-show) &nbsp;·&nbsp; [Get started](#get-started) &nbsp;·&nbsp; [Build from source](#build-from-source)**
+
+</div>
+
+---
+
+> **Every surface is a canvas. Every cue matters.**
+>
+> PINOL brings video, generative visuals, spatial mapping, animation and live control together in one show environment. From a single projection to a multi-output installation, you can design the image and control what happens next—without changing tools.
+
+## Built for the show
+
+| | |
+| :--- | :--- |
+| **01 — PLAY**<br>**Your media, all together.**<br>Video, HAP, images, audio, text, live inputs and ISF generators. Layer, group, blend and combine them with effects. | **02 — MAP**<br>**Take the picture beyond the rectangle.**<br>Position, scale, rotate, corner-pin and warp with a mesh. Shape content to a surface, crop it with ROI and route it through viewports. |
+| **03 — CUE**<br>**Build the moment. Then recall it.**<br>Snapshots, selective presets and sequences with waits, fades and auto-follow. Animate parameters with waveforms, Bézier keys and timelines. | **04 — CONTROL**<br>**Hands on. Eyes up.**<br>OSC, OSCQuery, MIDI, keyboard and internal interactions, with Learn, ranges, curves, filters and pick-up or jump takeover. |
+| **05 — SYNC**<br>**Keep the show on time.**<br>Time-of-day and transport-based clocks, LTC, MTC and ATC, plus routing to MIDI, audio and supported video destinations. | **06 — OUTPUT**<br>**From preview to projection.**<br>Fullscreen output windows, Syphon, Spout, NDI, OMT and Blackmagic DeckLink / UltraStudio—depending on your platform and installed runtimes. |
+
+### Made to be played live
+
+**Build visually.** Combine videos, generators, images and effects in layers and groups. Correct color, animate parameters, and transform the composition to fit the space.
+
+**Perform with confidence.** Store the state of a scene in a snapshot, recall only the values you want with a preset, or build a sequence of cues. Each value can have its own fade and easing.
+
+**Connect everything.** Learn incoming OSC, MIDI or keyboard controls; shape the response with ranges, filtering and curves; or let one parameter drive another internally. OSCQuery exposes a browsable address tree for your show.
+
+**Feed the room.** Route viewports to displays and supported video protocols. Use timecode where the show needs to stay in step with other equipment.
+
+## Under the hood
+
+PINOL is written in **C++17 / Qt 6**, with **FFmpeg** for media decoding, **OpenGL 3.3** for rendering and **Metal-based output presentation on macOS**.
+
+- **HAP-aware playback** — HAP textures are decompressed and kept GPU-compressed where supported, avoiding an unnecessary full RGBA conversion. HAP Q is the preferred fast path on macOS.
+- **Hardware-assisted decoding** — VideoToolbox on macOS, with D3D11VA / VAAPI paths on supported systems; CPU fallback when needed.
+- **Multi-stream playback controls** — bounded frame queues, shared decoded-frame accounting, upload-buffer budgeting and a shared worker pool for HAP.
+- **Performance visibility** — decoder timing (including p95/p99), missed and skipped frames, latency metrics and a multi-video benchmark.
+- **Automation and diagnostics** — OSC/OSCQuery, a filterable event log, engine tests, fuzz testing and ThreadSanitizer checks in CI.
+
+These are engineering capabilities, **not a guarantee of a particular frame rate**: performance depends on codecs, resolution, layer count, effects, outputs and hardware.
+
+## Get started
+
+**Want to try a build?** Successful [GitHub Actions runs](https://github.com/PixelStereo/Pinol/actions/workflows/build.yml) provide downloadable platform archives in their **Artifacts** section. At present, there are no published GitHub Releases.
+
+| macOS | Windows | Linux |
+| :--- | :--- | :--- |
+| Apple Silicon build; a `.app` in a ZIP | MSVC x64 build; Qt and FFmpeg DLLs included | Ubuntu 24.04 x86_64 archive; runtime packages required |
+| Ad-hoc signed; **not notarized** | Includes Visual C++ runtime installer | Not yet a self-contained AppImage |
+
+Optional NDI, OMT and DeckLink features require compatible vendor runtimes/drivers. Consult the [macOS signing notes](docs/macos-release-signing.md) for distribution details.
+
+## Build from source
+
+**Requirements:** CMake 3.21+, Qt 6.2+, FFmpeg 4+, C++17 and OpenGL 3.3 core. Clone with submodules:
 
 ```bash
-# macOS
-brew install qt ffmpeg cmake pkg-config
-cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" && cmake --build build -j
-
-# Linux (Ubuntu)
-sudo apt install build-essential cmake pkg-config qt6-base-dev libqt6opengl6-dev qt6-multimedia-dev libgl1-mesa-dev \
-  libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev libasound2-dev
-cmake -S . -B build && cmake --build build -j
+git clone --recurse-submodules https://github.com/PixelStereo/Pinol.git
+cd Pinol
 ```
 
-Windows: Qt 6 (MSVC 2022, with Qt Multimedia), shared FFmpeg, then
-`cmake -S . -B build -DCMAKE_PREFIX_PATH=C:\Qt\6.8.3\msvc2022_64 -DFFMPEG_ROOT=C:\ffmpeg && cmake --build build --config Release`.
+<details>
+<summary><strong>macOS — Homebrew</strong></summary>
 
-Requires Qt 6.2+, FFmpeg 4+, CMake 3.21+, C++17, OpenGL 3.3 core.
+```bash
+brew install qt ffmpeg cmake pkg-config
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+cmake --build build -j
+```
 
-Tests: `sh test/make_media.sh && cmake --build build --target pinol_tests && ctest --test-dir build`
-(one process per area; `pinol_tests --area snapshots` runs one; CI runs them on the three platforms).
-ThreadSanitizer: build with `-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_FLAGS=-fsanitize=thread
--DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`, run with `TSAN_OPTIONS=suppressions=test/tsan.supp` (Qt, Mesa and FFmpeg
-are not built with it; CI runs the sound, video and OSC areas this way, the render-thread ones are too slow there).
-Headless render: `Pinol --render out.png [--frames N] [--strict] project.pinol`. Exit code 0 rendered, 1 OpenGL
-unavailable, 2 output not written, 3 project not loaded, 4 a layer or an effect in error (with `--strict`).
-Playback benchmark: `cmake --build build --target pinol_bench && sh test/bench_4k.sh build` (how many 4K files
-play together, per codec, with and without zero copy).
-Fuzzing of the HAP and Snappy readers (Clang, libFuzzer + ASan / UBSan; CI runs it two minutes):
-`cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DPINOL_FUZZ=ON && cmake --build build-fuzz --target fuzz_hap`,
-then `sh test/make_fuzz_corpus.sh "$PWD/corpus" && ./build-fuzz/fuzz_hap -max_total_time=600 corpus`.
-HAP is read by Pinol itself (sections, chunks, Snappy, GPU blocks), not by Vidvox's library: on 4K frames its
-Snappy decompression is as fast as Google's or faster (same output), and it has no dependency.
+Run `build/Pinol.app`. The build is not Developer ID signed or notarized.
 
-## Limits
+</details>
 
-- Video: H.264, HEVC and ProRes decoded by the graphics hardware when it can (VideoToolbox on macOS, sampled in
-  place with no copy; D3D11VA / VAAPI elsewhere, copied back then uploaded); other codecs on the CPU. HAP is
-  decompressed on the CPU and sampled compressed, except Hap R and Hap HDR on macOS (no BPTC in its OpenGL: decoded
-  on the CPU, slow in 4K; Hap Q is the fast one there). One stereo audio output.
-- MIDI for the interactions and the timecode (MTC), no DMX input yet; ISF audio inputs are black. Cameras need Qt Multimedia (without it, none are listed).
-- NDI and OMT send a GPU readback (one frame of latency). DeckLink plays the same readback on the card's clock,
-  three frames ahead (a new picture is shown at most four frames later; a missing one repeats the last). Its ports
-  show up when Blackmagic Desktop Video is installed. A picture of another size than the mode is scaled (nearest):
-  set the viewport to the mode's size. Video only, 8 bits, no keying.
+<details>
+<summary><strong>Linux — Ubuntu</strong></summary>
 
-Third party in the source tree: the Blackmagic DeckLink SDK's interfaces (`third_party/decklink`, SDK 12.0, Boost
-Software License 1.0, see its LICENSE; a copy, as OBS, GStreamer and VLC keep: Blackmagic publishes no repository).
+```bash
+sudo apt install build-essential cmake pkg-config qt6-base-dev libqt6opengl6-dev \
+  qt6-multimedia-dev libgl1-mesa-dev libavformat-dev libavcodec-dev \
+  libswscale-dev libswresample-dev libavutil-dev libasound2-dev
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/Pinol
+```
 
-Links: [ISF](https://www.interactiveshaderformat.com/) · [OSCQuery](https://github.com/Vidvox/OSCQueryProposal)
+</details>
+
+<details>
+<summary><strong>Windows — MSVC 2022</strong></summary>
+
+Install Qt 6 (MSVC 2022, including Qt Multimedia), shared FFmpeg and CMake. From an MSVC developer shell:
+
+```powershell
+cmake -S . -B build -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64" -DFFMPEG_ROOT="C:/ffmpeg"
+cmake --build build --config Release
+```
+
+See [the CI workflow](.github/workflows/build.yml) for the tested toolchain and deployment steps.
+
+</details>
+
+<details>
+<summary><strong>Tests, benchmarking and command-line render</strong></summary>
+
+Generate media fixtures and run the engine tests:
+
+```bash
+sh test/make_media.sh
+cmake --build build --target pinol_tests
+ctest --test-dir build --output-on-failure
+```
+
+Render a project from the command line:
+
+```bash
+Pinol --render out.png --frames 1 --strict project.pinol
+```
+
+Benchmark multiple 4K streams:
+
+```bash
+cmake --build build --target pinol_bench
+sh test/bench_4k.sh build
+```
+
+CI runs platform tests, the HAP/OSC fuzzers and selected ThreadSanitizer suites. See the [performance work plan](docs/performance-work-plan.md).
+
+</details>
+
+## Before the doors open
+
+A few important current boundaries:
+
+- **Video:** HAP Q is optimized for compressed GPU textures. HAP R / HAP HDR may require CPU block decoding on macOS because its OpenGL path lacks BPTC support.
+- **Audio and control:** one stereo program-audio output; MIDI/OSC/keyboard interactions and timecode are available. DMX input is not yet implemented, and ISF audio inputs are currently black.
+- **Output protocols:** NDI / OMT use GPU readback and add latency; DeckLink also buffers frames to the card's clock. Hardware outputs require their vendor software. DeckLink is currently video-only, 8-bit, without keying.
+- **Network:** the OSC/OSCQuery server has **no password authentication**. In **Settings → OSC → Listen on**, bind to localhost or a trusted network interface rather than exposing the server to an untrusted network.
+
+For details on dependencies, supported workflows and implementation, browse the [source](src/engine), [tests](test) and [build workflow](.github/workflows/build.yml).
+
+---
+
+<div align="center">
+
+### Bring the image to life.
+
+**PINOL** — from the first pixel to the final cue.
+
+[Report an issue](https://github.com/PixelStereo/Pinol/issues) · [Explore the code](https://github.com/PixelStereo/Pinol) · [View builds](https://github.com/PixelStereo/Pinol/actions/workflows/build.yml)
+
+<sub>Built for projection, installations and live performance.</sub>
+
+</div>
