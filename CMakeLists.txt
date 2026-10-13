@@ -69,6 +69,8 @@ add_library(pinol_engine STATIC
   src/engine/AudioOutput.cpp
   src/engine/MiniaudioImpl.cpp
   src/engine/Osc.cpp
+  src/engine/EventLog.cpp
+  src/engine/FrameTiming.cpp
   src/engine/OscCodec.cpp
   src/engine/Zeroconf.cpp
   src/engine/Snapshots.cpp
@@ -282,6 +284,7 @@ set(APP_SOURCES
   src/main.cpp
   src/ui/MainWindow.cpp
   src/ui/LogPanel.cpp
+  src/ui/LogModel.cpp
   src/ui/LayerInspector.cpp
   src/ui/ParamPanel.cpp
   src/ui/PresetEditor.cpp
@@ -390,7 +393,7 @@ endif()
 # ---------------------------------------------------------------------------
 option(PINOL_TESTS "Build the engine tests" ON)
 if(PINOL_TESTS)
-  add_executable(pinol_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp src/ui/Commands.cpp)
+  add_executable(pinol_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp src/ui/Commands.cpp src/ui/LogModel.cpp)
   target_include_directories(pinol_tests PRIVATE src/ui)
   target_link_libraries(pinol_tests PRIVATE pinol_engine)
   target_compile_options(pinol_tests PRIVATE ${PINOL_WARNINGS})

@@ -137,6 +137,7 @@ int main(int argc, char **argv)
     std::vector<quint64> start(static_cast<size_t>(n), 0);
     for (int k = 0; k < n; ++k) start[size_t(k)] = e.videoFramesShown(e.indexOfId(ids[size_t(k)]));
     const quint64 frames0 = e.frameCount();
+    e.resetFrameTiming(); // the warm-up is not counted
     QElapsedTimer tm;
     tm.start();
     double fpsSum = 0;
@@ -164,6 +165,15 @@ int main(int argc, char **argv)
         mean /= double(waits.size());
         std::printf("Interface waiting for the lock: mean %.2f ms, p99 %.2f ms, max %.2f ms (%zu samples)\n", mean,
                     waits[std::min(waits.size() - 1, size_t(double(waits.size()) * 0.99))], waits.back(), waits.size());
+    }
+    {
+        const FrameTiming::Stats t = e.frameTiming();
+        std::printf("Frames: %llu, missed deadlines %llu, interval p50/p95/p99/max %.2f/%.2f/%.2f/%.2f ms\n",
+                    static_cast<unsigned long long>(t.frames), static_cast<unsigned long long>(t.missed),
+                    t.interval.percentile(0.5), t.interval.percentile(0.95), t.interval.percentile(0.99), t.interval.max);
+        std::printf("      compute p99/max %.2f/%.2f ms, present p99/max %.2f/%.2f ms, outputs dropped %llu\n",
+                    t.compute.percentile(0.99), t.compute.max, t.present.percentile(0.99), t.present.max,
+                    static_cast<unsigned long long>(e.frameTimingJson().value("outputs_dropped").toDouble()));
     }
     bool allGood = true;
     for (int k = 0; k < n; ++k) {

@@ -996,9 +996,26 @@ void Engine::renderFrame()
     if (!m_initialized || m_threaded) return;
     if (!m_context->makeCurrent(m_surface)) return;
     m_currentSurface = m_surface;
+    const qint64 t0 = FrameTiming::nowNs();
     frame(nextDt());
-    presentViewports();
+    const qint64 t1 = FrameTiming::nowNs();
+    const bool presented = presentViewports();
+    const double rate = effectiveRender().frameRate;
+    m_frameTiming.noteFrame(t0, t1, FrameTiming::nowNs(), rate > 0 ? qint64(1e9 / rate) : 0, presented);
     if (!m_framePending.exchange(true)) emit frameRendered();
+}
+
+QJsonObject Engine::frameTimingJson() const
+{
+    QJsonObject o = m_frameTiming.stats().json();
+    o["outputs_dropped"] = double(m_outputsDropped.load());
+    return o;
+}
+
+void Engine::resetFrameTiming()
+{
+    m_frameTiming.reset();
+    m_outputsDropped = 0;
 }
 
 // Last finished picture of one viewport (what its window and its publishers get)

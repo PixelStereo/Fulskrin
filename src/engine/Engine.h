@@ -17,6 +17,7 @@
 #include "TestCard.h"
 #include "PresentMetal.h"
 #include "Sequencer.h"
+#include "FrameTiming.h"
 #include "AudioOutput.h"
 #include "IsfLibrary.h"
 #include "Layer.h"
@@ -562,6 +563,11 @@ public:
     // frame to be drawn (the CPU does not)
     void waitForFrame(QOpenGLExtraFunctions *f) const;
     double fps() const { return m_fps.load(); }
+    // Frame timing (FrameTiming.h): intervals, missed deadlines, compute and present times, OSC / cue to frame
+    FrameTiming::Stats frameTiming() const { return m_frameTiming.stats(); }
+    QJsonObject frameTimingJson() const; // the same, with the outputs' dropped frames (OSC /composition/timing)
+    void resetFrameTiming();
+    void noteInput(FrameTiming::Input kind) { m_frameTiming.noteInput(kind); } // any thread
     QImage grabOutput();                 // the whole composition (interface preview)
     QImage grabViewport(quint64 viewport);
     QImage grabLayerSource(int index); // a layer's source picture, full size, before its ROI (tests, tools)
@@ -680,6 +686,7 @@ private:
         GLuint vao = 0;                    // vertex arrays are not shared between contexts
         std::shared_ptr<MetalOutput> metal; // macOS: the window shown through Metal instead (PresentMetal.h)
         quint64 presented = 0;              // pictures it was given
+        quint64 dropped = 0;                // pictures it could not show (Metal), as last counted
     };
     void releaseOutputSurface(OutputSurface &o);
     void present(const Layer &viewport, OutputSurface &out);
@@ -798,6 +805,8 @@ private:
     std::atomic<bool> m_fadesManual{false};
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
+    FrameTiming m_frameTiming;
+    std::atomic<quint64> m_outputsDropped{0}; // frames an output window could not show (Metal: surfaces in use)
     std::atomic<quint64> m_frameCount{0};
     bool m_initialized = false;
 

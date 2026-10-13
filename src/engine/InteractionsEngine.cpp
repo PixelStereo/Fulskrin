@@ -1,6 +1,7 @@
 // Engine: the interactions (Interactions.h) — their list, their sources' events, and the chains run each frame.
 #include "EngineInternal.h"
 #include "Midi.h"
+#include "EventLog.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -126,8 +127,12 @@ bool Engine::oscAddressClaimed(const QString &address) const
 void Engine::feedInteraction(const InteractionEvent &e)
 {
     if (e.source == InteractionSource::Keyboard || e.source == InteractionSource::Midi) {
-        const QString channel = e.source == InteractionSource::Keyboard ? QStringLiteral("KEYBOARD") : QStringLiteral("MIDI IN");
-        emit eventObserved(channel, e.describe() + QStringLiteral(" = ") + QString::number(e.value, 'g', 5));
+        const int channel = e.source == InteractionSource::Keyboard ? EventLog::Keyboard : EventLog::MidiIn;
+        if (EventLog::instance().wants(channel)) {
+            const QString line = e.describe() + QStringLiteral(" = ") + QString::number(e.value, 'g', 5);
+            EventLog::instance().append(channel, line);
+            emit eventObserved(EventLog::channelName(channel), line);
+        }
     }
     std::lock_guard<std::mutex> lk(m_interactionEventsMutex);
     if (m_interactionEvents.size() < 8192) m_interactionEvents.push_back(e); // a flood is cut, not kept forever

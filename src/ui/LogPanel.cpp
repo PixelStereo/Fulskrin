@@ -1,43 +1,79 @@
 #include "LogPanel.h"
+
 #include <QDateTime>
-#include <QHeaderView>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLabel>
 #include <QPushButton>
-#include <QTableWidget>
+#include <QScrollBar>
+#include <QTableView>
 #include <QToolButton>
 #include <QVBoxLayout>
-LogPanel::LogPanel(QWidget *parent) : QWidget(parent) {
+
+LogPanel::LogPanel(QWidget *parent, EventLog *log) : QWidget(parent), m_log(log ? log : &EventLog::instance())
+{
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(6, 6, 6, 6);
     auto *filters = new QHBoxLayout;
-    const QStringList channels = {QStringLiteral("OSC IN"), QStringLiteral("OSC OUT"), QStringLiteral("MIDI IN"), QStringLiteral("MIDI OUT"), QStringLiteral("KEYBOARD")};
-    for (const QString &channel : channels) {
+    for (int c = 0; c < EventLog::ChannelCount; ++c) {
+        const QString channel = EventLog::channelName(c);
         auto *button = new QToolButton(this);
-        button->setText(channel); button->setCheckable(true); button->setChecked(true);
-        button->setToolTip(QStringLiteral("Show or hide %1 events").arg(channel));
-        m_filters.insert(channel, button); filters->addWidget(button);
+        button->setText(channel);
+        button->setCheckable(true);
+        button->setChecked(m_log->wants(c));
+        button->setToolTip(QStringLiteral("Show or hide %1 events (hidden: not even recorded)").arg(channel));
+        connect(button, &QToolButton::toggled, this, [this, c](bool on) { m_log->setWanted(c, on); });
+        m_filters.insert(channel, button);
+        filters->addWidget(button);
     }
     auto *clear = new QPushButton(QStringLiteral("Clear"), this);
-    filters->addWidget(clear); filters->addStretch(1); layout->addLayout(filters);
-    m_table = new QTableWidget(0, 3, this);
-    m_table->setHorizontalHeaderLabels({QStringLiteral("Time"), QStringLiteral("Channel"), QStringLiteral("Event")});
-    m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_table->setAlternatingRowColors(true); m_table->verticalHeader()->hide();
-    layout->addWidget(m_table, 1);
-    connect(clear, &QPushButton::clicked, this, [this] { m_table->setRowCount(0); });
+    filters->addWidget(clear);
+    filters->addStretch(1);
+    m_status = new QLabel(this);
+    filters->addWidget(m_status);
+    layout->addLayout(filters);
+
+    m_model = new LogModel(this);
+    m_view = new QTableView(this);
+    m_view->setModel(m_model);
+    m_view->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_view->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_view->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_view->verticalHeader()->hide();
+    m_view->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed); // no row measured: rows stay cheap
+    m_view->verticalHeader()->setDefaultSectionSize(m_view->fontMetrics().height() + 4);
+    m_view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_view->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_view->setAlternatingRowColors(true);
+    m_view->setWordWrap(false);
+    layout->addWidget(m_view, 1);
+    connect(clear, &QPushButton::clicked, this, [this] {
+        m_log->clear();
+        refresh();
+    });
+
+    // 10 times a second at most, and only when the ring changed
+    m_timer.setInterval(100);
+    connect(&m_timer, &QTimer::timeout, this, &LogPanel::refresh);
+    m_timer.start();
 }
-void LogPanel::appendEvent(const QString &channel, const QString &message) {
-    auto it = m_filters.find(channel);
-    if (it == m_filters.end() || !it.value()->isChecked()) return;
-    constexpr int maxRows = 2000;
-    if (m_table->rowCount() >= maxRows) m_table->removeRow(0);
-    const int row = m_table->rowCount(); m_table->insertRow(row);
-    m_table->setItem(row, 0, new QTableWidgetItem(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz"))));
-    m_table->setItem(row, 1, new QTableWidgetItem(channel));
-    m_table->setItem(row, 2, new QTableWidgetItem(message));
-    m_table->scrollToBottom();
+
+void LogPanel::appendEvent(const QString &channel, const QString &message) { m_log->append(channel, message); }
+
+void LogPanel::refresh()
+{
+    const quint64 g = m_log->generation();
+    if (g == m_seen) return;
+    m_seen = g;
+    QScrollBar *bar = m_view->verticalScrollBar();
+    const bool atEnd = bar->value() >= bar->maximum() - 2; // following the end (or nothing to scroll yet)
+    const bool added = m_model->update(m_log->entries());
+    if (added && atEnd) m_view->scrollToBottom();
+    const EventLog::Counters c = m_log->counters();
+    QStringList info;
+    if (c.merged) info << QStringLiteral("%1 repeats merged").arg(c.merged);
+    if (c.discarded) info << QStringLiteral("%1 over the rate, not kept").arg(c.discarded);
+    if (c.overwritten) info << QStringLiteral("%1 older lines out").arg(c.overwritten);
+    m_status->setText(info.join(QStringLiteral(" · ")));
+    m_status->setToolTip(QStringLiteral("%1 events received").arg(c.received));
 }

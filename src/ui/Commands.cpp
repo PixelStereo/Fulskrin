@@ -256,11 +256,19 @@ RecallSnapshot::RecallSnapshot(Engine *e, int snapshot) : m_e(e), m_snapshot(sna
     setText(QStringLiteral("Recall \"%1\"").arg(e->snapshot(snapshot).name));
 }
 
+RecallSnapshot::RecallSnapshot(Engine *e, int snapshot, const QJsonArray &before, const QJsonObject &beforeComposition,
+                               const QJsonArray &beforeInteractions)
+    : m_e(e), m_snapshot(snapshot), m_before(before), m_beforeComposition(beforeComposition),
+      m_beforeInteractions(beforeInteractions), m_done(true)
+{
+    setText(QStringLiteral("Recall \"%1\"").arg(e->snapshot(snapshot).name));
+}
+
 void RecallSnapshot::redo()
 {
     if (m_first) {
         m_first = false;
-        m_e->recallSnapshot(m_snapshot);
+        if (!m_done) m_e->recallSnapshot(m_snapshot);
     } else {
         const Engine::Snapshot m = m_e->snapshot(m_snapshot);
         if (!m.layers.isEmpty()) m_e->applyLayers(m.layers, 0, true);

@@ -185,6 +185,9 @@ class RecallSnapshot : public QUndoCommand
 {
 public:
     RecallSnapshot(Engine *e, int snapshot);
+    // Already recalled elsewhere (the cue clock), with the state it replaced: the first redo does nothing
+    RecallSnapshot(Engine *e, int snapshot, const QJsonArray &before, const QJsonObject &beforeComposition,
+                   const QJsonArray &beforeInteractions);
     void undo() override
     {
         m_e->applyLayers(m_before, 0);
@@ -200,6 +203,7 @@ private:
     QJsonObject m_beforeComposition;
     QJsonArray m_beforeInteractions;
     bool m_first = true;
+    bool m_done = false; // recalled before it was pushed
 };
 
 // Effect chain before / after (add, remove, reorder, enable); already done at push time

@@ -59,6 +59,7 @@ void Engine::stopAudio() { m_audio->stop(); }
 
 Engine::~Engine()
 {
+    m_sequencer->shutdownClock(); // the cue clock recalls snapshots on its own thread: stopped before anything goes
     m_midiIns.clear(); // their callbacks feed the interactions: stopped first
     shutdown();
 }
@@ -426,15 +427,19 @@ void Engine::renderLoop()
         pace.start();
         runPendingTasks();
 
-        frame(nextDt());
-        const bool presented = presentViewports();
-        if (!m_framePending.exchange(true)) emit frameRendered();
-
         // Pace: the frame rate chosen, or the screen's — the vertical sync of the windows when one is shown
         // (it then blocks), the main screen's refresh rate otherwise
         const double rate = effectiveRender().frameRate;
         const double hz = rate > 0 ? rate : screenRefreshRate();
         const qint64 periodUs = qint64(1e6 / std::clamp(hz, 1.0, 1000.0));
+
+        const qint64 t0 = FrameTiming::nowNs();
+        frame(nextDt());
+        const qint64 t1 = FrameTiming::nowNs();
+        const bool presented = presentViewports();
+        m_frameTiming.noteFrame(t0, t1, FrameTiming::nowNs(), periodUs * 1000, presented);
+        if (!m_framePending.exchange(true)) emit frameRendered();
+
         const qint64 us = pace.nsecsElapsed() / 1000;
         if (rate > 0 || !presented || us < 4000) QThread::usleep(static_cast<unsigned long>(std::max<qint64>(0, periodUs - us)));
     }
@@ -625,6 +630,9 @@ bool Engine::presentViewports()
                 any = true;
                 ++out.presented;
             }
+            const quint64 dropped = out.metal->droppedFrames();
+            if (dropped > out.dropped) m_outputsDropped += dropped - out.dropped;
+            out.dropped = dropped;
             continue;
         }
 #ifdef Q_OS_MACOS
