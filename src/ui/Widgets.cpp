@@ -436,19 +436,18 @@ void RoiEditor::mouseReleaseEvent(QMouseEvent *) { m_drag = -1; }
 // ---------------------------------------------------------------------------
 
 ColorEditor::ColorEditor(const QString &title, const QColor &defaultColor, QWidget *parent)
-    : QWidget(parent), m_color(defaultColor), m_default(defaultColor)
+    : QWidget(parent), m_color(defaultColor.toRgb()), m_default(defaultColor.toRgb())
 {
-    m_color.getHslF(&m_h, &m_s, &m_l);
-    m_h = std::max(0.0f, m_h);
     build(title);
     sync();
 }
 
 void ColorEditor::build(const QString &title)
 {
-    auto *v = new QVBoxLayout(this);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(2);
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(2);
+
     auto *head = new QHBoxLayout;
     m_switch = new FlagBox;
     m_switch->setChecked(true);
@@ -467,202 +466,49 @@ void ColorEditor::build(const QString &title)
     head->addStretch();
     head->addWidget(m_swatch);
     head->addWidget(m_hex);
-    v->addLayout(head);
-    // All color locations use the same picker (including optional-alpha
-    // channel sliders and the interactive HSV wheel). The historical correction
-    // models remain available behind an advanced disclosure.
-    m_picker = new ColorPicker(false, this);
-    m_picker->setColor(m_color);
-    v->addWidget(m_picker);
-    connect(m_picker, &ColorPicker::colorEdited, this, [this](const QColor &c) { apply(c, true); });
+    layout->addLayout(head);
 
-    auto *advancedButton = new QToolButton;
-    advancedButton->setText(QStringLiteral("Advanced color models"));
-    advancedButton->setToolTip(QStringLiteral("Show the legacy HSL, additive and subtractive channel controls"));
-    advancedButton->setCheckable(true);
-    advancedButton->setArrowType(Qt::RightArrow);
-    advancedButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    advancedButton->setAutoRaise(true);
-    v->addWidget(advancedButton);
-    m_advanced = new QWidget;
-    auto *advancedLayout = new QVBoxLayout(m_advanced);
-    advancedLayout->setContentsMargins(0, 0, 0, 0);
-    advancedLayout->setSpacing(2);
-    v->addWidget(m_advanced);
-    m_advanced->hide();
-    connect(advancedButton, &QToolButton::toggled, this, [this, advancedButton](bool shown) {
-        m_advanced->setVisible(shown);
-        advancedButton->setArrowType(shown ? Qt::DownArrow : Qt::RightArrow);
-    });
+    m_picker = new ColorPicker(false, this); // RGB only: no alpha for Add / Remove
+    layout->addWidget(m_picker);
+    connect(m_picker, &ColorPicker::colorEdited, this, [this](const QColor &c) { apply(c, true); });
     connect(m_hex, &QLineEdit::editingFinished, this, [this] {
         const QColor c(m_hex->text().trimmed());
         if (c.isValid()) apply(c, true);
         else sync();
     });
-
-    static const char *kGroups[] = {"RGB", "HSL", "Additive (light)", "Subtractive (filters)"};
-    for (int g = 0; g < 4; ++g) {
-        auto *box = new QWidget;
-        auto *grid = new QGridLayout(box);
-        grid->setContentsMargins(0, 1, 0, 1);
-        grid->setHorizontalSpacing(6);
-        grid->setVerticalSpacing(1);
-        auto *cap = new QLabel(QString::fromUtf8(kGroups[g]));
-        cap->setStyleSheet("color:#888; font-size:10px;");
-        grid->addWidget(cap, 0, 0, 1, 3);
-        m_groups[g] = box;
-        advancedLayout->addWidget(box);
-    }
-    const QString red = "stop:0 #000, stop:1 #f33", green = "stop:0 #000, stop:1 #3d3", blue = "stop:0 #000, stop:1 #47f";
-    addChannel(Rgb, 0, "R", 255, QString(), red);
-    addChannel(Rgb, 1, "G", 255, QString(), green);
-    addChannel(Rgb, 2, "B", 255, QString(), blue);
-    addChannel(Hsl, 0, QStringLiteral("Hue"), 360, QStringLiteral("°"),
-               "stop:0 #f00, stop:0.17 #ff0, stop:0.33 #0f0, stop:0.5 #0ff, stop:0.67 #00f, stop:0.83 #f0f, stop:1 #f00");
-    addChannel(Hsl, 1, QStringLiteral("Saturation"), 100, QStringLiteral(" %"), "stop:0 #777, stop:1 #f80");
-    addChannel(Hsl, 2, QStringLiteral("Lightness"), 100, QStringLiteral(" %"), "stop:0 #000, stop:0.5 #888, stop:1 #fff");
-    addChannel(Additive, 0, QStringLiteral("Red"), 100, QStringLiteral(" %"), red);
-    addChannel(Additive, 1, QStringLiteral("Green"), 100, QStringLiteral(" %"), green);
-    addChannel(Additive, 2, QStringLiteral("Blue"), 100, QStringLiteral(" %"), blue);
-    addChannel(Subtractive, 0, QStringLiteral("Cyan"), 100, QStringLiteral(" %"), "stop:0 #fff, stop:1 #0cf");
-    addChannel(Subtractive, 1, QStringLiteral("Magenta"), 100, QStringLiteral(" %"), "stop:0 #fff, stop:1 #f0d");
-    addChannel(Subtractive, 2, QStringLiteral("Yellow"), 100, QStringLiteral(" %"), "stop:0 #fff, stop:1 #fe0");
 }
 
-static int groupIndex(int model) { return model == ColorEditor::Rgb ? 0 : model == ColorEditor::Hsl ? 1 : model == ColorEditor::Additive ? 2 : 3; }
-
-// "stop:0 #3a7bff, stop:0.5 #888, stop:1 #ffd23a" — the gradients were written in stylesheet form
-static QGradientStops parseStops(const QString &text)
+void ColorEditor::apply(const QColor &color, bool emitSignal)
 {
-    QGradientStops out;
-    for (const QString &part : text.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
-        const QStringList f = part.trimmed().split(QRegularExpression(QStringLiteral("[: ]")), Qt::SkipEmptyParts);
-        if (f.size() >= 3) out.append({f[1].toDouble(), QColor(f[2])});
+    if (!color.isValid()) return;
+    QColor rgb = color.toRgb();
+    rgb.setAlpha(255);
+    if (rgb == m_color) {
+        sync();
+        return;
     }
-    return out;
-}
-
-void ColorEditor::addChannel(int model, int index, const QString &name, double max, const QString &suffix,
-                             const QString &gradient)
-{
-    auto *grid = static_cast<QGridLayout *>(m_groups[groupIndex(model)]->layout());
-    const int row = index + 1;
-    Channel ch;
-    ch.model = model;
-    ch.index = index;
-    ch.max = max;
-    auto *label = new ResetLabel(name, [this, model, index] {
-        // Default value of this channel: the one of the default color in this model
-        const QColor keep = m_color;
-        const float hk = m_h, sk = m_s, lk = m_l;
-        m_color = m_default;
-        m_default.getHslF(&m_h, &m_s, &m_l);
-        m_h = std::max(0.0f, m_h);
-        const double def = channelValue(model, index);
-        m_color = keep;
-        m_h = hk;
-        m_s = sk;
-        m_l = lk;
-        setChannel(model, index, def);
-    });
-    label->setMinimumWidth(58);
-    label->setStyleSheet("font-size:11px;");
-    ch.bar = new SliderField;
-    ch.bar->setCompact(true);
-    ch.bar->setRange(0, max);
-    ch.bar->setDecimals(max >= 255 ? 0 : 1);
-    ch.bar->setSuffix(suffix);
-    ch.bar->setSingleStep(max / 100);
-    ch.bar->setGradient(parseStops(gradient));
-    grid->addWidget(label, row, 0);
-    grid->addWidget(ch.bar, row, 1);
-    grid->setColumnStretch(1, 1);
-    m_channels.push_back(ch);
-    const size_t k = m_channels.size() - 1;
-    connect(ch.bar, &SliderField::valueEdited, this, [this, k](double v) {
-        if (m_syncing) return;
-        const Channel &c = m_channels[k];
-        setChannel(c.model, c.index, v);
-    });
-}
-
-double ColorEditor::channelValue(int model, int index) const
-{
-    const double rgb[3] = {m_color.redF(), m_color.greenF(), m_color.blueF()};
-    switch (model) {
-    case Rgb: return rgb[index] * 255.0;
-    case Hsl: return index == 0 ? m_h * 360.0 : index == 1 ? m_s * 100.0 : m_l * 100.0;
-    case Additive: return rgb[index] * 100.0;
-    case Subtractive: return (1.0 - rgb[index]) * 100.0;
-    }
-    return 0;
-}
-
-void ColorEditor::setChannel(int model, int index, double v)
-{
-    double rgb[3] = {m_color.redF(), m_color.greenF(), m_color.blueF()};
-    QColor c;
-    switch (model) {
-    case Rgb: rgb[index] = v / 255.0; break;
-    case Additive: rgb[index] = v / 100.0; break;
-    case Subtractive: rgb[index] = 1.0 - v / 100.0; break;
-    case Hsl: {
-        (index == 0 ? m_h : index == 1 ? m_s : m_l) = float(std::clamp(index == 0 ? v / 360.0 : v / 100.0, 0.0, 1.0));
-        c = QColor::fromHslF(std::min(m_h, 0.9999f), m_s, m_l);
-        break;
-    }
-    }
-    if (model != Hsl) {
-        for (double &x : rgb) x = std::clamp(x, 0.0, 1.0);
-        c = QColor::fromRgbF(rgb[0], rgb[1], rgb[2]);
-        float h, s, l;
-        c.getHslF(&h, &s, &l);
-        if (h >= 0 && s > 0) m_h = h; // gray: keep the hue
-        if (l > 0 && l < 1) m_s = s;
-        m_l = l;
-    }
-    m_color = c;
-    sync();
-    emit colorEdited(m_color);
-}
-
-void ColorEditor::apply(const QColor &c, bool emitSignal)
-{
-    m_color = c.toRgb();
-    float h, s, l;
-    m_color.getHslF(&h, &s, &l);
-    if (h >= 0 && s > 0) m_h = h;
-    m_s = s;
-    m_l = l;
+    m_color = rgb;
     sync();
     if (emitSignal) emit colorEdited(m_color);
 }
 
 void ColorEditor::setColor(const QColor &c)
 {
-    if (c.rgba64() == m_color.rgba64()) return;
-    for (const Channel &ch : m_channels)
-        if (ch.bar->isDragging()) return; // being edited
     apply(c, false);
 }
 
-void ColorEditor::sync(const Channel *)
+void ColorEditor::sync()
 {
-    m_syncing = true;
-    for (Channel &ch : m_channels) {
-        const double v = channelValue(ch.model, ch.index);
-        if (!ch.bar->isDragging()) ch.bar->setValue(v);
-    }
-    m_swatch->setStyleSheet(QStringLiteral("background:%1; border:1px solid #555; border-radius:3px;").arg(m_color.name()));
+    m_swatch->setStyleSheet(QStringLiteral("background:%1; border:1px solid #555; border-radius:3px;")
+                                .arg(m_color.name()));
     if (!m_hex->hasFocus()) m_hex->setText(m_color.name().toUpper());
     if (m_picker) m_picker->setColor(m_color);
-    m_syncing = false;
 }
 
 void ColorEditor::setSwitch(bool shown, bool on, const QString &tip)
 {
     m_switch->setVisible(shown);
-    QSignalBlocker b(m_switch);
+    QSignalBlocker blocker(m_switch);
     m_switch->setChecked(on);
     if (!tip.isEmpty()) m_switch->setToolTip(tip);
 }
@@ -670,12 +516,6 @@ void ColorEditor::setSwitch(bool shown, bool on, const QString &tip)
 void ColorEditor::setSettingsKey(const QString &key)
 {
     if (m_picker) m_picker->setSettingsKey(key);
-}
-
-void ColorEditor::setModels(int models)
-{
-    const int bits[4] = {Rgb, Hsl, Additive, Subtractive};
-    for (int g = 0; g < 4; ++g) m_groups[g]->setVisible(models & bits[g]);
 }
 
 // ---------------------------------------------------------------------------

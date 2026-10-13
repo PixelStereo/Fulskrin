@@ -1905,30 +1905,6 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
         v->addWidget(box);
     }
 
-    // How this layer's colors are edited: kept by the layer (new layers take the choice of the Settings tab)
-    auto *models = new QComboBox;
-    models->addItem(QStringLiteral("RGB"), 1);
-    models->addItem(QStringLiteral("HSL"), 2);
-    models->addItem(QStringLiteral("Additive (R G B light)"), 4);
-    models->addItem(QStringLiteral("Subtractive (C M Y filters)"), 8);
-    models->addItem(QStringLiteral("All together"), 15);
-    models->setCurrentIndex(std::max(0, models->findData(s.colorModels)));
-    models->setProperty("allowLocked", true); // a way of showing, not an edit
-    auto *modelRow = new QHBoxLayout;
-    modelRow->addWidget(new QLabel(QStringLiteral("Advanced model")));
-    modelRow->addWidget(models, 1);
-    v->addLayout(modelRow);
-    connect(models, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, models] {
-        const int m = models->currentData().toInt();
-        {
-            Engine::Lock lk(&m_engine->mutex());
-            if (Layer *l = m_engine->layer(m_layer)) l->colorModels = m;
-        }
-        if (m_colorAdd) m_colorAdd->setModels(m);
-        if (m_colorRemove) m_colorRemove->setModels(m);
-        emit projectEdited();
-    });
-
     auto toColor = [](const float c[3]) { return QColor::fromRgbF(c[0], c[1], c[2]); };
     m_colorAdd = new ColorEditor(QStringLiteral("Add"), Qt::black);
     m_colorAdd->setSettingsKey(QStringLiteral("ui/colorPickerMode/layer/%1/add").arg(m_layerId));
@@ -1943,7 +1919,6 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
         auto *fv = new QVBoxLayout(frame);
         fv->addWidget(ed);
         v->addWidget(frame);
-        ed->setModels(s.colorModels);
     }
     m_animate->attach(m_colorAdd, {"add/r", "add/g", "add/b"});
     m_animate->attach(m_colorRemove, {"remove/r", "remove/g", "remove/b"});
