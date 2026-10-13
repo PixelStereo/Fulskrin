@@ -8,6 +8,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSettings>
+#include <QScrollArea>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -37,7 +38,7 @@ class HueWheelWidget final : public QWidget
 public:
     explicit HueWheelWidget(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setFixedSize(232, 232);
+        setFixedSize(84, 84);
         setCursor(Qt::CrossCursor);
     }
 
@@ -59,12 +60,12 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         const QPointF origin(width() / 2.0, height() / 2.0);
-        const double outer = radius(), inner = outer - 23.0;
+        const double outer = radius(), inner = outer - ringThickness();
         // Each ring stroke is independently colored: clockwise HSV hues.
         for (int h = 0; h < 360; ++h) {
             const double a = double(h) * kPi / 180.0;
             const QPointF direction(std::cos(a), std::sin(a));
-            p.setPen(QPen(QColor::fromHsv(h, 255, 255), 2.8));
+            p.setPen(QPen(QColor::fromHsv(h, 255, 255), 2.8 * scale()));
             p.drawLine(origin + direction * inner, origin + direction * outer);
         }
 
@@ -84,18 +85,18 @@ protected:
 
         const double angle = double(m_hue) * kPi / 180.0;
         const QPointF huePoint = origin + QPointF(std::cos(angle), std::sin(angle)) * ((inner + outer) / 2.0);
-        p.setPen(QPen(Qt::white, 2.2));
+        p.setPen(QPen(Qt::white, 2.2 * scale()));
         p.setBrush(Qt::NoBrush);
-        p.drawEllipse(huePoint, 6.5, 6.5);
-        p.setPen(QPen(Qt::black, 1));
-        p.drawEllipse(huePoint, 8, 8);
+        p.drawEllipse(huePoint, 6.5 * scale(), 6.5 * scale());
+        p.setPen(QPen(Qt::black, std::max(0.75, scale())));
+        p.drawEllipse(huePoint, 8 * scale(), 8 * scale());
 
         const QPointF svPoint(square.left() + square.width() * m_color.hsvSaturationF(),
                               square.top() + square.height() * (1.0 - m_color.valueF()));
-        p.setPen(QPen(Qt::black, 2.5));
-        p.drawEllipse(svPoint, 8, 8);
-        p.setPen(QPen(Qt::white, 1.2));
-        p.drawEllipse(svPoint, 6.5, 6.5);
+        p.setPen(QPen(Qt::black, 2.5 * scale()));
+        p.drawEllipse(svPoint, 8 * scale(), 8 * scale());
+        p.setPen(QPen(Qt::white, std::max(0.75, 1.2 * scale())));
+        p.drawEllipse(svPoint, 6.5 * scale(), 6.5 * scale());
     }
 
     void mousePressEvent(QMouseEvent *event) override
@@ -103,7 +104,9 @@ protected:
         if (event->button() != Qt::LeftButton) return;
         const QPointF d = event->position() - QPointF(width() / 2.0, height() / 2.0);
         const double r = std::hypot(d.x(), d.y());
-        m_drag = r >= radius() - 26 && r <= radius() + 5 ? 1 : svRect().contains(event->position()) ? 2 : 0;
+        // Hit regions follow the rendered ring and square after resizing.
+        m_drag = r >= radius() - ringThickness() - 2 * scale() && r <= radius() + 5 * scale()
+                     ? 1 : svRect().contains(event->position()) ? 2 : 0;
         if (!m_drag) return;
         updateFromPoint(event->position());
         event->accept();
@@ -123,10 +126,13 @@ protected:
     }
 
 private:
-    double radius() const { return std::min(width(), height()) / 2.0 - 6; }
+    // Preserve the original geometry proportions at one-third the previous size.
+    double scale() const { return std::min(width(), height()) / 232.0; }
+    double radius() const { return std::min(width(), height()) / 2.0 - 6 * scale(); }
+    double ringThickness() const { return 23.0 * scale(); }
     QRectF svRect() const
     {
-        const double side = (radius() - 23.0) * 1.36;
+        const double side = (radius() - ringThickness()) * 1.36;
         return QRectF((width() - side) / 2.0, (height() - side) / 2.0, side, side);
     }
 
@@ -230,29 +236,42 @@ ColorPicker::ColorPicker(bool withAlpha, QWidget *parent) : QWidget(parent), m_w
     layout->addWidget(m_wheelPage);
 
     m_palettePage = new QWidget;
-    auto *palette = new QGridLayout(m_palettePage);
+    auto *paletteLayout = new QVBoxLayout(m_palettePage);
+    paletteLayout->setContentsMargins(0, 0, 0, 0);
+    paletteLayout->setSpacing(0);
+    // One continuous row, never wrapping. Narrow inspectors can scroll
+    // horizontally without squeezing the color buttons below a usable size.
+    auto *paletteScroll = new QScrollArea;
+    paletteScroll->setFrameShape(QFrame::NoFrame);
+    paletteScroll->setWidgetResizable(false);
+    paletteScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    paletteScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    paletteScroll->setFixedHeight(39);
+    auto *paletteContents = new QWidget;
+    auto *palette = new QHBoxLayout(paletteContents);
     palette->setContentsMargins(0, 0, 0, 0);
-    palette->setSpacing(3);
+    palette->setSpacing(1);
     const QStringList defaults = {
         "#ffffff", "#808080", "#000000", "#ffff00", "#ff00ff", "#00ffff",
         "#ff0000", "#00ff00", "#0000ff", "#ff8000", "#8000ff", "#00a080",
         "#e0b080", "#404040", "#804020", "#ffc0cb", "#4080ff", "#80ff80",
         "#c0c0c0", "#101010"
     };
-    for (int i = 0; i < defaults.size(); ++i) {
+    for (const QString &hex : defaults) {
         auto *pick = new QToolButton;
-        pick->setFixedHeight(23);
-        pick->setMinimumWidth(22);
-        pick->setStyleSheet(QStringLiteral("background:%1; border:1px solid #555;").arg(defaults[i]));
-        pick->setToolTip(defaults[i]);
-        palette->addWidget(pick, i / 5, i % 5);
-        connect(pick, &QToolButton::clicked, this, [this, color = QColor(defaults[i])] {
+        pick->setFixedSize(16, 22);
+        pick->setStyleSheet(QStringLiteral("background:%1; border:1px solid #555;").arg(hex));
+        pick->setToolTip(hex);
+        palette->addWidget(pick);
+        connect(pick, &QToolButton::clicked, this, [this, color = QColor(hex)] {
             QColor c = color;
             c.setAlpha(m_color.alpha());
             editColor(c);
         });
     }
-    for (int i = 0; i < 5; ++i) palette->setColumnStretch(i, 1);
+    paletteContents->adjustSize();
+    paletteScroll->setWidget(paletteContents);
+    paletteLayout->addWidget(paletteScroll);
     layout->addWidget(m_palettePage);
 
     updateControls();
