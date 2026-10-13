@@ -37,7 +37,7 @@ class HueWheelWidget final : public QWidget
 public:
     explicit HueWheelWidget(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setFixedSize(232, 232);
+        setFixedSize(84, 84);
         setCursor(Qt::CrossCursor);
     }
 
@@ -59,12 +59,12 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         const QPointF origin(width() / 2.0, height() / 2.0);
-        const double outer = radius(), inner = outer - 23.0;
+        const double outer = radius(), inner = outer - ringThickness();
         // Each ring stroke is independently colored: clockwise HSV hues.
         for (int h = 0; h < 360; ++h) {
             const double a = double(h) * kPi / 180.0;
             const QPointF direction(std::cos(a), std::sin(a));
-            p.setPen(QPen(QColor::fromHsv(h, 255, 255), 2.8));
+            p.setPen(QPen(QColor::fromHsv(h, 255, 255), 2.8 * scale()));
             p.drawLine(origin + direction * inner, origin + direction * outer);
         }
 
@@ -84,18 +84,18 @@ protected:
 
         const double angle = double(m_hue) * kPi / 180.0;
         const QPointF huePoint = origin + QPointF(std::cos(angle), std::sin(angle)) * ((inner + outer) / 2.0);
-        p.setPen(QPen(Qt::white, 2.2));
+        p.setPen(QPen(Qt::white, 2.2 * scale()));
         p.setBrush(Qt::NoBrush);
-        p.drawEllipse(huePoint, 6.5, 6.5);
-        p.setPen(QPen(Qt::black, 1));
-        p.drawEllipse(huePoint, 8, 8);
+        p.drawEllipse(huePoint, 6.5 * scale(), 6.5 * scale());
+        p.setPen(QPen(Qt::black, std::max(0.75, scale())));
+        p.drawEllipse(huePoint, 8 * scale(), 8 * scale());
 
         const QPointF svPoint(square.left() + square.width() * m_color.hsvSaturationF(),
                               square.top() + square.height() * (1.0 - m_color.valueF()));
-        p.setPen(QPen(Qt::black, 2.5));
-        p.drawEllipse(svPoint, 8, 8);
-        p.setPen(QPen(Qt::white, 1.2));
-        p.drawEllipse(svPoint, 6.5, 6.5);
+        p.setPen(QPen(Qt::black, 2.5 * scale()));
+        p.drawEllipse(svPoint, 8 * scale(), 8 * scale());
+        p.setPen(QPen(Qt::white, std::max(0.75, 1.2 * scale())));
+        p.drawEllipse(svPoint, 6.5 * scale(), 6.5 * scale());
     }
 
     void mousePressEvent(QMouseEvent *event) override
@@ -103,7 +103,9 @@ protected:
         if (event->button() != Qt::LeftButton) return;
         const QPointF d = event->position() - QPointF(width() / 2.0, height() / 2.0);
         const double r = std::hypot(d.x(), d.y());
-        m_drag = r >= radius() - 26 && r <= radius() + 5 ? 1 : svRect().contains(event->position()) ? 2 : 0;
+        // Hit regions follow the rendered ring and square after resizing.
+        m_drag = r >= radius() - ringThickness() - 2 * scale() && r <= radius() + 5 * scale()
+                     ? 1 : svRect().contains(event->position()) ? 2 : 0;
         if (!m_drag) return;
         updateFromPoint(event->position());
         event->accept();
@@ -123,10 +125,13 @@ protected:
     }
 
 private:
-    double radius() const { return std::min(width(), height()) / 2.0 - 6; }
+    // Preserve the original geometry proportions at one-third the previous size.
+    double scale() const { return std::min(width(), height()) / 232.0; }
+    double radius() const { return std::min(width(), height()) / 2.0 - 6 * scale(); }
+    double ringThickness() const { return 23.0 * scale(); }
     QRectF svRect() const
     {
-        const double side = (radius() - 23.0) * 1.36;
+        const double side = (radius() - ringThickness()) * 1.36;
         return QRectF((width() - side) / 2.0, (height() - side) / 2.0, side, side);
     }
 
