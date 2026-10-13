@@ -17,6 +17,7 @@
 #include "TestCard.h"
 #include "PresentMetal.h"
 #include "Sequencer.h"
+#include "FrameTiming.h"
 #include "AudioOutput.h"
 #include "IsfLibrary.h"
 #include "Layer.h"
@@ -562,6 +563,20 @@ public:
     // frame to be drawn (the CPU does not)
     void waitForFrame(QOpenGLExtraFunctions *f) const;
     double fps() const { return m_fps.load(); }
+    // Frame timing (FrameTiming.h): intervals, missed deadlines, compute and present times, OSC / cue to frame
+    FrameTiming::Stats frameTiming() const { return m_frameTiming.stats(); }
+    QJsonObject frameTimingJson() const; // the same, with the outputs' dropped frames (OSC /composition/timing)
+    void resetFrameTiming();
+    void noteInput(FrameTiming::Input kind) { m_frameTiming.noteInput(kind); } // any thread
+    // What the show holds against its budgets (any thread): decoded frames, upload buffers, decoders' threads,
+    // graphics memory free (when the driver says: NVIDIA, AMD), and which budget is exceeded now ("warnings").
+    // OSC /composition/budget. Sampled by the render thread once a second; a budget newly exceeded is logged.
+    QJsonObject resourcesJson() const;
+    // Syphon and Spout: false (default) the frame is finished before it is shared (the render thread waits for the
+    // GPU); true the previous frame is shared, no wait on the render path, one frame later for the receivers
+    void setGpuShareOneFrameLate(bool on) { m_shareOneFrameLate = on; }
+    bool gpuShareOneFrameLate() const { return m_shareOneFrameLate.load(); }
+    quint64 mipmapsMade() const { return m_mipmapsMade.load(); } // layers' mipmaps generated since the start
     QImage grabOutput();                 // the whole composition (interface preview)
     QImage grabViewport(quint64 viewport);
     QImage grabLayerSource(int index); // a layer's source picture, full size, before its ROI (tests, tools)
@@ -680,6 +695,7 @@ private:
         GLuint vao = 0;                    // vertex arrays are not shared between contexts
         std::shared_ptr<MetalOutput> metal; // macOS: the window shown through Metal instead (PresentMetal.h)
         quint64 presented = 0;              // pictures it was given
+        quint64 dropped = 0;                // pictures it could not show (Metal), as last counted
     };
     void releaseOutputSurface(OutputSurface &o);
     void present(const Layer &viewport, OutputSurface &out);
@@ -798,6 +814,16 @@ private:
     std::atomic<bool> m_fadesManual{false};
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
+    FrameTiming m_frameTiming;
+    std::atomic<quint64> m_outputsDropped{0}; // frames an output window could not show (Metal: surfaces in use)
+    std::atomic<quint64> m_sharesSkipped{0};  // Syphon / Spout one frame later: the previous frame not finished
+    std::atomic<bool> m_shareOneFrameLate{false};
+    std::atomic<quint64> m_mipmapsMade{0}; // glGenerateMipmap calls (tests: once per layer and frame at most)
+    void sampleResources(); // render thread, context current: once a second
+    qint64 m_resourcesSampledNs = 0;
+    int m_vramQuery = -1; // -1 not looked at yet, 0 none, 1 NVX, 2 ATI
+    std::atomic<qint64> m_vramFreeKb{-1}, m_vramTotalKb{-1};
+    std::atomic<quint32> m_overBudget{0}; // bits: 1 decoded frames, 2 upload buffers, 4 threads, 8 graphics memory
     std::atomic<quint64> m_frameCount{0};
     bool m_initialized = false;
 
@@ -814,6 +840,9 @@ private:
         bool lastBool = false;
         std::array<double, 4> color{{0, 0, 0, 1}};
         int colorComponents = 0; // last OSC message: RGB(A), or 0 for scalar
+        std::array<InteractionProcessor, 4> channels;  // a whole color: each channel's chain (Interactions.h)
+        std::array<std::optional<double>, 4> channelOut; // their last results
+        InteractionColorTargetState colorTarget;          // its pick-up
     };
     std::map<quint64, InteractionRun> m_interactionRun; // render thread (m_mutex held)
     std::mutex m_interactionEventsMutex;

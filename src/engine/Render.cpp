@@ -690,14 +690,20 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
             const double drawnH = b.height() / std::max(1e-6, view.height()) * target.h;
             mip = drawnW < l.finalW * 0.9 || drawnH < l.finalH * 0.9;
             if (mip) {
-                // A plain video's picture (no ROI, color or effect) changes only with a new frame of the file: its
-                // mipmaps are made once per frame of the video, not once per frame of the render or per output
+                // Made again only when the picture can have changed (audit P2):
+                //  - a plain video (no ROI, color or effect) changes only with a new frame of the file: once per frame
+                //    of the video, not once per frame of the render;
+                //  - any other picture is made again each frame: once per frame of the render, whatever the number of
+                //    viewports drawing it (before: once per viewport)
                 const bool plainVideo = l.type == SourceType::Video && l.videoTex && l.finalTex == l.videoTex->texture();
-                const uint64_t frame = plainVideo ? l.videoTex->pictureSerial() : 0;
-                if (!plainVideo || l.mipTex != l.finalTex || l.mipFrame != frame) {
+                const uint64_t serial = plainVideo ? l.videoTex->pictureSerial() : m_frameCount.load(std::memory_order_relaxed);
+                const int kind = plainVideo ? 1 : 2;
+                if (l.mipTex != l.finalTex || l.mipFrame != serial || l.mipKind != kind) {
                     f->glGenerateMipmap(GL_TEXTURE_2D);
-                    l.mipTex = plainVideo ? l.finalTex : 0;
-                    l.mipFrame = frame;
+                    ++m_mipmapsMade;
+                    l.mipTex = l.finalTex;
+                    l.mipFrame = serial;
+                    l.mipKind = kind;
                 }
                 f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             }
@@ -888,12 +894,13 @@ void Engine::frame(double dt)
     readSourcePreview();
     // Publishing follows the viewports, however they changed (added, removed, undone, loaded, edited)
     std::vector<std::pair<quint64, PublishSettings>> publish;
-    std::vector<std::pair<quint64, const RenderTarget *>> outs;
+    std::vector<std::pair<quint64, const RenderTarget *>> outs, previous; // this frame's pictures, the last frame's
     std::vector<std::optional<Timecode>> atc; // the timecode each viewport's pictures carry (ATC), if one is patched to it
     for (auto &l : m_layers)
         if (l->isViewport) {
             publish.push_back({l->id, l->vpPublish});
             outs.push_back({l->id, &l->vpOut[l->vpBack]});
+            previous.push_back({l->id, &l->vpOut[l->vpPublished.load()]});
             const auto tc = m_atc.find(l->id);
             atc.push_back(tc != m_atc.end() ? tc->second->now() : std::nullopt);
         }
@@ -909,17 +916,38 @@ void Engine::frame(double dt)
     // Other contexts read these pictures: the output windows and the interface wait for this fence on the GPU
     // (waitForFrame), the CPU goes on. A texture drawn in one context is only seen whole by another once the commands
     // that drew it are complete (OpenGL spec). Syphon and Spout copy the picture through contexts of their own that
-    // cannot wait for it: while one of them is on, the frame is finished here (without it, the last viewport was
-    // sent black or a frame late).
+    // cannot wait for it. Two ways (Settings › Rendering, setGpuShareOneFrameLate):
+    //  - at once (the default): the frame is finished here (glFinish) and shared; the render thread waits for the GPU;
+    //  - one frame later: this frame is only flushed; the previous frame's pictures, finished by now, are shared
+    //    (their fence checked, waited for 4 ms at most, else that share is skipped and counted). No wait for the GPU
+    //    on the render path, one frame more of latency for the applications receiving it.
     const bool shared = m_publishing.sharing();
+    const bool late = shared && m_shareOneFrameLate.load(std::memory_order_relaxed);
+    GLsync last = nullptr;
     {
         std::lock_guard<std::mutex> lk(m_fenceMutex);
-        if (m_frameFence) f->glDeleteSync(m_frameFence);
+        if (late) last = m_frameFence; // kept for the share below (no other context holds it: they wait under the lock)
+        else if (m_frameFence) f->glDeleteSync(m_frameFence);
         m_frameFence = f->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     }
-    if (shared) f->glFinish();
+    if (shared && !late) f->glFinish();
     else f->glFlush(); // the fence reaches the GPU before another context waits for it
-    for (auto &[id, out] : outs) m_publishing.share(id, *out);
+    if (late) {
+        bool ready = last != nullptr;
+        if (last) {
+            const GLenum r = f->glClientWaitSync(last, GL_SYNC_FLUSH_COMMANDS_BIT, 4000000);
+            ready = r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED;
+            f->glDeleteSync(last);
+        }
+        if (ready) {
+            for (auto &[id, out] : previous)
+                if (out->tex) m_publishing.share(id, *out);
+        } else {
+            ++m_sharesSkipped;
+        }
+    } else {
+        for (auto &[id, out] : outs) m_publishing.share(id, *out);
+    }
     m_published = m_back;
     m_back = 1 - m_back;
     {
@@ -996,9 +1024,30 @@ void Engine::renderFrame()
     if (!m_initialized || m_threaded) return;
     if (!m_context->makeCurrent(m_surface)) return;
     m_currentSurface = m_surface;
+    const qint64 t0 = FrameTiming::nowNs();
     frame(nextDt());
-    presentViewports();
+    const qint64 t1 = FrameTiming::nowNs();
+    const bool presented = presentViewports();
+    const double rate = effectiveRender().frameRate;
+    m_frameTiming.noteFrame(t0, t1, FrameTiming::nowNs(), rate > 0 ? qint64(1e9 / rate) : 0, presented);
+    sampleResources();
     if (!m_framePending.exchange(true)) emit frameRendered();
+}
+
+QJsonObject Engine::frameTimingJson() const
+{
+    QJsonObject o = m_frameTiming.stats().json();
+    o["outputs_dropped"] = double(m_outputsDropped.load());
+    o["gpu_shares_skipped"] = double(m_sharesSkipped.load());          // Syphon / Spout, one frame later: not ready
+    o["readbacks_skipped"] = double(m_publishing.readbacksSkipped()); // NDI / OMT: the GPU not done in time
+    return o;
+}
+
+void Engine::resetFrameTiming()
+{
+    m_frameTiming.reset();
+    m_outputsDropped = 0;
+    m_sharesSkipped = 0;
 }
 
 // Last finished picture of one viewport (what its window and its publishers get)

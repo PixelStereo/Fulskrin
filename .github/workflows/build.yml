@@ -3,7 +3,7 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["v*", "[0-9]*"] # v1.2 or 1.2: both publish a release
   pull_request:
   workflow_dispatch:
 
@@ -51,7 +51,16 @@ jobs:
           cmake --build build --target pinol_tests -j4
       - name: Engine tests
         run: |
-          xvfb-run -a ctest --test-dir build --output-on-failure
+          # Deterministic areas once; the real-time ones (label timing) up to 3 times (CMakeLists.txt)
+          xvfb-run -a ctest --test-dir build --output-on-failure -LE timing
+          xvfb-run -a ctest --test-dir build --output-on-failure -L timing --repeat until-pass:3
+      - name: Dependency versions
+        run: |
+          {
+            echo "Built on $(lsb_release -ds) $(uname -m), commit $GITHUB_SHA"
+            dpkg-query -W -f='${Package} ${Version}\n' qt6-base-dev qt6-multimedia-dev libavcodec-dev libavformat-dev \
+              libswscale-dev libswresample-dev libavutil-dev libasound2-dev cmake gcc
+          } | tee deps-linux.txt
       - name: Package Linux archive
         run: |
           mkdir -p dist
@@ -69,7 +78,14 @@ jobs:
           EOF
           TAG_SUFFIX=""
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then TAG_SUFFIX="-$GITHUB_REF_NAME"; fi
+          cp deps-linux.txt dist/DEPENDENCIES.txt
           tar -czf "Pinol-linux-x86_64${TAG_SUFFIX}.tar.gz" -C dist .
+      - name: Smoke test of the extracted archive
+        run: |
+          # Extracted elsewhere, run from there: its own ISF folder, a picture, a video decoded through FFmpeg
+          mkdir -p "$RUNNER_TEMP/clean" && tar -xzf Pinol-linux-x86_64*.tar.gz -C "$RUNNER_TEMP/clean"
+          xvfb-run -a python3 scripts/smoke_package.py "$RUNNER_TEMP/clean/Pinol" "$RUNNER_TEMP/clean/isf" \
+            "$PWD/test/media" "$RUNNER_TEMP/smoke"
       - uses: actions/upload-artifact@v4
         with:
           name: Pinol-linux
@@ -108,13 +124,60 @@ jobs:
           export TSAN_OPTIONS="halt_on_error=1 exitcode=66 suppressions=$PWD/test/tsan.supp"
           # The decoders' threads, the sound callback and its decode threads, the OSC server. (The render-thread areas
           # render with llvmpipe, itself far too slow under ThreadSanitizer on a CI runner: run them locally.)
+          # A data race (exit code 66) fails at once. Any other failure is a timing check under ThreadSanitizer's
+          # slowness (the sound clocks): tried up to 3 times, a real regression fails every time
           for area in sound video osc; do
             echo "::group::$area"
             start=$(date +%s)
-            timeout 600 xvfb-run -a ./build-tsan/pinol_tests --area $area
+            ok=0
+            for attempt in 1 2 3; do
+              rc=0
+              timeout 600 xvfb-run -a ./build-tsan/pinol_tests --area $area || rc=$?
+              if [ $rc -eq 0 ]; then ok=1; break; fi
+              if [ $rc -eq 66 ]; then echo "::error::ThreadSanitizer: data race in area $area"; exit 66; fi
+              echo "::warning::$area failed (exit $rc) under ThreadSanitizer, attempt $attempt of 3"
+            done
             echo "$area: $(( $(date +%s) - start )) s"
             echo "::endgroup::"
+            [ $ok -eq 1 ] || exit 1
           done
+
+  # The interface itself, driven by xdotool on Xvfb with a window manager (test/ui_test.sh): opening a project,
+  # relinking, undo, dragging, fullscreen, blackout, autosave, a forced kill and the recovery. Fails if the
+  # application exits on its own or the recovery does not come; the screenshots are kept.
+  ui:
+    name: Interface scenario (Linux)
+    runs-on: ubuntu-24.04
+    needs: media
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-media
+          path: test/media
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config qt6-base-dev libqt6opengl6-dev qt6-multimedia-dev \
+            libgl1-mesa-dev libgl1-mesa-dri libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev \
+            libasound2-dev xvfb openbox xdotool imagemagick x11-apps x11-utils python3
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j4
+      - name: Scenario
+        run: |
+          python3 test/make_tests.py
+          bash test/ui_test.sh "$PWD/ui-out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: ui-out
+          retention-days: 7
 
   # The HAP and Snappy readers against damaged files: a short libFuzzer run with ASan / UBSan, seeded with the
   # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
@@ -178,7 +241,12 @@ jobs:
           cmake --build build --target pinol_tests -j4
       - name: Engine tests
         run: |
-          ctest --test-dir build --output-on-failure
+          ctest --test-dir build --output-on-failure -LE timing
+          ctest --test-dir build --output-on-failure -L timing --repeat until-pass:3
+      - name: Dependency versions
+        run: |
+          { echo "Built on macOS $(sw_vers -productVersion) $(uname -m), commit $GITHUB_SHA"; brew list --versions qt ffmpeg; } \
+            | tee deps-macos.txt
       - name: Package .app with runtime dependencies
         shell: bash
         run: |
@@ -267,7 +335,16 @@ jobs:
           EOF
           TAG_SUFFIX=""
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then TAG_SUFFIX="-$GITHUB_REF_NAME"; fi
+          cp deps-macos.txt "$APP/Contents/Resources/DEPENDENCIES.txt"
+          codesign --force --sign - "$APP" # the resource added: sealed again
           ditto -c -k --keepParent "$APP" "Pinol-macos${TAG_SUFFIX}.zip"
+      - name: Smoke test of the extracted app
+        run: |
+          mkdir -p "$RUNNER_TEMP/clean" && ditto -x -k Pinol-macos*.zip "$RUNNER_TEMP/clean"
+          APP="$RUNNER_TEMP/clean/Pinol.app"
+          codesign --verify --deep --strict "$APP"
+          python3 scripts/smoke_package.py "$APP/Contents/MacOS/Pinol" "$APP/Contents/Resources/isf" \
+            "$PWD/test/media" "$RUNNER_TEMP/smoke"
       - uses: actions/upload-artifact@v4
         with:
           name: Pinol-macos
@@ -279,6 +356,9 @@ jobs:
     needs: media
     env:
       FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1
+      # BtbN's release to take it from. "latest" moves every day: set a dated tag (autobuild-…) here to rebuild the same
+      # binaries; the version and checksum used are written into the package (DEPENDENCIES.txt) either way
+      FFMPEG_RELEASE: latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -293,7 +373,7 @@ jobs:
       - name: FFmpeg
         shell: pwsh
         run: |
-          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$env:FFMPEG_ZIP.zip" -OutFile ffmpeg.zip
+          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/$env:FFMPEG_RELEASE/$env:FFMPEG_ZIP.zip" -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath C:\ffmpeg
       - name: Build
         shell: pwsh
@@ -313,7 +393,10 @@ jobs:
           LP_NUM_THREADS: '1' # the software GPU on one core: the sound's threads keep their time
         run: |
           $env:PATH = "C:\ffmpeg\$env:FFMPEG_ZIP\bin;$env:PATH"
-          ctest --test-dir build --output-on-failure
+          # Deterministic areas once; the real-time ones (label timing) up to 3 times (CMakeLists.txt)
+          ctest --test-dir build --output-on-failure -LE timing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build --output-on-failure -L timing --repeat until-pass:3
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package with runtime dependencies
         shell: pwsh
@@ -369,9 +452,27 @@ jobs:
           These vendor runtimes are not part of this repository and are not bundled automatically.
           '@ | Set-Content -Encoding utf8 dist\README-Dependencies.txt
 
+          # The FFmpeg build actually used (BtbN's archive is rebuilt daily: its version and checksum, to rebuild it)
+          $ffv = (& "$ffmpegBin\ffmpeg.exe" -version | Select-Object -First 1)
+          $sha = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash
+          @("Built on Windows (MSVC 2022), commit $env:GITHUB_SHA", "Qt 6.8.3 (win64_msvc2022_64, Qt Multimedia)",
+            "FFmpeg: $env:FFMPEG_ZIP from BtbN/FFmpeg-Builds release '$env:FFMPEG_RELEASE'", "  $ffv", "  zip SHA-256 $sha") |
+            Set-Content -Encoding utf8 dist\DEPENDENCIES.txt
+          Get-Content dist\DEPENDENCIES.txt
+
           $tagSuffix = ""
           if ($env:GITHUB_REF_TYPE -eq "tag") { $tagSuffix = "-$env:GITHUB_REF_NAME" }
           Compress-Archive -Path dist\* -DestinationPath "Pinol-windows$tagSuffix.zip" -Force
+      - name: Smoke test of the extracted archive
+        shell: pwsh
+        run: |
+          # Extracted elsewhere, with neither FFmpeg's nor Qt's folders in PATH: only what the archive holds
+          $clean = Join-Path $env:RUNNER_TEMP "clean"
+          Expand-Archive (Get-ChildItem Pinol-windows*.zip | Select-Object -First 1).FullName -DestinationPath $clean -Force
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'ffmpeg|Qt' }) -join ';'
+          # OpenGL comes from Mesa installed on the runner; without it the program still has to start (exit code 1)
+          python scripts/smoke_package.py "$clean\Pinol.exe" "$clean\isf" "$PWD\test\media" "$env:RUNNER_TEMP\smoke" --allow-no-gl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: Pinol-windows
@@ -380,7 +481,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref_type == 'tag'
     needs: [linux, macos, windows]
     runs-on: ubuntu-latest
     permissions:

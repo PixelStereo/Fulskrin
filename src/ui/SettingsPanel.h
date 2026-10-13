@@ -32,6 +32,7 @@ public:
     static PlayMode defaultPlayMode();
     // Videos decoded by the graphics hardware when it can (on unless changed)
     static bool hardwareDecoding();
+    static bool gpuShareOneFrameLate(); // Syphon / Spout: the frame before, without waiting for the GPU
     // Color models shown by the Color tab of the layers (ColorEditor::Model bits, RGB by default)
     static int colorModels();
     // OSC control and OSCQuery publication (defaults of libossia / score: OSC 1234, OSCQuery 5678)

@@ -18,6 +18,7 @@ struct Publishing::Publication {
     PublishState states[kPublishKindCount]; // guarded by m_stateMutex
     RenderTarget readback;
     GLuint pbo[2] = {0, 0};
+    GLsync fence[2] = {nullptr, nullptr}; // the read back into each buffer, done
     int pboIndex = 0, pboW = 0, pboH = 0;
     bool pboPending = false;
     double pboTime = 0;
@@ -200,6 +201,11 @@ void Publishing::releasePublication(Publication &pub)
     for (auto &p : pub.cpu) p.reset();
     pub.tap.reset();
     pub.readback.destroy();
+    for (GLsync &s : pub.fence)
+        if (s) {
+            gl()->glDeleteSync(s);
+            s = nullptr;
+        }
     if (pub.pbo[0]) gl()->glDeleteBuffers(2, pub.pbo);
     pub.pbo[0] = pub.pbo[1] = 0;
 }
@@ -266,6 +272,11 @@ void Publishing::readback(quint64 viewport, const RenderTarget &out, double fps,
             f->glBindBuffer(GL_PIXEL_PACK_BUFFER, b);
             f->glBufferData(GL_PIXEL_PACK_BUFFER, bytes, nullptr, GL_STREAM_READ);
         }
+        for (GLsync &s : pub.fence)
+            if (s) {
+                f->glDeleteSync(s);
+                s = nullptr;
+            }
         pub.pboW = w;
         pub.pboH = h;
         pub.pboPending = false;
@@ -283,9 +294,19 @@ void Publishing::readback(quint64 viewport, const RenderTarget &out, double fps,
     f->glBindBuffer(GL_PIXEL_PACK_BUFFER, pub.pbo[pub.pboIndex]);
     f->glPixelStorei(GL_PACK_ALIGNMENT, 4);
     f->glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+    if (pub.fence[pub.pboIndex]) f->glDeleteSync(pub.fence[pub.pboIndex]);
+    pub.fence[pub.pboIndex] = f->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 
-    // 2) Previous frame, already available: copied to the send thread
-    if (pub.pboPending) {
+    // 2) Previous frame, normally available by now: copied to the send thread. Its read back not done yet (the GPU
+    // late): waited for 2 ms at most, then that frame is not sent (counted) rather than the render thread held up
+    // by the mapping
+    bool ready = pub.pboPending;
+    if (ready && pub.fence[1 - pub.pboIndex]) {
+        const GLenum r = f->glClientWaitSync(pub.fence[1 - pub.pboIndex], GL_SYNC_FLUSH_COMMANDS_BIT, 2000000);
+        ready = r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED;
+        if (!ready) ++m_readbacksSkipped;
+    }
+    if (ready) {
         f->glBindBuffer(GL_PIXEL_PACK_BUFFER, pub.pbo[1 - pub.pboIndex]);
         const void *ptr = f->glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT);
         if (ptr) {

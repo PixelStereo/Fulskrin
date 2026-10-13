@@ -2,6 +2,7 @@
 #include "Sequencer.h"
 #include "EngineInternal.h"
 
+#include <iterator>
 #include <limits>
 
 #include <QJsonArray>
@@ -10,6 +11,78 @@
 #include <QTimer>
 
 Sequencer::Sequencer(Engine &engine, Annotated<QRecursiveMutex> &mutex) : QObject(&engine), m_engine(engine), m_mutex(mutex) {}
+
+Sequencer::~Sequencer() { shutdownClock(); }
+
+void Sequencer::shutdownClock()
+{
+    if (!m_clockThread) return;
+    if (m_clockContext) {
+        // Its timer and context go in their own thread, which then stops: nothing fires any more
+        QObject *ctx = m_clockContext;
+        m_clockContext = nullptr;
+        QMetaObject::invokeMethod(ctx, [this, ctx] {
+            m_timer = nullptr;
+            delete ctx; // the timer with it
+        }, Qt::BlockingQueuedConnection);
+    }
+    m_clockThread->quit();
+    m_clockThread->wait();
+    m_clockThread.reset();
+    m_ticking = false;
+}
+
+void Sequencer::setRecaller(std::function<void(int snapshotIndex)> f)
+{
+    QMutexLocker lk(&m_mutex);
+    m_recaller = std::move(f);
+}
+
+void Sequencer::setRecallRecorder(std::function<void(int, const RecallBefore &)> f)
+{
+    QMutexLocker lk(&m_mutex);
+    m_recorder = std::move(f);
+}
+
+double Sequencer::CueTiming::percentile(double p) const
+{
+    if (!fired) return 0;
+    static constexpr double edges[] = {0.0005, 0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.128, 0.256, 0.512};
+    const double want = std::ceil(p * double(fired));
+    quint64 seen = 0;
+    for (size_t k = 0; k < buckets.size(); ++k) {
+        seen += buckets[k];
+        if (double(seen) >= want) return k < std::size(edges) ? std::min(edges[k], max) : max;
+    }
+    return max;
+}
+
+void Sequencer::noteFired(double late)
+{
+    late = std::max(0.0, late);
+    static constexpr double edges[] = {0.0005, 0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.128, 0.256, 0.512};
+    size_t k = 0;
+    while (k < std::size(edges) && late > edges[k]) ++k;
+    ++m_timing.buckets[k];
+    ++m_timing.fired;
+    m_timing.last = late;
+    m_timing.total += late;
+    m_timing.max = std::max(m_timing.max, late);
+}
+
+Sequencer::CueTiming Sequencer::cueTiming() const
+{
+    QMutexLocker lk(&m_mutex);
+    return m_timing;
+}
+
+void Sequencer::resetCueTiming()
+{
+    QMutexLocker lk(&m_mutex);
+    m_timing = CueTiming();
+}
+
+bool Sequencer::clockRunning() const { return m_ticking.load(); }
 
 int Sequencer::count() const
 {
@@ -200,23 +273,83 @@ bool Sequencer::running() const
 
 void Sequencer::startTimer()
 {
-    if (m_engine.fadesManual() || m_runs.empty()) return;
+    if (m_engine.fadesManual()) return;
+    {
+        QMutexLocker lk(&m_mutex);
+        if (m_runs.empty()) return;
+    }
+    if (!m_clockThread) {
+        m_clockThread = std::make_unique<QThread>();
+        m_clockThread->setObjectName(QStringLiteral("Pinol cue clock"));
+        m_clockContext = new QObject;
+        m_clockContext->moveToThread(m_clockThread.get());
+        m_clockThread->start(QThread::TimeCriticalPriority);
+    }
+    if (m_clockContext) QMetaObject::invokeMethod(m_clockContext, [this] { runClock(); }, Qt::QueuedConnection);
+}
+
+void Sequencer::runClock()
+{
     if (!m_timer) {
-        m_timer = new QTimer(this);
+        m_timer = new QTimer(m_clockContext);
         m_timer->setTimerType(Qt::PreciseTimer);
-        m_timer->setInterval(5);
-        connect(m_timer, &QTimer::timeout, this, [this] {
-            const double dt = m_clock.nsecsElapsed() * 1e-9 * timeScale();
-            m_clock.restart();
-            advance(dt);
-            QMutexLocker lk(&m_mutex);
-            if (m_runs.empty()) m_timer->stop();
-        });
+        m_timer->setInterval(2); // a wait ends within ~2 ms of its time, whatever the interface does
+        connect(m_timer, &QTimer::timeout, m_clockContext, [this] { tick(); });
     }
     if (!m_timer->isActive()) {
-        m_clock.restart();
+        m_clock.restart(); // the time since the GO is already in the runs: the clock counts from now
+        m_ticking = true;
         m_timer->start();
     }
+}
+
+void Sequencer::tick()
+{
+    // The time that really went by (a monotonic clock): a tick that came late is caught up at once, the waits do not
+    // drift with the timer's own lateness
+    const double dt = m_clock.nsecsElapsed() * 1e-9 * timeScale();
+    m_clock.restart();
+    advance(dt);
+    bool empty;
+    {
+        QMutexLocker lk(&m_mutex);
+        empty = m_runs.empty();
+    }
+    if (empty && m_timer) {
+        m_timer->stop();
+        m_ticking = false;
+    }
+}
+
+void Sequencer::fireSnapshot(int mi)
+{
+    std::function<void(int)> recaller;
+    std::function<void(int, const RecallBefore &)> recorder;
+    {
+        QMutexLocker lk(&m_mutex);
+        recaller = m_recaller;
+        recorder = m_recorder;
+    }
+    if (QThread::currentThread() == thread()) { // a GO, on the Sequencer's own thread: through the interface
+        if (recaller) recaller(mi);
+        else m_engine.recallSnapshot(mi);
+        return;
+    }
+    // The cue clock: the recall now, the interface told afterwards (what it replaced, for its undo)
+    if (!recorder) {
+        m_engine.recallSnapshot(mi);
+        return;
+    }
+    RecallBefore before{m_engine.captureLayers(true), m_engine.captureComposition(), m_engine.captureInteractions()};
+    m_engine.recallSnapshot(mi);
+    QMetaObject::invokeMethod(this, [this, mi, before] {
+        std::function<void(int, const RecallBefore &)> f;
+        {
+            QMutexLocker lk(&m_mutex);
+            f = m_recorder;
+        }
+        if (f) f(mi, before);
+    }, Qt::QueuedConnection);
 }
 
 // Each step on its way moves on by dt: its snapshot once its pre-wait is over, the next step's GO when its
@@ -241,6 +374,7 @@ void Sequencer::advance(double dt)
                 r.elapsed += dt;
                 if (!r.fired && r.elapsed >= r.preWait) {
                     r.fired = true;
+                    noteFired(r.elapsed - r.preWait); // how late the clock let it fire
                     if (r.target.timeline) r.duration = stepDuration(r.target); // where the timeline is now
                     r.trackPending = r.target.timeline && r.target.action == AnimAction::Play;
                     fire.push_back(r.target);
@@ -268,6 +402,7 @@ void Sequencer::advance(double dt)
         }
         // The snapshots and timelines, in the order of their GO (outside the lock: a recall loads, and may go
         // through the interface's undo stack)
+        if (!fire.empty()) m_engine.noteInput(FrameTiming::Cue);
         for (const Step &st : fire) {
             if (st.timeline) {
                 m_engine.controlAnimation(st.timeline, st.action, st.action == AnimAction::Speed ? st.speed : st.seekTime, st.loop, st.repeat);
@@ -275,8 +410,7 @@ void Sequencer::advance(double dt)
             }
             const int mi = m_engine.indexOfSnapshot(st.snapshot);
             if (mi < 0) continue; // a step without its snapshot (gone): the position moves, nothing else
-            if (m_recaller) m_recaller(mi);
-            else m_engine.recallSnapshot(mi);
+            fireSnapshot(mi);
         }
         {
             QMutexLocker lk(&m_mutex); // the Plays are issued: their steps follow the timelines from now on

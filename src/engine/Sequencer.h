@@ -13,20 +13,30 @@
 //    waiting for the action to end;
 //  - AutoFollow: the next step gets its GO once the action is over, after the post-wait.
 // A snapshot recalled does not stop the ones still running: only the values it holds itself are taken over.
+//
+// The waits run on a clock thread of their own (the cue clock): a pre-wait or a follow ends on time even while the
+// interface is busy (a drag, a project loading, a flood of log lines). A step the clock fires recalls its snapshot
+// from there at once; the interface is told afterwards (setRecallRecorder: its undo stack), with the state before.
+// A GO from the interface or OSC is played on the Sequencer's own thread, as before (setRecaller).
 
 #include "Anim.h"
 
 #include <QElapsedTimer>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QObject>
 #include <QRecursiveMutex>
 #include "AnnotatedMutex.h"
 #include <QString>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <vector>
 
 class Engine;
+class QThread;
 class QTimer;
 
 class Sequencer : public QObject
@@ -73,7 +83,24 @@ public:
         std::vector<Step> steps;
     };
 
+    // What a recall replaced: given with a recall the cue clock made, for the interface's undo
+    struct RecallBefore {
+        QJsonArray layers;
+        QJsonObject composition;
+        QJsonArray interactions;
+    };
+    // How late the steps fired, after their pre-wait or their GO from the step before (seconds): the cue clock's
+    // precision, measured. p99 and max over every step fired since the last reset.
+    struct CueTiming {
+        quint64 fired = 0;
+        double last = 0, max = 0, total = 0;
+        std::array<quint64, 12> buckets{}; // ≤ 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512 ms, beyond
+        double percentile(double p) const; // upper edge of the bucket (seconds); 0: none yet
+    };
+
     Sequencer(Engine &engine, Annotated<QRecursiveMutex> &mutex);
+    ~Sequencer() override;
+    void shutdownClock(); // the clock thread stopped (the engine, before it goes)
 
     int count() const;
     Sequence sequence(int i) const;
@@ -96,7 +123,13 @@ public:
     bool running() const;
     void advance(double dt);       // moves the waits on (a timer does, except with Engine::setFadesManual)
     // The snapshot a step recalls goes through this (the interface: its undo stack); Engine::recallSnapshot by default
-    void setRecaller(std::function<void(int snapshotIndex)> f) { m_recaller = std::move(f); }
+    void setRecaller(std::function<void(int snapshotIndex)> f);
+    // A recall the cue clock made (its thread, on time): told afterwards on the Sequencer's thread, with the state it
+    // replaced. None: the recall is made all the same, without undo
+    void setRecallRecorder(std::function<void(int snapshotIndex, const RecallBefore &before)> f);
+    CueTiming cueTiming() const;
+    void resetCueTiming();
+    bool clockRunning() const; // the cue clock is ticking (waits on their way)
     // A step's action: its snapshot's, or the time its timeline will play (Play on a timeline that ends; else 0;
     // infinity: its timeline is frozen, speed 0, and plays on when its speed is raised)
     double stepDuration(const Step &st) const;
@@ -112,13 +145,22 @@ signals:
 
 private:
     void startTimer();
+    void runClock(); // clock thread
+    void tick();     // clock thread
+    void fireSnapshot(int snapshotIndex);
+    void noteFired(double late); // lock held
 
     Engine &m_engine;
     Annotated<QRecursiveMutex> &m_mutex;
     std::vector<Sequence> m_sequences;
     int m_current = -1, m_position = -1;
     std::vector<Run> m_runs; // of the current sequence
-    std::function<void(int)> m_recaller;
-    QTimer *m_timer = nullptr;
-    QElapsedTimer m_clock;
+    std::function<void(int)> m_recaller;                         // under m_mutex
+    std::function<void(int, const RecallBefore &)> m_recorder;   // under m_mutex
+    std::unique_ptr<QThread> m_clockThread;
+    QObject *m_clockContext = nullptr; // lives in m_clockThread
+    QTimer *m_timer = nullptr;         // clock thread
+    QElapsedTimer m_clock;             // clock thread
+    std::atomic<bool> m_ticking{false};
+    CueTiming m_timing;                // under m_mutex
 };

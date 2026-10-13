@@ -1,5 +1,8 @@
 // Headless engine tests: load/save, video, ISF (multi-pass, .vs, errors).
 #include "Commands.h"
+#include "EventLog.h"
+#include "FrameTiming.h"
+#include "LogModel.h"
 #include "DeckLink.h"
 #include "Engine.h"
 #include "AudioOutput.h"
@@ -34,6 +37,7 @@
 #include <QTime>
 #include <cmath>
 #include <atomic>
+#include <thread>
 #include <functional>
 #include <cstdio>
 #include <cstring>
@@ -647,6 +651,119 @@ int main(int argc, char **argv)
     } // compositing
 
     if (area("osc")) {
+    // 4c. The Logs panel's events (audit P1): bounded in lines and in cost, whatever the traffic
+    {
+        EventLog log(8, 5); // 8 lines, 5 new lines a second
+        const qint64 t0 = 1000000;
+        // A fader sending its value: one line, its repeats counted, the last value shown
+        for (int k = 0; k < 100; ++k) log.append(EventLog::OscIn, QStringLiteral("/fader/1  %1").arg(k), t0 + k);
+        std::vector<EventLog::Entry> l = log.entries();
+        CHECK(l.size() == 1 && l[0].repeats == 100 && l[0].message == "/fader/1  99" && l[0].time == t0 + 99);
+        CHECK(log.counters().received == 100 && log.counters().merged == 99);
+        // Another address, another channel: new lines; the same address a second later: a new line too
+        log.append(EventLog::OscIn, "/fader/2  1", t0 + 200);
+        log.append(EventLog::MidiIn, "/fader/2  1", t0 + 201);
+        log.append(EventLog::OscIn, "/fader/1  5", t0 + 1300);
+        CHECK(log.entries().size() == 4);
+        // The rate: beyond 5 new lines in a second, counted, not kept
+        for (int k = 0; k < 20; ++k) log.append(EventLog::OscOut, QStringLiteral("/out/%1").arg(k), t0 + 1400);
+        CHECK(log.counters().discarded == 16 && log.entries().size() == 8); // 4 + the 4 left of this second's 5
+        // The ring: the oldest lines leave it, in order
+        for (int k = 0; k < 5; ++k) log.append(EventLog::OscOut, QStringLiteral("/later/%1").arg(k), t0 + 2500);
+        l = log.entries();
+        CHECK(l.size() == 8 && log.counters().overwritten == 5 && l.back().message == "/later/4");
+        for (size_t k = 1; k < l.size(); ++k) CHECK(l[k].seq == l[k - 1].seq + 1);
+        CHECK(EventLog::keyOf("/a/b  1, 2") == "/a/b" && EventLog::keyOf("MIDI · ch 1 · CC 7 = 0.5") == "MIDI · ch 1 · CC 7");
+        // A hidden channel: not recorded
+        log.setWanted(EventLog::Keyboard, false);
+        const quint64 g = log.generation();
+        log.append(EventLog::Keyboard, "Key Space = 1", t0 + 3000);
+        CHECK(!log.wants(EventLog::Keyboard) && log.generation() == g);
+        // The panel's rows follow the ring by sequence number: added, merged, removed, cleared
+        LogModel model;
+        CHECK(model.update(log.entries()) && model.rowCount() == 8);
+        int inserted = 0, removed = 0, changed = 0, resets = 0;
+        QObject::connect(&model, &QAbstractItemModel::rowsInserted, [&](const QModelIndex &, int a, int b) { inserted += b - a + 1; });
+        QObject::connect(&model, &QAbstractItemModel::rowsRemoved, [&](const QModelIndex &, int a, int b) { removed += b - a + 1; });
+        QObject::connect(&model, &QAbstractItemModel::dataChanged, [&] { ++changed; });
+        QObject::connect(&model, &QAbstractItemModel::modelReset, [&] { ++resets; });
+        log.append(EventLog::OscOut, "/later/4  again", t0 + 2600); // merged into the last line
+        CHECK(!model.update(log.entries()) && changed == 1 && inserted == 0 && removed == 0);
+        CHECK(model.data(model.index(7, 2), Qt::DisplayRole).toString().contains(QStringLiteral("×2")));
+        log.append(EventLog::OscIn, "/new/1", t0 + 4000);
+        log.append(EventLog::OscIn, "/new/2", t0 + 4000);
+        CHECK(model.update(log.entries()) && inserted == 2 && removed == 2 && resets == 0 && model.rowCount() == 8);
+        CHECK(model.data(model.index(7, 2), Qt::DisplayRole).toString() == "/new/2");
+        log.clear();
+        model.update(log.entries());
+        CHECK(model.rowCount() == 0 && resets == 0); // all removed from the start
+        // Any thread at once: nothing lost from the counts, the ring never beyond its size
+        EventLog shared(64, 1000000);
+        std::vector<std::thread> writers;
+        for (int w = 0; w < 4; ++w)
+            writers.emplace_back([&shared, w] {
+                for (int k = 0; k < 5000; ++k) shared.append(EventLog::OscIn, QStringLiteral("/w%1/%2").arg(w).arg(k % 7));
+            });
+        for (std::thread &t : writers) t.join();
+        const EventLog::Counters c = shared.counters();
+        CHECK(c.received == 20000 && shared.entries().size() <= 64 && c.received == c.merged + c.discarded + c.overwritten + shared.entries().size());
+        // OSC in: recorded where it is received, and not at all when its channel is hidden
+        EventLog &app = EventLog::instance();
+        app.clear();
+        OscServer srv(&e);
+        srv.handleMessage({"/nowhere", "f", {0.5}});
+        CHECK(app.entries().size() == 1 && app.entries()[0].message == "/nowhere  0.5" &&
+              app.entries()[0].channel == EventLog::OscIn);
+        app.setWanted(EventLog::OscIn, false);
+        srv.handleMessage({"/nowhere/else", "f", {0.5}});
+        CHECK(app.entries().size() == 1);
+        app.setWanted(EventLog::OscIn, true);
+        app.clear();
+    }
+    // 4c'. Frame timing (audit P2): frame intervals, missed deadlines, input to frame — from fixed times, then live
+    {
+        FrameTiming t;
+        const qint64 ms = 1000000, period = 16 * ms;
+        t.noteInput(FrameTiming::Osc, 5 * ms);   // before the first frame: shown by it
+        t.noteInput(FrameTiming::Osc, 7 * ms);   // a later one in the same frame: the earliest is counted
+        t.noteFrame(10 * ms, 14 * ms, 15 * ms, period, true);
+        t.noteInput(FrameTiming::Cue, 27 * ms);  // during the next frame (started at 26): the one after shows it
+        t.noteFrame(26 * ms, 29 * ms, 30 * ms, period, true);
+        t.noteFrame(80 * ms, 82 * ms, 90 * ms, period, false); // 54 ms after the one before: deadlines missed
+        FrameTiming::Stats st = t.stats();
+        CHECK(st.frames == 3 && st.presented == 2 && st.missed == 1);
+        CHECK(st.interval.count == 2 && std::abs(st.interval.max - 54.0) < 1e-9);
+        CHECK(st.inputToFrame[FrameTiming::Osc].count == 1 && std::abs(st.inputToFrame[FrameTiming::Osc].max - 10.0) < 1e-9);
+        CHECK(st.inputToFrame[FrameTiming::Cue].count == 1 && std::abs(st.inputToFrame[FrameTiming::Cue].max - 63.0) < 1e-9);
+        CHECK(std::abs(st.present.max - 8.0) < 1e-9 && std::abs(st.compute.max - 4.0) < 1e-9);
+        // Percentiles: the upper edge of the bucket, never beyond the largest value
+        FrameTiming::Histogram h;
+        for (int k = 0; k < 99; ++k) h.add(3.0);
+        h.add(40.0);
+        CHECK(h.percentile(0.5) == 4.0 && h.percentile(0.99) == 4.0 && h.percentile(1.0) == 40.0 && h.max == 40.0);
+        const QJsonObject j = st.json();
+        CHECK(j.value("missed_deadlines").toDouble() == 1 && j.value("osc_to_frame").toObject().value("max_ms").toDouble() == 10.0);
+        t.reset();
+        CHECK(t.stats().frames == 0);
+        // The engine: each frame counted; an OSC message that changed a value, until the frame that has it
+        e.resetFrameTiming();
+        OscServer srv(&e);
+        const quint64 lid = e.layerId(e.addLayer("Timed"));
+        (void)lid;
+        e.renderFrame();
+        CHECK(srv.handleMessage({"/layer/Timed/opacity", "f", {0.5}}));
+        e.renderFrame();
+        e.renderFrame();
+        const FrameTiming::Stats live = e.frameTiming();
+        CHECK(live.frames == 3 && live.inputToFrame[FrameTiming::Osc].count == 1 && live.interval.count == 2);
+        // Read over OSCQuery as one JSON string, reset over OSC
+        int status = 0;
+        const QJsonObject v = QJsonDocument::fromJson(srv.httpGet("/composition/timing?VALUE", &status)).object();
+        const QJsonObject timing = QJsonDocument::fromJson(v.value("VALUE").toArray().at(0).toString().toUtf8()).object();
+        CHECK(status == 200 && timing.value("frames").toDouble() == 3 && timing.contains("osc_to_frame") &&
+              timing.contains("cue_to_frame") && timing.contains("outputs_dropped"));
+        CHECK(srv.handleMessage({"/composition/timing/reset", "N", {QVariant()}}) && e.frameTiming().frames == 0);
+    }
     // 4d. OSC and OSCQuery
     {
         osc::Message m{"/a/b", "ifsTFNd", {7, 0.5, QStringLiteral("hey"), true, false, QVariant(), 2.25}};
@@ -1493,6 +1610,95 @@ int main(int argc, char **argv)
             e.removeLayer(e.indexOfId(ia));
             e.removeLayer(e.indexOfId(ib));
             e.setFadesManual(false);
+        }
+        // The cue clock (audit P1): a pre-wait ends on time while the thread that played GO is blocked (the
+        // interface busy, no event processed); the recall is made from the clock's thread, the interface told after
+        {
+            e.setFadesManual(false);
+            const quint64 cid = e.layerId(e.addLayer("Cue", V));
+            {
+                Engine::Lock lk(&e.mutex());
+                e.layer(e.indexOfId(cid))->opacity = 0;
+            }
+            Engine::Snapshot m;
+            m.name = "Cue";
+            m.fade = 0;
+            for (const QJsonValue &v : e.captureLayers()) {
+                QJsonObject o = v.toObject();
+                const bool me = o.value("id").toString().toULongLong() == cid;
+                o["included"] = me;
+                if (me) setParam(o, "opacity", 1.0);
+                m.layers.append(o);
+            }
+            const int mi = e.addSnapshot(m);
+            std::atomic<qint64> firedAt{-1};
+            std::atomic<QThread *> firedOn{nullptr};
+            QElapsedTimer since;
+            const QMetaObject::Connection watch = QObject::connect(&e, &Engine::snapshotRecalled, &e, [&](int i) {
+                if (i != mi || firedAt.load() >= 0) return;
+                firedAt = since.elapsed();
+                firedOn = QThread::currentThread();
+            }, Qt::DirectConnection);
+            std::vector<int> recorded;
+            bool beforeKept = false;
+            e.sequencer().setRecallRecorder([&](int i, const Sequencer::RecallBefore &before) {
+                recorded.push_back(i);
+                beforeKept = !before.layers.isEmpty();
+            });
+            Sequencer::Sequence seq;
+            seq.name = "Clock";
+            Sequencer::Step st;
+            st.snapshot = e.snapshot(mi).id;
+            st.preWait = 0.1;
+            seq.steps = {st};
+            e.sequencer().setCurrent(e.sequencer().add(seq));
+            e.sequencer().resetCueTiming();
+            since.start();
+            CHECK(e.sequencer().go() && firedAt.load() < 0); // in its pre-wait
+            QThread::msleep(400); // busy: nothing processed on this thread
+            std::printf("cue clock: recalled %lld ms after GO (pre-wait 100 ms)\n", (long long)firedAt.load());
+            CHECK(firedAt.load() >= 95 && firedAt.load() <= 300); // on time, while this thread was blocked
+            CHECK(firedOn.load() && firedOn.load() != QThread::currentThread());
+            CHECK(recorded.empty()); // the interface is told afterwards, on its own thread
+            for (int k = 0; k < 200 && recorded.empty(); ++k) {
+                QCoreApplication::processEvents();
+                QThread::msleep(5);
+            }
+            CHECK(recorded == std::vector<int>{mi} && beforeKept);
+            {
+                const Sequencer::CueTiming t = e.sequencer().cueTiming();
+                std::printf("cue clock: %llu fired, late %.2f ms (max %.2f, p99 <= %.2f)\n", (unsigned long long)t.fired,
+                            t.last * 1e3, t.max * 1e3, t.percentile(0.99) * 1e3);
+                CHECK(t.fired == 1 && t.max < 0.2 && t.percentile(0.99) <= t.max + 1e-12);
+            }
+            // The undo of a recall made elsewhere: not recalled a second time when pushed, its state back on undo
+            {
+                e.renderFrame();
+                CHECK(std::abs(e.layer(e.indexOfId(cid))->opacity - 1.0f) < 1e-6);
+                QUndoStack undo;
+                const QJsonArray before = [&] {
+                    QJsonArray layers = e.captureLayers(true);
+                    for (int k = 0; k < layers.size(); ++k) {
+                        QJsonObject o = layers[k].toObject();
+                        if (o.value("id").toString().toULongLong() == cid) setParam(o, "opacity", 0.25);
+                        layers[k] = o;
+                    }
+                    return layers;
+                }();
+                firedAt = -1;
+                undo.push(new cmd::RecallSnapshot(&e, mi, before, e.captureComposition(), e.captureInteractions()));
+                CHECK(firedAt.load() < 0); // pushed: no second recall
+                undo.undo();
+                e.renderFrame();
+                CHECK(std::abs(e.layer(e.indexOfId(cid))->opacity - 0.25f) < 1e-6);
+            }
+            for (int k = 0; k < 200 && e.sequencer().clockRunning(); ++k) QThread::msleep(5);
+            CHECK(!e.sequencer().clockRunning()); // nothing on its way: the clock stops ticking
+            QObject::disconnect(watch);
+            e.sequencer().setRecallRecorder(nullptr);
+            e.sequencer().remove(e.sequencer().current());
+            e.removeSnapshot(mi);
+            e.removeLayer(e.indexOfId(cid));
         }
         // Timelines: curves and oscillators on their own clock; the sequences drive their transport
         {
@@ -2965,6 +3171,21 @@ int main(int argc, char **argv)
         e.setRenderSettings(rs);
         const auto [lo, hi] = spread();
         CHECK(lo > 90 && hi < 165); // grey everywhere
+        // Made once per frame of the render, however many viewports draw the layer (audit P2; before: each one)
+        {
+            const int v2 = e.addViewport(QStringLiteral("Twin"), QSize(64, 64));
+            {
+                Engine::Lock lk(&e.mutex());
+                e.layer(v2)->mapping = e.layer(e.viewports().first() == v2 ? e.viewports()[1] : e.viewports().first())->mapping;
+            }
+            e.renderFrame();
+            const quint64 before = e.mipmapsMade();
+            for (int k = 0; k < 3; ++k) e.renderFrame();
+            std::printf("       mipmaps made in 3 frames with 2 viewports: %llu\n", (unsigned long long)(e.mipmapsMade() - before));
+            CHECK(e.mipmapsMade() - before == 3);
+            CHECK(spread().first > 90 && spread().second < 165); // still grey in the first viewport
+            e.removeLayer(e.indexOfId(e.layerId(v2)));
+        }
         // The frame rate is the project's (composition/fps); samples, mipmaps and depth are the machine's
         rs = Engine::RenderSettings{30, 8, 1};
         e.setRenderSettings(rs);
@@ -4712,6 +4933,94 @@ int main(int argc, char **argv)
             // A scalar of the same layer, not listened to, is still written directly
             CHECK(server.handleMessage({"/layer/Chataigne/opacity", "f", {0.5}}));
             e.setInteractions({});
+        }
+
+        // A whole color through the whole chain (audit P1/P2): each channel with its own target range, master,
+        // curve and filter; pick-up on the whole color; the alpha without the master
+        {
+            e.setInteractions({});
+            CHECK(e.setParameter(colorLayer, "param/color/a", 0.75));
+            Interaction chain = Interaction::made(InteractionSource::Osc);
+            chain.oscAddress = QStringLiteral("/chataigne/chain");
+            chain.layer = colorLayer;
+            chain.param = QStringLiteral("param/color");
+            chain.takeover = Takeover::Jump;
+            chain.srcMin = 0;
+            chain.srcMax = 1;
+            chain.dstMin = 0.2;
+            chain.dstMax = 0.6;
+            chain.id = e.addInteraction(chain);
+            osc::Message cm;
+            cm.address = chain.oscAddress;
+            cm.types = QStringLiteral("fff");
+            auto send = [&](double r, double g, double b) {
+                cm.args = {QVariant(r), QVariant(g), QVariant(b)};
+                server.handleMessage(cm);
+                e.renderFrame();
+            };
+            auto rgbNear = [&](double r, double g, double b, double tol = 1e-6) {
+                return std::abs(component("r") - r) < tol && std::abs(component("g") - g) < tol &&
+                       std::abs(component("b") - b) < tol;
+            };
+            send(0.0, 0.5, 1.0); // the target range, per channel
+            CHECK(rgbNear(0.2, 0.4, 0.6) && std::abs(component("a") - 0.75) < 1e-6);
+            chain.dstMin = 0;
+            chain.dstMax = 1;
+            chain.master = 0.5;
+            chain.colorMapAlpha = true;
+            CHECK(e.setInteraction(chain));
+            cm.types = QStringLiteral("ffff");
+            cm.args = {QVariant(1.0), QVariant(1.0), QVariant(1.0), QVariant(1.0)};
+            server.handleMessage(cm);
+            e.renderFrame();
+            CHECK(rgbNear(0.5, 0.5, 0.5) && std::abs(component("a") - 1.0) < 1e-6); // master on RGB, not on alpha
+            chain.master = 1;
+            chain.colorMapAlpha = false;
+            chain.curveOn = true;
+            chain.curve = Interaction::straightCurve();
+            chain.curve.keys[0].v = 1; // inverted: 0 → 1, 1 → 0
+            chain.curve.keys[1].v = 0;
+            CHECK(e.setInteraction(chain));
+            cm.types = QStringLiteral("fff");
+            send(0.25, 0.5, 1.0); // the curve, per channel
+            CHECK(rgbNear(0.75, 0.5, 0.0, 1e-3));
+            // A filter: every channel smoothed by its own state, together
+            chain.curveOn = false;
+            chain.filterOn = true;
+            chain.filter = InteractionFilter::WeightedAverage;
+            chain.filterA = 1.0; // ~95% of the way in a second
+            CHECK(e.setInteraction(chain)); // the filter changed: its state starts again
+            send(0.0, 0.0, 0.0);
+            CHECK(rgbNear(0.0, 0.0, 0.0, 1e-3));
+            send(1.0, 1.0, 1.0);
+            const double first = component("r");
+            CHECK(first < 0.9 && std::abs(component("g") - first) < 1e-9 && std::abs(component("b") - first) < 1e-9);
+            for (int k = 0; k < 10; ++k) { // no message any more: the filter keeps moving the color
+                QThread::msleep(200);
+                e.renderFrame();
+            }
+            CHECK(component("r") > 0.97 && component("r") > first && std::abs(component("g") - component("r")) < 1e-9);
+            // Pick-up: the color moved elsewhere is held until every channel has met it
+            chain.filterOn = false;
+            chain.takeover = Takeover::PickUp;
+            CHECK(e.setInteraction(chain));
+            send(0.9, 0.9, 0.9);
+            CHECK(e.setParameter(colorLayer, "param/color/r", 0.3) && e.setParameter(colorLayer, "param/color/g", 0.3) &&
+                  e.setParameter(colorLayer, "param/color/b", 0.3)); // moved by something else (a snapshot)
+            send(0.8, 0.8, 0.8);
+            CHECK(rgbNear(0.3, 0.3, 0.3)); // not met: left alone
+            send(0.3, 0.3, 0.8); // red and green met, not blue
+            CHECK(rgbNear(0.3, 0.3, 0.3));
+            send(0.2, 0.2, 0.1); // blue crossed it: the whole color is taken over
+            CHECK(rgbNear(0.2, 0.2, 0.1));
+            send(0.6, 0.7, 0.8); // and follows from now on
+            CHECK(rgbNear(0.6, 0.7, 0.8));
+            e.setInteractions({});
+            // The color the checks below start from (the packed 'r' above)
+            CHECK(e.setParameter(colorLayer, "param/color/r", 0x33 / 255.0) &&
+                  e.setParameter(colorLayer, "param/color/g", 0x66 / 255.0) &&
+                  e.setParameter(colorLayer, "param/color/b", 0xCC / 255.0) &&
+                  e.setParameter(colorLayer, "param/color/a", 0x80 / 255.0));
         }
 
         // Existing scalar OSC argument mapping continues to work alongside

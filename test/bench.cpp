@@ -77,6 +77,7 @@ int main(int argc, char **argv)
     QSize comp(3840, 2160);
     bool decode = false, copy = false, software = false;
     QStringList files;
+    bool mipmaps = false;
     const QStringList args = app.arguments();
     for (int i = 1; i < args.size(); ++i) {
         const QString a = args[i];
@@ -88,10 +89,11 @@ int main(int argc, char **argv)
         } else if (a == "--decode") decode = true;
         else if (a == "--copy") copy = true;
         else if (a == "--software") software = true;
+        else if (a == "--mipmaps") mipmaps = true; // the layers drawn smaller, with mipmaps (off by default)
         else files << a;
     }
     if (files.isEmpty()) {
-        std::printf("usage: pinol_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] file...\n");
+        std::printf("usage: pinol_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] [--mipmaps] file...\n");
         return 1;
     }
     if (software) VideoDecoder::setHardwareDecoding(false);
@@ -110,7 +112,7 @@ int main(int argc, char **argv)
     Engine::RenderSettings rs;
     rs.frameRate = fps;
     rs.samples = 0;
-    rs.mipmaps = 0;
+    rs.mipmaps = mipmaps ? 1 : 0;
     e.setRenderSettings(rs);
     const int n = int(files.size()), cols = int(std::ceil(std::sqrt(double(n)))), rows = (n + cols - 1) / cols;
     std::vector<quint64> ids;
@@ -137,6 +139,7 @@ int main(int argc, char **argv)
     std::vector<quint64> start(static_cast<size_t>(n), 0);
     for (int k = 0; k < n; ++k) start[size_t(k)] = e.videoFramesShown(e.indexOfId(ids[size_t(k)]));
     const quint64 frames0 = e.frameCount();
+    e.resetFrameTiming(); // the warm-up is not counted
     QElapsedTimer tm;
     tm.start();
     double fpsSum = 0;
@@ -164,6 +167,15 @@ int main(int argc, char **argv)
         mean /= double(waits.size());
         std::printf("Interface waiting for the lock: mean %.2f ms, p99 %.2f ms, max %.2f ms (%zu samples)\n", mean,
                     waits[std::min(waits.size() - 1, size_t(double(waits.size()) * 0.99))], waits.back(), waits.size());
+    }
+    {
+        const FrameTiming::Stats t = e.frameTiming();
+        std::printf("Frames: %llu, missed deadlines %llu, interval p50/p95/p99/max %.2f/%.2f/%.2f/%.2f ms\n",
+                    static_cast<unsigned long long>(t.frames), static_cast<unsigned long long>(t.missed),
+                    t.interval.percentile(0.5), t.interval.percentile(0.95), t.interval.percentile(0.99), t.interval.max);
+        std::printf("      compute p99/max %.2f/%.2f ms, present p99/max %.2f/%.2f ms, outputs dropped %llu\n",
+                    t.compute.percentile(0.99), t.compute.max, t.present.percentile(0.99), t.present.max,
+                    static_cast<unsigned long long>(e.frameTimingJson().value("outputs_dropped").toDouble()));
     }
     bool allGood = true;
     for (int k = 0; k < n; ++k) {

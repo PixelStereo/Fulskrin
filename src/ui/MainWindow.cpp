@@ -104,6 +104,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_engine->setDefaultColorModels(SettingsPanel::colorModels());
     // Rendering: the machine's defaults, and the main screen's refresh rate (the pace without an output shown)
     m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
+    m_engine->setGpuShareOneFrameLate(SettingsPanel::gpuShareOneFrameLate());
     auto screenRate = [this] {
         if (QScreen *sc = QGuiApplication::primaryScreen()) m_engine->setScreenRefreshRate(sc->refreshRate());
     };
@@ -125,7 +126,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_leftTabs->addTab(m_interactions, QStringLiteral("Interactions"));
     m_logs = new LogPanel;
     m_leftTabs->addTab(m_logs, QStringLiteral("Logs"));
-    connect(m_engine, &Engine::eventObserved, m_logs, &LogPanel::appendEvent, Qt::QueuedConnection);
+    // The Logs panel reads the events' ring (EventLog) a few times a second: no signal per message
     m_leftTabs->setTabToolTip(0, QStringLiteral("Media Bin (Shift+1)"));
     m_leftTabs->setTabToolTip(1, QStringLiteral("Layers (Shift+2)"));
     m_leftTabs->setTabToolTip(2, QStringLiteral("Interactions: keys, MIDI, OSC and values of the show driving others (Shift+3)"));
@@ -265,6 +266,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_composition, &CompositionPanel::compositionEdited, this, &MainWindow::markDirty);
     connect(m_settings, &SettingsPanel::renderDefaultsChanged, this, [this] {
         m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
+        m_engine->setGpuShareOneFrameLate(SettingsPanel::gpuShareOneFrameLate());
     });
     connect(m_composition, &CompositionPanel::audioEdited, this, &MainWindow::markDirty);
 
@@ -346,6 +348,15 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_seqBar->setModified(false);
         m_seqWindow->setModified(false);
     });
+    // A step the cue clock fired (its pre-wait, a follow): already recalled on time, recorded here for undo
+    m_engine->sequencer().setRecallRecorder([this](int snapshot, const Sequencer::RecallBefore &before) {
+        if (snapshot < 0 || snapshot >= m_engine->snapshotCount()) return;
+        m_undo->push(new cmd::RecallSnapshot(m_engine, snapshot, before.layers, before.composition, before.interactions));
+        refreshAll();
+        m_cueUndoIndex = m_undo->index();
+        m_seqBar->setModified(false);
+        m_seqWindow->setModified(false);
+    });
     // Played elsewhere (OSC) or another sequence: nothing changed since; any edit afterwards: the bar says so
     connect(&m_engine->sequencer(), &Sequencer::positionChanged, this, [this] {
         m_cueUndoIndex = m_undo->index();
@@ -406,6 +417,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 MainWindow::~MainWindow()
 {
     m_engine->sequencer().setRecaller(nullptr);
+    m_engine->sequencer().setRecallRecorder(nullptr);
     if (m_oscThread) {
         QMetaObject::invokeMethod(m_osc, [this] { m_osc->stop(); }, Qt::BlockingQueuedConnection);
         m_oscThread->quit();
@@ -1421,10 +1433,6 @@ void MainWindow::startOsc()
         m_osc = new OscServer(m_engine);
         m_osc->moveToThread(m_oscThread);
         connect(m_oscThread, &QThread::finished, m_osc, &QObject::deleteLater);
-        connect(m_osc, &OscServer::eventObserved, this,
-                [this](const QString &channel, const QString &message) {
-                    if (m_logs) m_logs->appendEvent(channel, message);
-                }, Qt::QueuedConnection);
         connect(m_osc, &OscServer::edited, this, [this] {
             markDirty();
             refreshLayerList();

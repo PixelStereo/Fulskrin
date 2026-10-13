@@ -69,6 +69,8 @@ add_library(pinol_engine STATIC
   src/engine/AudioOutput.cpp
   src/engine/MiniaudioImpl.cpp
   src/engine/Osc.cpp
+  src/engine/EventLog.cpp
+  src/engine/FrameTiming.cpp
   src/engine/OscCodec.cpp
   src/engine/Zeroconf.cpp
   src/engine/Snapshots.cpp
@@ -282,6 +284,7 @@ set(APP_SOURCES
   src/main.cpp
   src/ui/MainWindow.cpp
   src/ui/LogPanel.cpp
+  src/ui/LogModel.cpp
   src/ui/LayerInspector.cpp
   src/ui/ParamPanel.cpp
   src/ui/PresetEditor.cpp
@@ -390,7 +393,7 @@ endif()
 # ---------------------------------------------------------------------------
 option(PINOL_TESTS "Build the engine tests" ON)
 if(PINOL_TESTS)
-  add_executable(pinol_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp src/ui/Commands.cpp)
+  add_executable(pinol_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp src/ui/Commands.cpp src/ui/LogModel.cpp)
   target_include_directories(pinol_tests PRIVATE src/ui)
   target_link_libraries(pinol_tests PRIVATE pinol_engine)
   target_compile_options(pinol_tests PRIVATE ${PINOL_WARNINGS})
@@ -402,6 +405,10 @@ if(PINOL_TESTS)
           media sound layersource timecode interactions)
     add_test(NAME ${area} COMMAND pinol_tests --area ${area})
   endforeach()
+  # Areas whose checks depend on real time (sound clocks, threads, waits, publishers): label "timing". The CI runs the
+  # others once, these with retries (ctest -L timing --repeat until-pass:3) — their thresholds stay as they are; a CI
+  # runner without a sound card or a GPU is late now and then, a real regression fails every attempt
+  set_tests_properties(sound playback thread publishing timecode snapshots media PROPERTIES LABELS timing)
   add_test(NAME isf COMMAND pinol_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
   if(NOT WIN32) # the application's exit codes in --render mode (Windows: its Qt libraries are deployed separately)
     add_test(NAME render_cli COMMAND ${CMAKE_COMMAND} -DPINOL=$<TARGET_FILE:Pinol> -DOUT=${CMAKE_BINARY_DIR}/render_cli

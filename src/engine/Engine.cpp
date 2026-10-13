@@ -3,8 +3,12 @@
 // The rest of its methods live in Layers.cpp, Render.cpp, Project.cpp, Media.cpp and Snapshots.cpp.
 #include "EngineInternal.h"
 #include "Midi.h"
+#include "VideoDecoder.h"
+#include "VideoTexture.h"
+#include "WorkerPool.h"
 
 #include <QDebug>
+#include <QJsonArray>
 #include <QImage>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
@@ -59,6 +63,7 @@ void Engine::stopAudio() { m_audio->stop(); }
 
 Engine::~Engine()
 {
+    m_sequencer->shutdownClock(); // the cue clock recalls snapshots on its own thread: stopped before anything goes
     m_midiIns.clear(); // their callbacks feed the interactions: stopped first
     shutdown();
 }
@@ -426,15 +431,20 @@ void Engine::renderLoop()
         pace.start();
         runPendingTasks();
 
-        frame(nextDt());
-        const bool presented = presentViewports();
-        if (!m_framePending.exchange(true)) emit frameRendered();
-
         // Pace: the frame rate chosen, or the screen's — the vertical sync of the windows when one is shown
         // (it then blocks), the main screen's refresh rate otherwise
         const double rate = effectiveRender().frameRate;
         const double hz = rate > 0 ? rate : screenRefreshRate();
         const qint64 periodUs = qint64(1e6 / std::clamp(hz, 1.0, 1000.0));
+
+        const qint64 t0 = FrameTiming::nowNs();
+        frame(nextDt());
+        const qint64 t1 = FrameTiming::nowNs();
+        const bool presented = presentViewports();
+        m_frameTiming.noteFrame(t0, t1, FrameTiming::nowNs(), periodUs * 1000, presented);
+        sampleResources();
+        if (!m_framePending.exchange(true)) emit frameRendered();
+
         const qint64 us = pace.nsecsElapsed() / 1000;
         if (rate > 0 || !presented || us < 4000) QThread::usleep(static_cast<unsigned long>(std::max<qint64>(0, periodUs - us)));
     }
@@ -625,6 +635,9 @@ bool Engine::presentViewports()
                 any = true;
                 ++out.presented;
             }
+            const quint64 dropped = out.metal->droppedFrames();
+            if (dropped > out.dropped) m_outputsDropped += dropped - out.dropped;
+            out.dropped = dropped;
             continue;
         }
 #ifdef Q_OS_MACOS
@@ -817,4 +830,76 @@ double Engine::screenRefreshRate() const
 {
     Lock lk(&m_mutex);
     return m_screenHz;
+}
+
+// ---------------------------------------------------------------------------
+// Resources against their budgets (Engine::resourcesJson)
+// ---------------------------------------------------------------------------
+#ifndef GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX
+#define GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX 0x9048
+#define GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX 0x9049
+#endif
+#ifndef GL_TEXTURE_FREE_MEMORY_ATI
+#define GL_TEXTURE_FREE_MEMORY_ATI 0x87FC
+#endif
+
+void Engine::sampleResources()
+{
+    const qint64 now = FrameTiming::nowNs();
+    if (m_resourcesSampledNs && now - m_resourcesSampledNs < 1000000000) return;
+    m_resourcesSampledNs = now;
+    QOpenGLContext *ctx = QOpenGLContext::currentContext();
+    if (ctx) {
+        if (m_vramQuery < 0)
+            m_vramQuery = ctx->hasExtension("GL_NVX_gpu_memory_info") ? 1 : ctx->hasExtension("GL_ATI_meminfo") ? 2 : 0;
+        auto f = ctx->extraFunctions();
+        if (m_vramQuery == 1) {
+            GLint total = 0, free = 0;
+            f->glGetIntegerv(GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX, &total);
+            f->glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &free);
+            m_vramTotalKb = total;
+            m_vramFreeKb = free;
+        } else if (m_vramQuery == 2) {
+            GLint info[4] = {0, 0, 0, 0}; // free, largest block, auxiliary free, largest auxiliary block (kB)
+            f->glGetIntegerv(GL_TEXTURE_FREE_MEMORY_ATI, info);
+            m_vramFreeKb = info[0];
+        }
+    }
+    quint32 over = 0;
+    if (VideoDecoder::decodedBytesInUse() > VideoDecoder::decodedBytesLimit()) over |= 1;
+    if (VideoTexture::pboBytesInUse() > VideoTexture::pboBudgetBytes()) over |= 2;
+    if (VideoDecoder::softwareThreadsInUse() > VideoDecoder::softwareThreadBudgetNow()) over |= 4;
+    const qint64 freeKb = m_vramFreeKb.load(), totalKb = m_vramTotalKb.load();
+    if (freeKb >= 0 && ((totalKb > 0 && freeKb * 10 < totalKb) || (totalKb <= 0 && freeKb < 256 * 1024))) over |= 8;
+    const quint32 before = m_overBudget.exchange(over);
+    static const char *const what[] = {"decoded frames over their memory budget (each stream keeps 2 ahead)",
+                                       "upload buffers over their budget (shared among the layers)",
+                                       "software decoders' threads over the budget (new ones share it)",
+                                       "graphics memory nearly full"};
+    for (int k = 0; k < 4; ++k)
+        if ((over & ~before) >> k & 1u) qWarning("Resources: %s", what[k]);
+}
+
+QJsonObject Engine::resourcesJson() const
+{
+    auto mb = [](size_t bytes) { return std::round(double(bytes) / (1024.0 * 1024.0) * 10.0) / 10.0; };
+    QJsonObject o;
+    o["decoded_frames_mb"] = mb(VideoDecoder::decodedBytesInUse());
+    o["decoded_frames_budget_mb"] = mb(VideoDecoder::decodedBytesLimit());
+    o["upload_buffers_mb"] = mb(VideoTexture::pboBytesInUse());
+    o["upload_buffers_budget_mb"] = mb(VideoTexture::pboBudgetBytes());
+    o["upload_buffer_layers"] = VideoTexture::pboStreams();
+    o["software_decoders"] = VideoDecoder::softwareDecodersOpen();
+    o["software_decode_threads"] = VideoDecoder::softwareThreadsInUse();
+    o["software_decode_thread_budget"] = VideoDecoder::softwareThreadBudgetNow();
+    o["hap_workers"] = workers::threadCount();
+    if (m_vramFreeKb.load() >= 0) o["graphics_memory_free_mb"] = double(m_vramFreeKb.load()) / 1024.0;
+    if (m_vramTotalKb.load() > 0) o["graphics_memory_total_mb"] = double(m_vramTotalKb.load()) / 1024.0;
+    QJsonArray warnings;
+    static const char *const keys[] = {"decoded_frames", "upload_buffers", "decode_threads", "graphics_memory"};
+    const quint32 over = m_overBudget.load();
+    for (int k = 0; k < 4; ++k)
+        if (over >> k & 1u) warnings.append(QString::fromLatin1(keys[k]));
+    o["warnings"] = warnings;
+    return o;
 }

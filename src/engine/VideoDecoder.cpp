@@ -63,14 +63,42 @@ void bytePoolBudget::release(size_t bytes)
 
 // FFmpeg's threads of a software decoder: the same for every one, whatever the order they were opened in (half the
 // cores, 2 to 16: one heavy stream keeps most of the machine, several share it evenly). PINOL_DECODE_THREADS
-// overrides it (measurements)
+// overrides it (measurements).
+//
+// A process-wide budget bounds them all (audit P1): twice the cores by default (PINOL_DECODE_THREAD_BUDGET,
+// setSoftwareThreadBudget). Up to it, nothing changes (four heavy streams on any machine). Beyond it — 8, 16 software
+// streams — a new decoder gets an even share of the budget among the software decoders open, at least 2, instead of
+// half the cores: the CPU is not given several times more runnable threads than it has cores, and each FFmpeg frame
+// thread is a set of frames in memory less. The decoders opened earlier keep theirs (FFmpeg's threads are set at open).
+static std::atomic<int> s_softwareThreadsInUse{0}, s_softwareDecodersOpen{0}, s_threadBudgetOverride{0};
+
+static int softwareThreadBudget()
+{
+    if (const int o = s_threadBudgetOverride.load(std::memory_order_relaxed); o > 0) return o;
+    static const int env = qEnvironmentVariableIntValue("PINOL_DECODE_THREAD_BUDGET");
+    if (env > 0) return env;
+    return 2 * int(std::max(1u, std::thread::hardware_concurrency()));
+}
+
 static int softwareThreads()
 {
     static const int forced = qEnvironmentVariableIntValue("PINOL_DECODE_THREADS");
     if (forced > 0) return std::min(forced, 64);
     const int cores = int(std::max(1u, std::thread::hardware_concurrency()));
-    return std::min(std::max(1, cores), std::clamp(cores / 2, 2, 16));
+    const int base = std::min(std::max(1, cores), std::clamp(cores / 2, 2, 16));
+    const int budget = softwareThreadBudget();
+    const int inUse = s_softwareThreadsInUse.load(std::memory_order_relaxed);
+    if (inUse + base <= budget) return base;
+    const int open = s_softwareDecodersOpen.load(std::memory_order_relaxed);
+    return std::min(base, std::max(2, budget / (open + 1)));
 }
+
+int VideoDecoder::softwareThreadsInUse() { return s_softwareThreadsInUse.load(std::memory_order_relaxed); }
+int VideoDecoder::softwareDecodersOpen() { return s_softwareDecodersOpen.load(std::memory_order_relaxed); }
+int VideoDecoder::softwareThreadBudgetNow() { return softwareThreadBudget(); }
+void VideoDecoder::setSoftwareThreadBudget(int threads) { s_threadBudgetOverride = std::max(0, threads); }
+size_t VideoDecoder::decodedBytesInUse() { return decodedBudget::used(); }
+size_t VideoDecoder::decodedBytesLimit() { return s_decodedLimit.load(std::memory_order_relaxed); }
 
 static std::atomic<bool> s_hardware{true}, s_s3tc{true}, s_bptc{false}, s_zeroCopy{false};
 
@@ -265,6 +293,11 @@ bool VideoDecoder::open(const QString &path, QString *err)
             close();
             return false;
         }
+        if (!hw) { // counted in the software budget until it closes
+            m_softwareThreads = std::max(1, m_codec->thread_count);
+            s_softwareThreadsInUse += m_softwareThreads;
+            ++s_softwareDecodersOpen;
+        }
         m_codecName = QString::fromUtf8(dec->name);
         m_width = m_codec->width;
         m_height = m_codec->height;
@@ -360,6 +393,11 @@ void VideoDecoder::close()
     if (m_swFrame) av_frame_free(&m_swFrame);
     if (m_packet) av_packet_free(&m_packet);
     if (m_codec) avcodec_free_context(&m_codec);
+    if (m_softwareThreads) {
+        s_softwareThreadsInUse -= m_softwareThreads;
+        --s_softwareDecodersOpen;
+        m_softwareThreads = 0;
+    }
     if (m_hwDevice) av_buffer_unref(&m_hwDevice);
     if (m_fmt) avformat_close_input(&m_fmt);
     m_hwPixFmt = -1;

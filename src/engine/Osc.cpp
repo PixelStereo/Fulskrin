@@ -1,4 +1,5 @@
 #include "Osc.h"
+#include "EventLog.h"
 #include "EngineInternal.h"
 #include "Engine.h"
 #include "Zeroconf.h"
@@ -229,6 +230,19 @@ void OscNamespace::build()
             return true;
         };
         add("/composition/fps/measured", "f", 1, "Measured").get = [e] { return QVariantList{e->fps()}; };
+        // Frame timing (FrameTiming.h), as one JSON string: intervals, missed deadlines, compute / present times,
+        // OSC and cue to frame, the outputs' dropped frames. Read it after a run; reset before one
+        add("/composition/timing", "s", 1, "Frame Timing (JSON)").get = [e] {
+            return QVariantList{QString::fromUtf8(QJsonDocument(e->frameTimingJson()).toJson(QJsonDocument::Compact))};
+        };
+        add("/composition/timing/reset", "N", 2, "Reset Frame Timing").set = [e](const QVariantList &) {
+            e->resetFrameTiming();
+            return true;
+        };
+        // Resources against their budgets (Engine::resourcesJson), as one JSON string
+        add("/composition/budget", "s", 1, "Resources (JSON)").get = [e] {
+            return QVariantList{QString::fromUtf8(QJsonDocument(e->resourcesJson()).toJson(QJsonDocument::Compact))};
+        };
     }
     for (int axis = 0; axis < 2; ++axis) {
         OscNode &n = add(axis ? "/composition/height" : "/composition/width", "i", 3,
@@ -1114,9 +1128,14 @@ int OscServer::handlePacket(const QByteArray &packet)
 
 bool OscServer::handleMessage(const osc::Message &m)
 {
-    QStringList args;
-    for (const QVariant &arg : m.args) args << arg.toString();
-    emit eventObserved(QStringLiteral("OSC IN"), m.address + (args.isEmpty() ? QString() : QStringLiteral("  ") + args.join(QStringLiteral(", "))));
+    // The Logs panel: written into its ring here (any thread, bounded), formatted only when it is shown
+    if (EventLog::instance().wants(EventLog::OscIn)) {
+        QStringList args;
+        for (const QVariant &arg : m.args) args << arg.toString();
+        const QString line = m.address + (args.isEmpty() ? QString() : QStringLiteral("  ") + args.join(QStringLiteral(", ")));
+        EventLog::instance().append(EventLog::OscIn, line);
+        emit eventObserved(QStringLiteral("OSC IN"), line);
+    }
     // A full OSC RGB(A) value must remain one Interaction event, so it can
     // drive a complete ISF color. Individual scalar arguments remain learnable.
     const auto numeric = [](const QVariant &a) {
@@ -1173,7 +1192,10 @@ bool OscServer::handleMessage(const osc::Message &m)
     // One writer per value: an address an enabled OSC interaction listens on belongs to that interaction. Its own
     // chain (ranges, Map alpha, pick-up…) decides what reaches the show, the native value of the same address is not
     // also written directly (the direct write would land first, and an alpha of 0 would stay).
-    if (m_e->oscAddressClaimed(m.address)) return false;
+    if (m_e->oscAddressClaimed(m.address)) {
+        m_e->noteInput(FrameTiming::Osc); // its interaction writes it at the next frame
+        return false;
+    }
     m_ns.refresh();
     static const QString kPattern = QStringLiteral("*?[]{}");
     bool pattern = false;
@@ -1191,6 +1213,7 @@ bool OscServer::handleMessage(const osc::Message &m)
         if (!n || !(n->access & 2) || !n->set) continue;
         any |= n->set(m.args);
     }
+    if (any) m_e->noteInput(FrameTiming::Osc); // a value changed: how long until a frame has it
     return any;
 }
 
@@ -1414,7 +1437,10 @@ void OscServer::pushListened()
                 m.types += (t == 'T' || t == 'F') ? (v.value(k).toBool() ? QChar('T') : QChar('F')) : t;
             }
             m.args = v;
-                emit eventObserved(QStringLiteral("OSC OUT"), m.address);
+                if (EventLog::instance().wants(EventLog::OscOut)) {
+                    EventLog::instance().append(EventLog::OscOut, m.address);
+                    emit eventObserved(QStringLiteral("OSC OUT"), m.address);
+                }
             sendWs(c.socket, 2, osc::encode(m));
         }
     }
