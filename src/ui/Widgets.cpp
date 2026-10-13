@@ -1,4 +1,5 @@
 #include "Widgets.h"
+#include "ColorPicker.h"
 #include <QSpinBox>
 #include <QPointer>
 
@@ -467,6 +468,32 @@ void ColorEditor::build(const QString &title)
     head->addWidget(m_swatch);
     head->addWidget(m_hex);
     v->addLayout(head);
+    // All color locations use the same picker (including optional-alpha
+    // channel sliders and the interactive HSV wheel). The historical correction
+    // models remain available behind an advanced disclosure.
+    m_picker = new ColorPicker(false, this);
+    m_picker->setColor(m_color);
+    v->addWidget(m_picker);
+    connect(m_picker, &ColorPicker::colorEdited, this, [this](const QColor &c) { apply(c, true); });
+
+    auto *advancedButton = new QToolButton;
+    advancedButton->setText(QStringLiteral("Advanced color models"));
+    advancedButton->setToolTip(QStringLiteral("Show the legacy HSL, additive and subtractive channel controls"));
+    advancedButton->setCheckable(true);
+    advancedButton->setArrowType(Qt::RightArrow);
+    advancedButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    advancedButton->setAutoRaise(true);
+    v->addWidget(advancedButton);
+    m_advanced = new QWidget;
+    auto *advancedLayout = new QVBoxLayout(m_advanced);
+    advancedLayout->setContentsMargins(0, 0, 0, 0);
+    advancedLayout->setSpacing(2);
+    v->addWidget(m_advanced);
+    m_advanced->hide();
+    connect(advancedButton, &QToolButton::toggled, this, [this, advancedButton](bool shown) {
+        m_advanced->setVisible(shown);
+        advancedButton->setArrowType(shown ? Qt::DownArrow : Qt::RightArrow);
+    });
     connect(m_hex, &QLineEdit::editingFinished, this, [this] {
         const QColor c(m_hex->text().trimmed());
         if (c.isValid()) apply(c, true);
@@ -484,7 +511,7 @@ void ColorEditor::build(const QString &title)
         cap->setStyleSheet("color:#888; font-size:10px;");
         grid->addWidget(cap, 0, 0, 1, 3);
         m_groups[g] = box;
-        v->addWidget(box);
+        advancedLayout->addWidget(box);
     }
     const QString red = "stop:0 #000, stop:1 #f33", green = "stop:0 #000, stop:1 #3d3", blue = "stop:0 #000, stop:1 #47f";
     addChannel(Rgb, 0, "R", 255, QString(), red);
@@ -628,6 +655,7 @@ void ColorEditor::sync(const Channel *)
     }
     m_swatch->setStyleSheet(QStringLiteral("background:%1; border:1px solid #555; border-radius:3px;").arg(m_color.name()));
     if (!m_hex->hasFocus()) m_hex->setText(m_color.name().toUpper());
+    if (m_picker) m_picker->setColor(m_color);
     m_syncing = false;
 }
 
@@ -637,6 +665,11 @@ void ColorEditor::setSwitch(bool shown, bool on, const QString &tip)
     QSignalBlocker b(m_switch);
     m_switch->setChecked(on);
     if (!tip.isEmpty()) m_switch->setToolTip(tip);
+}
+
+void ColorEditor::setSettingsKey(const QString &key)
+{
+    if (m_picker) m_picker->setSettingsKey(key);
 }
 
 void ColorEditor::setModels(int models)
