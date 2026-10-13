@@ -43,6 +43,7 @@ public:
 
     std::function<void(const QColor &)> onEdited;
     int hue() const { return m_hue; }
+    void setHue(int hue) { m_hue = (hue % 360 + 360) % 360; update(); }
 
     void setColor(const QColor &c)
     {
@@ -342,6 +343,7 @@ void ColorPicker::updateControls()
                                             : (i == 0 ? m_color.red() : i == 1 ? m_color.green() : m_color.blue()));
     }
     m_wheel->setColor(m_color);
+    m_wheel->setHue(m_hue); // Keep a chosen hue when editing a neutral/black color.
     if (m_wheelAlpha) m_wheelAlpha->setValue(m_color.alpha());
     updateGradients();
     m_syncing = false;
