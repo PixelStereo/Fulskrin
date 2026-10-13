@@ -1,10 +1,11 @@
+<div align="center">
 # PINOL
 
 ## Pixels In New Optical Languages
 
 A new language for live visuals.
 
-<div align="center">
+
 
 <p>
   <a href="https://github.com/PixelStereo/Pinol/actions/workflows/build.yml"><img alt="Build" src="https://github.com/PixelStereo/Pinol/actions/workflows/build.yml/badge.svg?branch=main"></a>
