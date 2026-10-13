@@ -1552,7 +1552,6 @@ void OscServer::pushListened()
             m_treeSignature = sig;
             const QByteArray msg = QJsonDocument(QJsonObject{{"COMMAND", "PATH_CHANGED"}, {"DATA", "/"}}).toJson(QJsonDocument::Compact);
             for (const Client &c : std::as_const(m_clients))
-                emit eventObserved(QStringLiteral("OSC OUT"), QString::fromUtf8(msg));
                 if (c.websocket) sendWs(c.socket, 1, msg);
         }
     }
@@ -1577,6 +1576,7 @@ void OscServer::pushListened()
                 m.types += (t == 'T' || t == 'F') ? (v.value(k).toBool() ? QChar('T') : QChar('F')) : t;
             }
             m.args = v;
+                emit eventObserved(QStringLiteral("OSC OUT"), m.address);
             sendWs(c.socket, 2, osc::encode(m));
         }
     }
