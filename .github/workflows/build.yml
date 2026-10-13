@@ -163,9 +163,9 @@ jobs:
           # Resolve and bundle every non-system dependency recursively, including @rpath libraries
           # (e.g. WebP -> SharpYUV). The helper fails closed when a dependency is missing/ambiguous.
           python3 scripts/macos_bundle_deps.py "$APP"
-          # All install_name_tool edits are complete. Re-sign modified nested code from the
-          # inside out so no later binary edit invalidates a signature. This is an ad-hoc
-          # build signature (not Developer ID signing or notarization).
+          # This project is distributed without a paid Apple Developer account:
+          # use an ad-hoc signature for bundle integrity only. This is NOT Developer ID
+          # signing and cannot bypass Gatekeeper for quarantined downloads.
           while IFS= read -r -d '' binary; do
             file "$binary" | grep -q "Mach-O" || continue
             codesign --force --sign - "$binary"
@@ -176,7 +176,7 @@ jobs:
             codesign --force --sign - "$bundle"
           done < <(find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" -depth -type d \( -name "*.framework" -o -name "*.bundle" \) -print0)
 
-          # Sign the main executable, then the outer .app bundle last.
+          # Sign the executable and outer app last, then verify bundle integrity.
           codesign --force --sign - "$EXE"
           codesign --force --sign - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
@@ -202,6 +202,23 @@ jobs:
           - NDI / OMT: compatible vendor runtime libraries, subject to their own redistribution terms.
 
           These vendor runtimes are not part of this repository and are not bundled automatically.
+          EOF
+          # The archive is intentionally not notarized. macOS users may need to approve
+          # this app manually because it is not signed with a paid Developer ID certificate.
+          cat > "$APP/Contents/Resources/README-macOS-First-Launch.txt" <<'EOF'
+          Pinol macOS — first launch
+
+          This build is not signed with an Apple Developer ID certificate and is not notarized.
+          macOS may block the app when it is downloaded from the Internet.
+
+          First try: in Finder, Control-click Pinol.app, choose Open, then confirm Open.
+          If macOS still says the app is damaged, only if you trust this build, open Terminal
+          and run the following command on the extracted app:
+            xattr -dr com.apple.quarantine "/path/to/Pinol.app"
+          Replace /path/to/Pinol.app with the actual path to Pinol.app, then open it again.
+
+          This removes the download quarantine flag; it does not repair a genuinely corrupted
+          application. Do not run this command on software from an untrusted source.
           EOF
           TAG_SUFFIX=""
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then TAG_SUFFIX="-$GITHUB_REF_NAME"; fi
