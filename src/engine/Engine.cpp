@@ -431,22 +431,30 @@ void Engine::renderLoop()
         pace.start();
         runPendingTasks();
 
-        // Pace: the frame rate chosen, or the screen's — the vertical sync of the windows when one is shown
-        // (it then blocks), the main screen's refresh rate otherwise
+        // Pace: the frame rate chosen; else the screen of the output window shown (the last one, which waits for its
+        // vertical sync); else the main screen's refresh rate. A frame its output does not show (no surface from
+        // macOS this time) is not followed by one at another screen's pace.
         const double rate = effectiveRender().frameRate;
-        const double hz = rate > 0 ? rate : screenRefreshRate();
-        const qint64 periodUs = qint64(1e6 / std::clamp(hz, 1.0, 1000.0));
+        const double hz = rate > 0 ? rate : m_presentHz > 1 ? m_presentHz : screenRefreshRate();
+        const qint64 periodNs = qint64(1e9 / std::clamp(hz, 1.0, 1000.0));
 
         const qint64 t0 = FrameTiming::nowNs();
         frame(nextDt());
         const qint64 t1 = FrameTiming::nowNs();
         const bool presented = presentViewports();
-        m_frameTiming.noteFrame(t0, t1, FrameTiming::nowNs(), periodUs * 1000, presented);
+        const qint64 t2 = FrameTiming::nowNs();
+        m_frameTiming.noteFrame(t0, t1, t2, periodNs, presented);
         sampleResources();
         if (!m_framePending.exchange(true)) emit frameRendered();
 
-        const qint64 us = pace.nsecsElapsed() / 1000;
-        if (rate > 0 || !presented || us < 4000) QThread::usleep(static_cast<unsigned long>(std::max<qint64>(0, periodUs - us)));
+        // The vertical sync held this frame (it waited for its screen): it is the pace, nothing to add. Otherwise the
+        // next frame is due one period after this one was (absolute deadlines: a late wake-up is caught up on the next
+        // frame instead of adding up; more than a period late, the count starts again from now)
+        const bool heldBySync = rate <= 0 && presented && t2 - t1 >= 4000000;
+        const qint64 sleepNs = heldBySync ? FramePacer::resync(m_paceNext, t2, periodNs)
+                                          : FramePacer::next(m_paceNext, t0, FrameTiming::nowNs(), periodNs);
+        if (sleepNs > 0) QThread::usleep(static_cast<unsigned long>(sleepNs / 1000));
+        (void)pace;
     }
     runPendingTasks();
     releaseAll();
@@ -529,13 +537,14 @@ void Engine::setViewportWindow(quint64 viewport, QWindow *w)
     });
 }
 
-void Engine::setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize)
+void Engine::setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize, double refreshHz)
 {
-    runGl([this, viewport, exposed, pixelSize] {
+    runGl([this, viewport, exposed, pixelSize, refreshHz] {
         auto it = m_outWindows.find(viewport);
         if (it == m_outWindows.end()) return;
         it->second.exposed = exposed;
         it->second.pixels = pixelSize;
+        if (refreshHz > 1) it->second.hz = refreshHz;
     });
 }
 
@@ -625,15 +634,23 @@ bool Engine::presentViewports()
         }
     }
     bool any = false, glUsed = false;
+    // The pace of the window that waits for its screen (the last one): the render follows it while it is shown
+    m_presentHz = shown.empty() ? 0 : shown.back().second->hz;
     for (size_t k = 0; k < shown.size(); ++k) {
         const Layer *vp = shown[k].first;
         OutputSurface &out = *shown[k].second;
         const bool last = k + 1 == shown.size();
         if (out.metal) { // drawn by Metal from here, with the engine's context current
             const RenderTarget &pic = vp->vpOut[vp->vpPublished.load()];
-            if (out.metal->present(pic.fbo, pic.w, pic.h, out.pixels, last)) {
+            switch (out.metal->present(pic.fbo, pic.w, pic.h, out.pixels, last)) {
+            case MetalOutput::Result::Shown:
                 any = true;
                 ++out.presented;
+                break;
+            case MetalOutput::Result::NoDrawable: ++out.noDrawable; break;
+            case MetalOutput::Result::SurfacesBusy: ++out.surfacesBusy; break;
+            case MetalOutput::Result::NoPicture: ++out.noPicture; break;
+            case MetalOutput::Result::Failed: ++out.failed; break;
             }
             const quint64 dropped = out.metal->droppedFrames();
             if (dropped > out.dropped) m_outputsDropped += dropped - out.dropped;
@@ -641,7 +658,10 @@ bool Engine::presentViewports()
             continue;
         }
 #ifdef Q_OS_MACOS
-        if (m_threaded) continue; // OpenGL into a window: the main thread only
+        if (m_threaded) { // OpenGL into a window: the main thread only (no Metal layer for this window)
+            ++out.notRenderThread;
+            continue;
+        }
 #endif
         glUsed = true;
         if (!out.context) {
@@ -652,10 +672,14 @@ bool Engine::presentViewports()
                 qWarning("Output window: unable to create its OpenGL context.");
                 delete out.context;
                 out.context = nullptr;
+                ++out.failed;
                 continue;
             }
         }
-        if (!out.context->makeCurrent(out.window)) continue;
+        if (!out.context->makeCurrent(out.window)) {
+            ++out.failed;
+            continue;
+        }
         present(*vp, out);
         setSwapInterval(out.context, last ? 1 : 0); // only the last one waits for the screen
         out.context->swapBuffers(out.window);
@@ -848,6 +872,28 @@ void Engine::sampleResources()
     const qint64 now = FrameTiming::nowNs();
     if (m_resourcesSampledNs && now - m_resourcesSampledNs < 1000000000) return;
     m_resourcesSampledNs = now;
+    { // The output windows, for frameTimingJson (render thread: m_outWindows is its own)
+        std::vector<OutputStats> outs;
+        Lock lk(&m_mutex);
+        for (const auto &[id, o] : m_outWindows) {
+            OutputStats st;
+            st.viewport = id;
+            const int i = indexOfId(id);
+            if (i >= 0) st.name = m_layers[size_t(i)]->name;
+            st.metal = bool(o.metal);
+            st.exposed = o.exposed;
+            st.hz = o.hz;
+            st.presented = o.presented;
+            st.noDrawable = o.noDrawable;
+            st.surfacesBusy = o.surfacesBusy;
+            st.failed = o.failed;
+            st.noPicture = o.noPicture;
+            st.notRenderThread = o.notRenderThread;
+            outs.push_back(st);
+        }
+        std::lock_guard<std::mutex> g(m_outputStatsMutex);
+        m_outputStats = std::move(outs);
+    }
     QOpenGLContext *ctx = QOpenGLContext::currentContext();
     if (ctx) {
         if (m_vramQuery < 0)

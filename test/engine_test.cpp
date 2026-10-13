@@ -745,6 +745,26 @@ int main(int argc, char **argv)
         CHECK(j.value("missed_deadlines").toDouble() == 1 && j.value("osc_to_frame").toObject().value("max_ms").toDouble() == 10.0);
         t.reset();
         CHECK(t.stats().frames == 0);
+        // The pace without a vertical sync: absolute deadlines, a late frame caught up, far behind: from now
+        {
+            qint64 next = -1;
+            const qint64 P = 20 * ms;
+            CHECK(FramePacer::next(next, 0, 2 * ms, P) == 18 * ms); // the first: one period after its start
+            CHECK(FramePacer::next(next, 20 * ms, 23 * ms, P) == 17 * ms); // on time
+            CHECK(FramePacer::next(next, 45 * ms, 47 * ms, P) == 13 * ms); // woke up 5 ms late: the next one is not
+            CHECK(FramePacer::next(next, 60 * ms, 85 * ms, P) == 0 && next == 80 * ms); // late: no sleep, schedule kept
+            CHECK(FramePacer::next(next, 85 * ms, 140 * ms, P) == 0 && next == 140 * ms); // far behind: from now on
+            CHECK(FramePacer::next(next, 140 * ms, 141 * ms, P) == 19 * ms);
+            CHECK(FramePacer::resync(next, 300 * ms, P) == 0 && next == 300 * ms); // a vertical sync paced it
+            CHECK(FramePacer::next(next, 301 * ms, 302 * ms, P) == 18 * ms);
+            CHECK(FramePacer::next(next, 0, 0, 0) == 0); // no period: no wait
+        }
+        // The histogram reads where frames land: 50 Hz frames are not "25 ms"
+        {
+            FrameTiming::Histogram f;
+            for (int k = 0; k < 100; ++k) f.add(20.0 + (k % 3) * 0.1);
+            CHECK(f.percentile(0.5) <= 20.5 && f.percentile(0.99) <= 20.5);
+        }
         // The engine: each frame counted; an OSC message that changed a value, until the frame that has it
         e.resetFrameTiming();
         OscServer srv(&e);
@@ -762,6 +782,8 @@ int main(int argc, char **argv)
         const QJsonObject timing = QJsonDocument::fromJson(v.value("VALUE").toArray().at(0).toString().toUtf8()).object();
         CHECK(status == 200 && timing.value("frames").toDouble() == 3 && timing.contains("osc_to_frame") &&
               timing.contains("cue_to_frame") && timing.contains("outputs_dropped"));
+        CHECK(timing.value("outputs").isArray() && timing.value("pace_hz").toDouble() > 0 &&
+              timing.value("cue_late").toObject().contains("p99_ms"));
         CHECK(srv.handleMessage({"/composition/timing/reset", "N", {QVariant()}}) && e.frameTiming().frames == 0);
     }
     // 4d. OSC and OSCQuery
@@ -3242,11 +3264,25 @@ int main(int argc, char **argv)
         while (!w.isExposed() && t.elapsed() < 3000) QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
         const quint64 vp = e.mainViewportId();
         e.setViewportWindow(vp, &w);
-        e.setViewportExposed(vp, true, w.size() * w.devicePixelRatio());
+        e.setViewportExposed(vp, true, w.size() * w.devicePixelRatio(), 50.0); // its screen: 50 Hz
         CHECK(waitFrames(10));
         std::printf("       window frames: %llu (%s)\n", (unsigned long long)e.windowFrames(vp),
                     Engine::metalOutput() ? "Metal" : "OpenGL");
         CHECK(e.windowFrames(vp) >= 5);
+        // The output in the frame timing (sampled once a second): its screen's rate is the render's pace, its pictures
+        // shown and those not shown by cause
+        QThread::msleep(1200);
+        {
+            const QJsonObject t = e.frameTimingJson();
+            const QJsonArray outs = t.value("outputs").toArray();
+            QJsonObject mine;
+            for (const QJsonValue &v : outs)
+                if (v.toObject().value("shown").toBool()) mine = v.toObject();
+            std::printf("       output: %s\n", QJsonDocument(mine).toJson(QJsonDocument::Compact).constData());
+            CHECK(!mine.isEmpty() && mine.value("screen_hz").toDouble() == 50.0 && mine.value("presented").toDouble() >= 1 &&
+                  mine.contains("no_drawable") && mine.contains("not_render_thread"));
+            CHECK(t.value("pace_hz").toDouble() == 50.0 && t.value("main_screen_hz").toDouble() > 0);
+        }
         e.setViewportWindow(vp, nullptr);
     }
     {

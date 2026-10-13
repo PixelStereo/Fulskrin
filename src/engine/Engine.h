@@ -554,7 +554,9 @@ public:
     QString glRenderer() const { return m_glRenderer; } // the OpenGL renderer's name
     quint64 windowFrames(quint64 viewport); // pictures the viewport's window was given (tests)
     void setViewportWindow(quint64 viewport, QWindow *w);
-    void setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize);
+    // refreshHz: its screen's (0: not known). The render keeps that pace while the window is shown, and counts its
+    // missed deadlines against it, not against the main screen's
+    void setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize, double refreshHz = 0);
 
     // --- Rendering
     void renderFrame();                  // manual mode only
@@ -696,7 +698,23 @@ private:
         std::shared_ptr<MetalOutput> metal; // macOS: the window shown through Metal instead (PresentMetal.h)
         quint64 presented = 0;              // pictures it was given
         quint64 dropped = 0;                // pictures it could not show (Metal), as last counted
+        double hz = 0;                      // its screen's refresh rate (0: not known)
+        // Pictures not shown, by cause: no surface from macOS, every shared surface still read, an error, no
+        // picture yet, not drawn by the render thread (macOS: OpenGL into a window is the main thread's)
+        quint64 noDrawable = 0, surfacesBusy = 0, failed = 0, noPicture = 0, notRenderThread = 0;
     };
+    // What each output window did, as last sampled (render thread → any thread)
+    struct OutputStats {
+        quint64 viewport = 0;
+        QString name;
+        bool metal = false, exposed = false;
+        double hz = 0;
+        quint64 presented = 0, noDrawable = 0, surfacesBusy = 0, failed = 0, noPicture = 0, notRenderThread = 0;
+    };
+    mutable std::mutex m_outputStatsMutex;
+    std::vector<OutputStats> m_outputStats;
+    double m_presentHz = 0; // render thread: the refresh rate of the window that waits for its screen (0: none)
+    qint64 m_paceNext = -1; // render thread: when the next frame is due (steady clock ns; -1: from now)
     void releaseOutputSurface(OutputSurface &o);
     void present(const Layer &viewport, OutputSurface &out);
     std::map<quint64, OutputSurface> m_outWindows; // by viewport id (render thread)

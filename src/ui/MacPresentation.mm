@@ -55,3 +55,13 @@ void macExitFullScreen(QWindow *w, std::function<void()> done)
     }];
     [win toggleFullScreen:nil];
 }
+
+void macKeepLiveOutputActive()
+{
+    // App Nap and timer coalescing slow the timers of an application macOS thinks is idle or in the background (the
+    // render's pace, the cue clock). For live output: neither, and no idle sleep of the machine while Pinol runs.
+    static id<NSObject> activity = [[NSProcessInfo processInfo]
+        beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical)
+                          reason:@"Pinol: live video output and cues"];
+    (void)activity;
+}

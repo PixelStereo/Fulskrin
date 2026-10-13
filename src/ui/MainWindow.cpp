@@ -1,6 +1,11 @@
 #include "MainWindow.h"
 #include "PresetEditor.h"
 #include "Commands.h"
+#ifdef Q_OS_MACOS
+#include "MacPresentation.h"
+#endif
+#include <QElapsedTimer>
+#include <memory>
 #include "Engine.h"
 #include "LayerInspector.h"
 #include "LayerTable.h"
@@ -1784,10 +1789,40 @@ bool MainWindow::event(QEvent *e)
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
-    if (!maybeSave()) {
+    if (!m_quitting && !maybeSave()) {
         e->ignore();
         return;
     }
+#ifdef Q_OS_MACOS
+    // An output on a Space of its own leaves it first (macOS animates it), and only then does Pinol close: destroying
+    // the window during that animation left the process hung once its interface was gone. 4 s at most.
+    if (!m_quitting) {
+        m_quitting = true;
+        bool any = false;
+        for (auto &[id, o] : m_outputs)
+            if (o.window && macIsFullScreen(o.window)) {
+                any = true;
+                o.window->hideOutput(); // leaves fullscreen, then hides
+            }
+        if (any) {
+            e->ignore();
+            auto *poll = new QTimer(this);
+            auto waited = std::make_shared<QElapsedTimer>();
+            waited->start();
+            connect(poll, &QTimer::timeout, this, [this, poll, waited] {
+                bool still = false;
+                for (auto &[id, o] : m_outputs) still = still || (o.window && macIsFullScreen(o.window));
+                if (still && waited->elapsed() < 4000) return;
+                poll->stop();
+                poll->deleteLater();
+                close(); // again: m_quitting, no second question
+            });
+            poll->start(50);
+            return;
+        }
+    }
+#endif
+    m_quitting = true;
     QSettings s;
     s.setValue("ui/geometry", saveGeometry());
     if (auto *split = findChild<QSplitter *>("mainSplit2")) s.setValue("ui/mainSplit2", split->saveState());

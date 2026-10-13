@@ -49,6 +49,7 @@ protected:
     bool eventFilter(QObject *o, QEvent *e) override;
 
 private:
+    bool m_quitting = false; // closing: the project question is asked once, the outputs leave fullscreen first
     void buildMenus();
     void refreshLayerList();
     void refreshAll();

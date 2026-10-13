@@ -15,6 +15,8 @@ class QWindow;
 class MetalOutput
 {
 public:
+    // What became of a picture: shown, or why not (counted per output: Engine::frameTimingJson)
+    enum class Result { Shown, NoPicture, SurfacesBusy, NoDrawable, Failed };
 #ifdef Q_OS_MACOS
     static bool available(); // a Metal device
     // The window's CAMetalLayer (a window whose surface type is Metal), main thread; null: it has none
@@ -22,7 +24,7 @@ public:
     ~MetalOutput();
     // Render thread, the engine's OpenGL context current: the framebuffer's picture (w × h) into the window, stretched
     // over its pixels. waitForScreen: this one is synchronised with the display (the last window of the frame).
-    bool present(unsigned framebuffer, int w, int h, QSize pixels, bool waitForScreen);
+    Result present(unsigned framebuffer, int w, int h, QSize pixels, bool waitForScreen);
     void releaseGl(); // its surfaces' OpenGL side (render thread, context current), before it goes
     quint64 droppedFrames() const; // frames not shown because every shared surface was still read by Metal
 
@@ -33,7 +35,7 @@ private:
 #else
     static bool available() { return false; }
     static std::shared_ptr<MetalOutput> forWindow(QWindow *) { return nullptr; }
-    bool present(unsigned, int, int, QSize, bool) { return false; }
+    Result present(unsigned, int, int, QSize, bool) { return Result::Failed; }
     void releaseGl() {}
     quint64 droppedFrames() const { return 0; }
 #endif
