@@ -240,7 +240,7 @@ void OscNamespace::build()
             return true;
         };
         // Resources against their budgets (Engine::resourcesJson), as one JSON string
-        add("/composition/resources", "s", 1, "Resources (JSON)").get = [e] {
+        add("/composition/budget", "s", 1, "Resources (JSON)").get = [e] {
             return QVariantList{QString::fromUtf8(QJsonDocument(e->resourcesJson()).toJson(QJsonDocument::Compact))};
         };
     }

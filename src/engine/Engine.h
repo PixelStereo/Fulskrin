@@ -570,7 +570,7 @@ public:
     void noteInput(FrameTiming::Input kind) { m_frameTiming.noteInput(kind); } // any thread
     // What the show holds against its budgets (any thread): decoded frames, upload buffers, decoders' threads,
     // graphics memory free (when the driver says: NVIDIA, AMD), and which budget is exceeded now ("warnings").
-    // OSC /composition/resources. Sampled by the render thread once a second; a budget newly exceeded is logged.
+    // OSC /composition/budget. Sampled by the render thread once a second; a budget newly exceeded is logged.
     QJsonObject resourcesJson() const;
     // Syphon and Spout: false (default) the frame is finished before it is shared (the render thread waits for the
     // GPU); true the previous frame is shared, no wait on the render path, one frame later for the receivers
