@@ -75,13 +75,14 @@ jobs:
           name: Pinol-linux
           path: Pinol-linux-x86_64*.tar.gz
 
-  # The threads that share data (render, decoders, sound callback, OSC) under ThreadSanitizer: a race in Pinol's code
+  # The threads that share data (decoders, sound callback, OSC) under ThreadSanitizer: a race in Pinol's code
   # fails the job. Libraries not built with it (Qt, Mesa, FFmpeg) are suppressed in test/tsan.supp; the engine's
   # Qt mutexes and the render thread's join are annotated (src/engine/AnnotatedMutex.h).
   tsan:
-    name: ThreadSanitizer (render, video, sound, OSC)
+    name: ThreadSanitizer (video, sound, OSC)
     runs-on: ubuntu-24.04
     needs: media
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -105,9 +106,13 @@ jobs:
       - name: Tests under ThreadSanitizer
         run: |
           export TSAN_OPTIONS="halt_on_error=1 exitcode=66 suppressions=$PWD/test/tsan.supp"
-          for area in thread sound video osc publishing; do
+          # The decoders' threads, the sound callback and its decode threads, the OSC server. (The render-thread areas
+          # render with llvmpipe, itself far too slow under ThreadSanitizer on a CI runner: run them locally.)
+          for area in sound video osc; do
             echo "::group::$area"
-            xvfb-run -a ./build-tsan/pinol_tests --area $area
+            start=$(date +%s)
+            timeout 600 xvfb-run -a ./build-tsan/pinol_tests --area $area
+            echo "$area: $(( $(date +%s) - start )) s"
             echo "::endgroup::"
           done
 
