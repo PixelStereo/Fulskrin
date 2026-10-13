@@ -953,6 +953,26 @@ void InteractionPanel::rebuildSettings()
     form->addRow(QStringLiteral("Target"), target);
     attachPreset({target}, {QStringLiteral("target")});
 
+    // Whole-color targets expose an explicit alpha opt-in. By default a
+    // Chataigne RGBA packet changes RGB but keeps the layer's existing alpha.
+    // Individual /a scalar targets remain freely mappable as before.
+    ParamInfo colorPart;
+    const bool wholeColor = m_engine->parameterInfo(it.layer, it.param + QStringLiteral("/r"), &colorPart) &&
+                            m_engine->parameterInfo(it.layer, it.param + QStringLiteral("/g"), &colorPart) &&
+                            m_engine->parameterInfo(it.layer, it.param + QStringLiteral("/b"), &colorPart) &&
+                            m_engine->parameterInfo(it.layer, it.param + QStringLiteral("/a"), &colorPart);
+    if (wholeColor) {
+        auto *mapAlpha = new FlagBox(QStringLiteral("Map alpha (RGBA)"));
+        mapAlpha->setChecked(it.colorMapAlpha);
+        mapAlpha->setToolTip(QStringLiteral("Off: preserve the target's opacity (recommended). "
+                                           "On: use the fourth incoming OSC component as alpha, including zero."));
+        form->addRow(QString(), mapAlpha);
+        attachPreset({mapAlpha}, {QStringLiteral("color/map_alpha")});
+        connect(mapAlpha, &QCheckBox::toggled, this, [edit](bool on) {
+            edit(QStringLiteral("Change Color Alpha Mapping"), [on](Interaction &x) { x.colorMapAlpha = on; });
+        });
+    }
+
     // What it does now
     m_inMeter = meter();
     m_outMeter = meter();

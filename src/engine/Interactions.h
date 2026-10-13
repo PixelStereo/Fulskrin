@@ -82,6 +82,9 @@ struct Interaction {
     // The target: a value of the show (a layer's id, 0: the composition) and its address
     quint64 layer = 0;
     QString param;
+    // A complete color target normally changes RGB only. OSC 'r' and RGBA
+    // tuples can carry an unused/zero alpha; opt in explicitly to map it.
+    bool colorMapAlpha = false;
 
     // The chain
     double master = 1;    // 0..1

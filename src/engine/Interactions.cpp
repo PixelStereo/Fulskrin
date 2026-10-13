@@ -179,6 +179,7 @@ QJsonObject Interaction::toJson() const
     }
     o["layer"] = QString::number(layer);
     o["param"] = param;
+    o["color_map_alpha"] = colorMapAlpha;
     o["master"] = master;
     o["toggle"] = toggle;
     o["source_range"] = QJsonArray{srcMin, srcMax};
@@ -224,6 +225,7 @@ Interaction Interaction::fromJson(const QJsonObject &o)
     it.sourceParam = o.value("source_param").toString();
     it.layer = o.value("layer").toString().toULongLong();
     it.param = o.value("param").toString();
+    it.colorMapAlpha = o.value("color_map_alpha").toBool(false);
     it.master = std::clamp(o.value("master").toDouble(1), 0.0, 1.0);
     it.toggle = o.value("toggle").toBool(false);
     const QJsonArray sr = o.value("source_range").toArray(), tr = o.value("target_range").toArray();

@@ -313,8 +313,10 @@ void Engine::stepInteractions(double dt)
             for (int c = 0; c < 4; ++c) {
                 Parameter *ch = channels[size_t(c)];
                 if (!ch || !(ch->info().access & ParamInfo::Write)) continue;
-                // Without explicit alpha the current alpha is never changed.
-                if (c == 3 && run.colorComponents < 4) continue;
+                // Preserve the target's existing alpha unless the user opted
+                // into mapping it AND the OSC packet carries a fourth channel.
+                // Some senders fill unused OSC color alpha with zero.
+                if (c == 3 && (!it.colorMapAlpha || run.colorComponents < 4)) continue;
                 const double value = run.colorComponents >= 3
                     ? std::clamp(run.color[size_t(c)] * (c == 3 ? 1.0 : it.master), 0.0, 1.0)
                     : gray;
@@ -451,6 +453,8 @@ void Engine::makeInteractionParams()
             .limits(0, 1)
             .animatable();
         flag(QStringLiteral("toggle"), QStringLiteral("Toggle"), false, [](Interaction &x) -> bool & { return x.toggle; });
+        flag(QStringLiteral("color/map_alpha"), QStringLiteral("Map Color Alpha"), false,
+             [](Interaction &x) -> bool & { return x.colorMapAlpha; });
         number(QStringLiteral("source/min"), QStringLiteral("Source Min"), sLo, sHi, sLo, [](Interaction &x) -> double & { return x.srcMin; });
         number(QStringLiteral("source/max"), QStringLiteral("Source Max"), sLo, sHi, sHi, [](Interaction &x) -> double & { return x.srcMax; });
         number(QStringLiteral("target/min"), QStringLiteral("Target Min"), tLo, tHi, tLo, [](Interaction &x) -> double & { return x.dstMin; })
