@@ -43,6 +43,10 @@ private:
 class VideoTexture
 {
 public:
+    // Upload buffers of every video layer (any thread): bytes allocated, the budget they share, layers having some
+    static size_t pboBytesInUse();
+    static size_t pboBudgetBytes();
+    static int pboStreams();
     VideoTexture() = default;
     ~VideoTexture() = default; // destroy() releases the GL objects, in the render thread
     VideoTexture(const VideoTexture &) = delete;

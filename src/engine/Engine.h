@@ -568,6 +568,14 @@ public:
     QJsonObject frameTimingJson() const; // the same, with the outputs' dropped frames (OSC /composition/timing)
     void resetFrameTiming();
     void noteInput(FrameTiming::Input kind) { m_frameTiming.noteInput(kind); } // any thread
+    // What the show holds against its budgets (any thread): decoded frames, upload buffers, decoders' threads,
+    // graphics memory free (when the driver says: NVIDIA, AMD), and which budget is exceeded now ("warnings").
+    // OSC /composition/resources. Sampled by the render thread once a second; a budget newly exceeded is logged.
+    QJsonObject resourcesJson() const;
+    // Syphon and Spout: false (default) the frame is finished before it is shared (the render thread waits for the
+    // GPU); true the previous frame is shared, no wait on the render path, one frame later for the receivers
+    void setGpuShareOneFrameLate(bool on) { m_shareOneFrameLate = on; }
+    bool gpuShareOneFrameLate() const { return m_shareOneFrameLate.load(); }
     QImage grabOutput();                 // the whole composition (interface preview)
     QImage grabViewport(quint64 viewport);
     QImage grabLayerSource(int index); // a layer's source picture, full size, before its ROI (tests, tools)
@@ -807,6 +815,13 @@ private:
     std::atomic<double> m_fps{0};
     FrameTiming m_frameTiming;
     std::atomic<quint64> m_outputsDropped{0}; // frames an output window could not show (Metal: surfaces in use)
+    std::atomic<quint64> m_sharesSkipped{0};  // Syphon / Spout one frame later: the previous frame not finished
+    std::atomic<bool> m_shareOneFrameLate{false};
+    void sampleResources(); // render thread, context current: once a second
+    qint64 m_resourcesSampledNs = 0;
+    int m_vramQuery = -1; // -1 not looked at yet, 0 none, 1 NVX, 2 ATI
+    std::atomic<qint64> m_vramFreeKb{-1}, m_vramTotalKb{-1};
+    std::atomic<quint32> m_overBudget{0}; // bits: 1 decoded frames, 2 upload buffers, 4 threads, 8 graphics memory
     std::atomic<quint64> m_frameCount{0};
     bool m_initialized = false;
 

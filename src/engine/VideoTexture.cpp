@@ -58,6 +58,11 @@ static size_t pboBudget()
     return forced ? forced : size_t(2048) << 20;
 }
 static std::atomic<int> s_pboStreams{0};
+static std::atomic<size_t> s_pboBytes{0}; // upload buffers allocated, every layer (telemetry: Engine::resourcesJson)
+
+size_t VideoTexture::pboBytesInUse() { return s_pboBytes.load(std::memory_order_relaxed); }
+size_t VideoTexture::pboBudgetBytes() { return pboBudget(); }
+int VideoTexture::pboStreams() { return s_pboStreams.load(std::memory_order_relaxed); }
 
 static int fairPboCount(size_t size, int decoderWants)
 {
@@ -212,6 +217,7 @@ void VideoTexture::createPbo(VideoDecoder &dec)
         return;
     }
     b.mapped = true;
+    s_pboBytes += b.size;
     if (m_live++ == 0) ++s_pboStreams;
     dec.addStaging(id, static_cast<uint8_t *>(ptr), m_pboSize);
 }
@@ -227,6 +233,7 @@ void VideoTexture::destroyPbo(int id)
         f->glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     }
     f->glDeleteBuffers(1, &b.buffer);
+    s_pboBytes -= b.size;
     b = Pbo{};
     if (--m_live == 0) --s_pboStreams;
 }

@@ -7,6 +7,7 @@
 #include "Publish.h"
 
 #include <QElapsedTimer>
+#include <atomic>
 #include <functional>
 #include <map>
 #include <memory>
@@ -33,6 +34,7 @@ public:
     // Syphon, Spout: their contexts copy the finished picture (after the frame's end)
     void share(quint64 viewport, const RenderTarget &picture);
     bool sharing() const; // a Syphon or Spout publisher is on: the frame must be finished before share()
+    quint64 readbacksSkipped() const { return m_readbacksSkipped.load(); } // NDI / OMT frames not sent: GPU late
     void release();       // every publisher stopped, the OpenGL objects deleted
 
     // --- Any thread
@@ -54,4 +56,5 @@ private:
     std::function<void(const CpuFrame &)> m_tap;
     bool m_tapDirty = false;
     QElapsedTimer m_clock;
+    std::atomic<quint64> m_readbacksSkipped{0};
 };

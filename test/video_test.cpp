@@ -16,6 +16,7 @@ extern "C" {
 }
 
 #include <QElapsedTimer>
+#include <QJsonObject>
 #include <QFile>
 #include <QImage>
 #include <QThread>
@@ -801,6 +802,7 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
     {
         const bool hw = VideoDecoder::hardwareDecoding();
         VideoDecoder::setHardwareDecoding(false);
+        const int open0 = VideoDecoder::softwareDecodersOpen(), inUse0 = VideoDecoder::softwareThreadsInUse(); // layers'
         std::vector<std::unique_ptr<VideoDecoder>> decs;
         for (int k = 0; k < 4; ++k) {
             auto d = std::make_unique<VideoDecoder>();
@@ -809,7 +811,45 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
             decs.push_back(std::move(d));
         }
         for (const auto &d : decs) VCHECK(d->decodeThreads() >= 1 && d->decodeThreads() == decs.front()->decodeThreads());
+        // Counted process-wide while they are open (Engine::resourcesJson shows it)
+        int sum = 0;
+        for (const auto &d : decs) sum += d->decodeThreads();
+        VCHECK(VideoDecoder::softwareThreadsInUse() == inUse0 + sum && VideoDecoder::softwareDecodersOpen() == open0 + 4);
+        {
+            const QJsonObject r = e.resourcesJson();
+            VCHECK(r.value("software_decoders").toInt() == open0 + 4 && r.value("software_decode_threads").toInt() == inUse0 + sum &&
+                   r.contains("decoded_frames_mb") && r.contains("upload_buffers_budget_mb") && r.value("warnings").isArray());
+        }
         decs.clear();
+        VCHECK(VideoDecoder::softwareThreadsInUse() == inUse0 && VideoDecoder::softwareDecodersOpen() == open0);
+        VideoDecoder::setHardwareDecoding(hw);
+    }
+    // The process-wide budget (audit P1): beyond it, a new software decoder gets an even share of it (at least 2),
+    // never more than one alone would get; the threads in use stay bounded however many streams are open
+    {
+        const bool hw = VideoDecoder::hardwareDecoding();
+        VideoDecoder::setHardwareDecoding(false);
+        const int open0 = VideoDecoder::softwareDecodersOpen(), inUse0 = VideoDecoder::softwareThreadsInUse();
+        std::vector<std::unique_ptr<VideoDecoder>> decs;
+        QString err;
+        decs.push_back(std::make_unique<VideoDecoder>());
+        VCHECK(decs.back()->open(root + "/media/av.mp4", &err));
+        const int alone = decs.back()->decodeThreads();
+        VideoDecoder::setSoftwareThreadBudget(alone); // one stream's worth: every next one shares it
+        VCHECK(VideoDecoder::softwareThreadBudgetNow() == alone);
+        for (int k = 0; k < 7; ++k) {
+            decs.push_back(std::make_unique<VideoDecoder>());
+            VCHECK(decs.back()->open(root + "/media/av.mp4", &err));
+            const int open = open0 + k + 1; // software decoders open before this one
+            const int want = std::min(alone, std::max(2, alone / (open + 1)));
+            VCHECK(decs.back()->decodeThreads() == want);
+        }
+        std::printf("    decode threads: %d alone, then %d each, %d in all for 8 streams (budget %d)\n", alone,
+                    decs.back()->decodeThreads(), VideoDecoder::softwareThreadsInUse(), alone);
+        VCHECK(VideoDecoder::softwareThreadsInUse() - inUse0 <= alone + 7 * std::max(2, alone / 2));
+        VCHECK(e.resourcesJson().value("software_decode_thread_budget").toInt() == alone);
+        decs.clear();
+        VideoDecoder::setSoftwareThreadBudget(0);
         VideoDecoder::setHardwareDecoding(hw);
     }
     e.newProject();

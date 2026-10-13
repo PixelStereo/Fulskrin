@@ -104,6 +104,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_engine->setDefaultColorModels(SettingsPanel::colorModels());
     // Rendering: the machine's defaults, and the main screen's refresh rate (the pace without an output shown)
     m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
+    m_engine->setGpuShareOneFrameLate(SettingsPanel::gpuShareOneFrameLate());
     auto screenRate = [this] {
         if (QScreen *sc = QGuiApplication::primaryScreen()) m_engine->setScreenRefreshRate(sc->refreshRate());
     };
@@ -265,6 +266,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_composition, &CompositionPanel::compositionEdited, this, &MainWindow::markDirty);
     connect(m_settings, &SettingsPanel::renderDefaultsChanged, this, [this] {
         m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
+        m_engine->setGpuShareOneFrameLate(SettingsPanel::gpuShareOneFrameLate());
     });
     connect(m_composition, &CompositionPanel::audioEdited, this, &MainWindow::markDirty);
 

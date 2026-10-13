@@ -113,6 +113,14 @@ public:
     // --- Settings, for the decoders opened afterwards
     static void setHardwareDecoding(bool on);
     static bool hardwareDecoding();
+    // Software decoders' FFmpeg threads across the process (see softwareThreads in VideoDecoder.cpp)
+    static int softwareThreadsInUse();
+    static int softwareDecodersOpen();
+    static int softwareThreadBudgetNow();         // threads they may take in all before sharing evenly
+    static void setSoftwareThreadBudget(int threads); // 0: the default (twice the cores), tests and measurements
+    // Decoded frames in memory, across every decoder, and their soft limit (bytes)
+    static size_t decodedBytesInUse();
+    static size_t decodedBytesLimit();
     // Hardware frames handed to the GPU in place (set by the render thread when it can sample them: macOS)
     static void setZeroCopy(bool on);
     static bool zeroCopy();
@@ -159,6 +167,7 @@ private:
     double m_timeBase = 0, m_startTime = 0;
 
     int m_width = 0, m_height = 0;
+    int m_softwareThreads = 0; // FFmpeg threads counted in the process-wide budget (0: hardware, HAP, closed)
     double m_duration = 0, m_fps = 25;
     QString m_codecName;
     uint32_t m_hapTag = 0;

@@ -239,6 +239,10 @@ void OscNamespace::build()
             e->resetFrameTiming();
             return true;
         };
+        // Resources against their budgets (Engine::resourcesJson), as one JSON string
+        add("/composition/resources", "s", 1, "Resources (JSON)").get = [e] {
+            return QVariantList{QString::fromUtf8(QJsonDocument(e->resourcesJson()).toJson(QJsonDocument::Compact))};
+        };
     }
     for (int axis = 0; axis < 2; ++axis) {
         OscNode &n = add(axis ? "/composition/height" : "/composition/width", "i", 3,
