@@ -1,4 +1,5 @@
 #pragma once
+#include "../engine/Engine.h"
 // Presets in the interface: which one is selected, the Edit mode, and the parameters' widgets that can go in one.
 //
 // The inspector's widgets of a value register here (AnimateMenu::attach does it). In Edit mode, each one in the
