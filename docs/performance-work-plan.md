@@ -5,11 +5,12 @@ layers).
 
 ## In this change
 
-- **Threads.** The first software decoder takes every core (FFmpeg's automatic count: a single 4K HEVC or
-  ProRes stream needs them). Each next software decoder gets a share (`cores / open software decoders`, at
-  least 2), so many layers no longer each start a machine-sized team. Hardware decoders keep 4 threads.
-  There is no global decode gate: it serialized file reads and hardware waits behind a CPU limit. The HAP
-  worker pool keeps `min(16, cores - 1)` threads (parallel Snappy chunks are what makes 4K HAP real time).
+- **Threads.** Every software decoder gets the same number of FFmpeg threads, whatever the order the videos were
+  opened in: half the cores, between 2 and 16 (`PINOL_DECODE_THREADS` overrides it, for measurements). Before,
+  the first decoder opened took every core and the next ones shared what was left, so the last layer opened got
+  the fewest threads. Hardware decoders keep 4 threads. There is no global decode gate: it held file reads and
+  hardware waits behind a CPU limit. The HAP worker pool keeps `min(16, cores - 1)` threads (decompressing
+  Snappy chunks in parallel is what makes 4K HAP real time).
 - **Decoded frames in memory.** They are counted process-wide against 512 MiB, as a soft limit. Over it, a
   frame is never dropped. Instead, every stream keeps only 2 frames ahead (instead of 6) until its frames are
   shown. A stream can never be starved by the others, and a paused layer keeps the right frame. Not counted:
@@ -52,6 +53,20 @@ mix: the average of 3 runs).
 In the mix, only this change keeps every stream above 30 fps. main starves the 4K HEVC (each decoder starts
 a machine-sized team of threads), and #115 slows everything down (one thread per stream, at most 2 decodes at
 once on 4 cores). Not measured here: hardware decoding, and 8+ cores.
+
+### Apple M3 Ultra (28 cores), main before #117 → after #117
+
+- **Playback (GPU), hardware and software, 1 layer and the 6-layer mix:** every layer at 30 fps in both versions,
+  render at 56.7 fps (60 asked), no budget hold.
+- **Hardware decode (VideoToolbox), as fast as possible:** the same within noise (HEVC 4K alone 127 → 125 fps;
+  mix 192 → 192 fps).
+- **Software decode, alone:** the same (HEVC 4K 1200 / 1200 fps, ProRes 2746 / 2748 fps).
+- **Software decode, mix:** HEVC 4K +54 %, HAP Q 4K +35 %, H.264 −4 %, ProRes −45 %. ProRes was opened last and
+  got 5 threads against 28 for the first decoder. This uneven share is what the even per-decoder count fixes.
+
+Decode-only runs are throughput tests: every stream decodes as fast as it can, so equal threads give equal CPU
+time and the heaviest stream gets the lowest rate. In playback, a stream that is far enough ahead waits, which
+leaves the CPU to the others. Playback with many layers is the test that decides.
 
 ## Definitions
 

@@ -56,10 +56,10 @@ static int decodeOnly(const QStringList &files, double seconds)
         std::printf("  %-34s %-26s %5dx%-5d %6.1f frames/s (file: %.2f)\n", qPrintable(QFileInfo(files[int(i)]).fileName()),
                     qPrintable(dec[i]->codecName()), dec[i]->width(), dec[i]->height(), got[i] / s, dec[i]->fps());
         const VideoDecoder::Metrics m = dec[i]->metrics();
-        std::printf("      decode p95/max %.2f/%.2f ms; decoded %llu; budget holds %llu\n",
+        std::printf("      decode p95/max %.2f/%.2f ms; decoded %llu; budget holds %llu; threads %d\n",
                     m.decodeTimeP95Ms, m.decodeTimeMaxMs,
                     static_cast<unsigned long long>(m.decodedFrames),
-                    static_cast<unsigned long long>(m.budgetHolds));
+                    static_cast<unsigned long long>(m.budgetHolds), dec[i]->decodeThreads());
     }
     return 0;
 }

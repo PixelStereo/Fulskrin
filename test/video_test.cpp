@@ -784,6 +784,21 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         VCHECK(decodedBudget::used() == 0);
         decodedBudget::setLimit(size_t(512) << 20);
     }
+    // Software decoders share the cores evenly: the same threads for each, whatever the order they were opened in
+    {
+        const bool hw = VideoDecoder::hardwareDecoding();
+        VideoDecoder::setHardwareDecoding(false);
+        std::vector<std::unique_ptr<VideoDecoder>> decs;
+        for (int k = 0; k < 4; ++k) {
+            auto d = std::make_unique<VideoDecoder>();
+            QString err;
+            VCHECK(d->open(root + "/media/av.mp4", &err));
+            decs.push_back(std::move(d));
+        }
+        for (const auto &d : decs) VCHECK(d->decodeThreads() >= 1 && d->decodeThreads() == decs.front()->decodeThreads());
+        decs.clear();
+        VideoDecoder::setHardwareDecoding(hw);
+    }
     e.newProject();
     return g_failures;
 }
