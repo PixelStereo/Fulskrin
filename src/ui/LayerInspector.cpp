@@ -1915,7 +1915,7 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
     models->setCurrentIndex(std::max(0, models->findData(s.colorModels)));
     models->setProperty("allowLocked", true); // a way of showing, not an edit
     auto *modelRow = new QHBoxLayout;
-    modelRow->addWidget(new QLabel(QStringLiteral("Edit in")));
+    modelRow->addWidget(new QLabel(QStringLiteral("Advanced model")));
     modelRow->addWidget(models, 1);
     v->addLayout(modelRow);
     connect(models, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, models] {
@@ -1931,9 +1931,11 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
 
     auto toColor = [](const float c[3]) { return QColor::fromRgbF(c[0], c[1], c[2]); };
     m_colorAdd = new ColorEditor(QStringLiteral("Add"), Qt::black);
+    m_colorAdd->setSettingsKey(QStringLiteral("ui/colorPickerMode/layer/%1/add").arg(m_layerId));
     m_colorAdd->setColor(toColor(s.color.add));
     m_colorAdd->setToolTip(QStringLiteral("Color added to the picture, as light (black: nothing added)"));
     m_colorRemove = new ColorEditor(QStringLiteral("Remove"), Qt::black);
+    m_colorRemove->setSettingsKey(QStringLiteral("ui/colorPickerMode/layer/%1/remove").arg(m_layerId));
     m_colorRemove->setColor(toColor(s.color.remove));
     m_colorRemove->setToolTip(QStringLiteral("Color removed from the picture, as a filter (black: nothing removed)"));
     for (ColorEditor *ed : {m_colorAdd.data(), m_colorRemove.data()}) {

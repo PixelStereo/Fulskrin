@@ -19,6 +19,7 @@
 class QDoubleSpinBox;
 class QSlider;
 class QLineEdit;
+class ColorPicker;
 
 // Accent color of the interface: the selection, the bars, the buttons that are on, the links.
 // A very light grey by default, changed in the Settings tab and kept for this machine.
@@ -230,6 +231,7 @@ public:
     enum Model { Rgb = 1, Hsl = 2, Additive = 4, Subtractive = 8, All = 15 };
     ColorEditor(const QString &title, const QColor &defaultColor, QWidget *parent = nullptr);
     void setModels(int models);
+    void setSettingsKey(const QString &key);
     // Switch shown next to the title: the color is kept but not applied while it is off
     void setSwitch(bool shown, bool on, const QString &tip = QString());
     void setColor(const QColor &c);
@@ -261,6 +263,8 @@ private:
     QWidget *m_groups[4] = {};
     QLabel *m_swatch = nullptr;
     QLineEdit *m_hex = nullptr;
+    ColorPicker *m_picker = nullptr;
+    QWidget *m_advanced = nullptr;
     bool m_syncing = false;
 };
 
