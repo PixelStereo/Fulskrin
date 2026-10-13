@@ -252,6 +252,10 @@ public:
     // curveIn: what enters its curve (after the filter)
     bool interactionLevels(quint64 id, double *level, double *output, double *curveIn = nullptr) const;
     void feedInteraction(const InteractionEvent &e); // a source's value (any thread)
+    // An enabled OSC interaction listens on this exact address: it owns it. OSC then sends the message to the
+    // interaction only, not to the native value of that address as well (one writer per value: an interaction that
+    // preserves alpha is not undone by the direct write landing first). Any thread.
+    bool oscAddressClaimed(const QString &address) const;
     // Learn: the sources that come in are kept (of one kind, when given), for the interface to take once they have
     // settled — several moved together (a controller sending two messages): it asks which one. The interactions go on
     void setInteractionLearn(bool on, std::optional<InteractionSource> kind = std::nullopt);

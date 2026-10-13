@@ -23,6 +23,9 @@ macOS). macOS, Windows, Linux.
   (its OSC address: `/interaction/<name>/master`…); snapshots keep them in a part of their own, presets hold any of
   their values, both faded in their time. Any value's right-click: its OSC address, and Learn Interaction (a new one
   driving it, its source learnt; several sources at once: you choose).
+  An interaction listening on a value's own OSC address takes that address over: the message goes through the
+  interaction's chain only, the value is not also written directly (one writer per value). Disabled, it lets the
+  address go. A color tuple with a channel above 1 is read as 0..255, by the interactions and the native address alike.
 - **Control**: OSC and OSCQuery (UDP 1234, TCP 5678, Zeroconf). One address per value everywhere: OSC, project file, snapshots, timelines (`/layer/<name>/position/x`, `…/fx/<fx>/param/<input>`, `…/<param>/anim/play`). No password: in Settings › OSC, *Listen on* limits it to one network interface or to this computer.
 
 ## Build
