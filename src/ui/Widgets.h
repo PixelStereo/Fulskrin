@@ -222,17 +222,16 @@ private:
     QPointF m_pressNorm;
 };
 
-// One color in the chosen models: RGB (0..255, hex), HSL, additive (R G B light %), subtractive (C M Y %),
-// or all of them; the models are linked. Each channel name resets it.
+// Color Add / Remove: lightweight title, enable switch and hexadecimal entry
+// around the shared RGB ColorPicker. The picker owns all channel/wheel/palette UI.
+// Legacy enum values remain only because Settings serializes their historical ids.
 class ColorEditor : public QWidget
 {
     Q_OBJECT
 public:
     enum Model { Rgb = 1, Hsl = 2, Additive = 4, Subtractive = 8, All = 15 };
     ColorEditor(const QString &title, const QColor &defaultColor, QWidget *parent = nullptr);
-    void setModels(int models);
     void setSettingsKey(const QString &key);
-    // Switch shown next to the title: the color is kept but not applied while it is off
     void setSwitch(bool shown, bool on, const QString &tip = QString());
     void setColor(const QColor &c);
     QColor color() const { return m_color; }
@@ -242,30 +241,15 @@ signals:
     void switchToggled(bool on);
 
 private:
-    struct Channel {
-        int model;
-        int index;
-        SliderField *bar = nullptr;
-        double max = 1;
-        QWidget *row = nullptr;
-    };
     void build(const QString &title);
-    class QCheckBox *m_switch = nullptr;
-    void addChannel(int model, int index, const QString &name, double max, const QString &suffix, const QString &gradient);
-    double channelValue(int model, int index) const;
-    void setChannel(int model, int index, double v);
-    void sync(const Channel *except = nullptr);
+    void sync();
     void apply(const QColor &c, bool emitSignal);
 
     QColor m_color, m_default;
-    float m_h = 0, m_s = 0, m_l = 0; // kept so that hue does not jump on grays
-    std::vector<Channel> m_channels;
-    QWidget *m_groups[4] = {};
+    QCheckBox *m_switch = nullptr;
     QLabel *m_swatch = nullptr;
     QLineEdit *m_hex = nullptr;
     ColorPicker *m_picker = nullptr;
-    QWidget *m_advanced = nullptr;
-    bool m_syncing = false;
 };
 
 // Padlock drawn by hand (no emoji font needed): closed and red when locked, closed and dim when locked by the group,
