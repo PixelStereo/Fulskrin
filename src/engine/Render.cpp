@@ -690,14 +690,20 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
             const double drawnH = b.height() / std::max(1e-6, view.height()) * target.h;
             mip = drawnW < l.finalW * 0.9 || drawnH < l.finalH * 0.9;
             if (mip) {
-                // A plain video's picture (no ROI, color or effect) changes only with a new frame of the file: its
-                // mipmaps are made once per frame of the video, not once per frame of the render or per output
+                // Made again only when the picture can have changed (audit P2):
+                //  - a plain video (no ROI, color or effect) changes only with a new frame of the file: once per frame
+                //    of the video, not once per frame of the render;
+                //  - any other picture is made again each frame: once per frame of the render, whatever the number of
+                //    viewports drawing it (before: once per viewport)
                 const bool plainVideo = l.type == SourceType::Video && l.videoTex && l.finalTex == l.videoTex->texture();
-                const uint64_t frame = plainVideo ? l.videoTex->pictureSerial() : 0;
-                if (!plainVideo || l.mipTex != l.finalTex || l.mipFrame != frame) {
+                const uint64_t serial = plainVideo ? l.videoTex->pictureSerial() : m_frameCount.load(std::memory_order_relaxed);
+                const int kind = plainVideo ? 1 : 2;
+                if (l.mipTex != l.finalTex || l.mipFrame != serial || l.mipKind != kind) {
                     f->glGenerateMipmap(GL_TEXTURE_2D);
-                    l.mipTex = plainVideo ? l.finalTex : 0;
-                    l.mipFrame = frame;
+                    ++m_mipmapsMade;
+                    l.mipTex = l.finalTex;
+                    l.mipFrame = serial;
+                    l.mipKind = kind;
                 }
                 f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             }

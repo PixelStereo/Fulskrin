@@ -17,6 +17,11 @@
 // Pick-up (faders, knobs): once the target was moved by something else (a snapshot, the interface), the interaction
 // leaves it alone until its own value meets the target's (it is not made to jump). Jump: it sets it at once.
 //
+// A whole color (an OSC 'r', or 3 / 4 numbers) driving a color: each channel goes through the same chain — source
+// range, filter, curve, master (not the alpha's), target range — with a filter state of its own; toggle does not
+// apply. Pick-up waits for every channel to have met the target's (each within the tolerance, or crossed it) before
+// it takes the color over. Alpha only with Map alpha and a fourth channel. A single number driving a color: a gray.
+//
 // Sources feed events into the engine from any thread (Engine::feedInteraction); the engine runs the chains each frame
 // (its lock held) and sets the targets, as an animation does (the snapshots' fades let them go).
 
@@ -134,6 +139,17 @@ private:
     double m_time = 0;
     double m_slow = 0;               // Pulse: the slow average it is compared with
     std::optional<double> m_out, m_curveIn;
+};
+
+// A color target's pick-up: every channel has to meet the target's before the interaction takes it over
+struct InteractionColorTargetState {
+    bool caught = false;
+    std::array<bool, 4> met{{false, false, false, false}};
+    std::optional<std::array<double, 4>> written, prevOut;
+    // `v`: the interaction's color (0..1 per channel, after the target range); `current`: the target's now;
+    // `channels`: 3 or 4. The values to write, if any (none: held by pick-up, or already there)
+    std::optional<std::array<double, 4>> toWrite(const Interaction &it, const std::array<double, 4> &v,
+                                                  const std::array<double, 4> &current, int channels, double tolerance);
 };
 
 // Where a target stands for an interaction: what it wrote last, and whether it holds it (pick-up)

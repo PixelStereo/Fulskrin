@@ -98,3 +98,25 @@ decoded frames or 4 threads change nothing more. With hardware decoding (20 × H
 
 Playback scheduling (`run()`, legs, backward windows), then codec setup. Keep each step behavior-preserving
 and benchmarked.
+
+## Audit of 13 October 2026 (611f228): what was done
+
+Each point of the audit, what changed, and what is left to measure on show hardware (CI has neither a GPU nor a
+sound card, nor Syphon / NDI receivers).
+
+| Audit | Change | Tested by | Still to measure |
+|---|---|---|---|
+| P0 OSC direct write and Interactions | An enabled OSC interaction on a value's own address owns it: the direct write is not made (`Engine::oscAddressClaimed`). Bytes 0..255 read the same on both paths. | `interactions`: ffff with A=0, iiii, packed `r`, Map alpha, disabled again | Chataigne on a real network |
+| P1 Metal surface reused after the 100 ms timeout | A surface still read is never written: first free one, else 8 ms, else the frame is dropped and counted. Release waits for its command buffer. | — (no window on CI) | Outputs under GPU load, `outputs_dropped` |
+| P1 cues on the interface's event loop | A cue clock thread (2 ms precise timer, monotonic) fires the waits and recalls from there; undo recorded afterwards. | `snapshots`: GO, then this thread blocked 400 ms: recalled on time | Lateness (`Sequencer::cueTiming`) during drags, loads, OSC floods |
+| P1 logs: one table row per message | `EventLog` ring: repeats merged, 500 new lines/s, bounded; the panel reads it 10 times a second through a model. | `osc`: merge, rate, ring, 4 threads, model rows | UI responsiveness at 1000+ OSC messages/s |
+| P1 no global thread budget | Software decoders share a budget of 2 × cores beyond it (an even share, at least 2). Unchanged up to it (#117's even share). | `video`: counts, even share beyond the budget | `pinol_bench` with 8 / 16 software streams, p99 |
+| P1 soft memory limits | Bytes of decoded frames, upload buffers, threads, graphics memory (NVX / ATI) against their budgets: `/composition/budget`, warnings logged. | `video`: the JSON | Several 4K with effects and outputs |
+| P1 glFinish / PBO mapping | NDI / OMT: fenced read backs, a frame not ready is skipped (2 ms max), not waited for. Syphon / Spout: optional "one frame later" (no glFinish). | — (no publishers on CI) | Render p99 with Syphon / NDI receivers |
+| P1/P2 composite colors | Each channel through range, filter, curve, master (not alpha), target range; pick-up on the whole color. | `interactions`: range, master, curve, filter, pick-up | Controllers with filters on colors |
+| P2 mipmaps | Once per frame of the render whatever the number of viewports (plain video: once per video frame). `pinol_bench --mipmaps`. | `rendering`: 3 frames, 2 viewports: 3 | 4K layers mapped small on several outputs |
+| P2 the presented frame | `FrameTiming`: interval, compute, present, missed deadlines, OSC / cue to frame: `/composition/timing`, `pinol_bench`. | `osc`: fixed times and live | Real outputs with vertical sync |
+| P2 CI | Timing areas labelled and retried (thresholds kept); ThreadSanitizer: a race fails at once, a timing failure is retried; dependency versions in each package; each package extracted elsewhere and rendering a project; the interface scenario as a job. Tags `v*` and `1.2` publish. | the workflow | Pin a dated BtbN FFmpeg release (`FFMPEG_RELEASE`) |
+
+Not done here: the long runs (1 h to 8 h), the macOS Intel matrix, and splitting the large classes (MainWindow,
+LayerInspector, SnapshotPanel, VideoDecoder). These need either hardware or a refactor plan of their own.

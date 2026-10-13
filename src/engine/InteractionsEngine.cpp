@@ -293,12 +293,30 @@ void Engine::stepInteractions(double dt)
                     run.proc.input(it, e.value);
                     run.color = e.color;
                     run.colorComponents = e.colorComponents;
+                    if (e.colorComponents >= 3) { // a whole color: each channel through its own chain (no toggle)
+                        Interaction chain = it;
+                        chain.toggle = false;
+                        for (int c = 0; c < 4; ++c) run.channels[size_t(c)].input(chain, e.color[size_t(c)]);
+                    }
                     fresh = true;
                 }
         }
         const std::optional<double> out = run.proc.step(it, dt);
         if (!out) continue;
-        const bool changed = fresh || !run.lastOut || std::abs(*run.lastOut - *out) > 1e-9;
+        // A whole color: its channels move on too (a filter keeps moving them after the last message); the alpha
+        // without the master level
+        bool colorMoved = false;
+        if (run.colorComponents >= 3) {
+            Interaction chain = it;
+            chain.toggle = false;
+            for (int c = 0; c < 4; ++c) {
+                if (c == 3) chain.master = 1;
+                const std::optional<double> o = run.channels[size_t(c)].step(chain, dt);
+                if (o && (!run.channelOut[size_t(c)] || std::abs(*run.channelOut[size_t(c)] - *o) > 1e-9)) colorMoved = true;
+                run.channelOut[size_t(c)] = o;
+            }
+        }
+        const bool changed = fresh || colorMoved || !run.lastOut || std::abs(*run.lastOut - *out) > 1e-9;
         run.lastOut = out;
         if (!changed) continue; // nothing new: the target is left to whatever else moves it
         if (it.layer) {
@@ -320,21 +338,29 @@ void Engine::stepInteractions(double dt)
                 valid &= channels[size_t(c)] && (channels[size_t(c)]->info().access & ParamInfo::Write) &&
                          channels[size_t(c)]->info().isNumber();
             if (!valid) continue;
-            // A scalar OSC value becomes gray, through the usual source range,
-            // filter, curve, master and target range. Native RGBA ('r') and
-            // three/four-value OSC tuples keep their distinct color channels.
-            const double gray = std::clamp(it.dstMin + *out * (it.dstMax - it.dstMin), 0.0, 1.0);
-            for (int c = 0; c < 4; ++c) {
+            // A whole color (OSC 'r', three / four numbers): each channel through its own chain, then the target
+            // range, with a pick-up on the whole color. Alpha only with Map alpha and a fourth channel (some senders
+            // fill an unused alpha with zero). A single number: a gray, through the usual chain.
+            const bool whole = run.colorComponents >= 3;
+            const int n = whole && it.colorMapAlpha && run.colorComponents >= 4 && channels[3] &&
+                                  (channels[3]->info().access & ParamInfo::Write)
+                              ? 4
+                              : 3;
+            std::array<double, 4> want{{0, 0, 0, 1}}, current{{0, 0, 0, 1}};
+            bool ready = true;
+            for (int c = 0; c < n; ++c) {
+                const std::optional<double> o = whole ? run.channelOut[size_t(c)] : out;
+                if (!o) ready = false;
+                want[size_t(c)] = std::clamp(it.dstMin + o.value_or(0) * (it.dstMax - it.dstMin), 0.0, 1.0);
+                current[size_t(c)] = channels[size_t(c)]->number();
+            }
+            if (!ready) continue;
+            const double tolerance = std::max(0.004, 0.01 * std::abs(it.dstMax - it.dstMin));
+            const std::optional<std::array<double, 4>> w = run.colorTarget.toWrite(it, want, current, n, tolerance);
+            if (!w) continue;
+            for (int c = 0; c < n; ++c) {
                 Parameter *ch = channels[size_t(c)];
-                if (!ch || !(ch->info().access & ParamInfo::Write)) continue;
-                // Preserve the target's existing alpha unless the user opted
-                // into mapping it AND the OSC packet carries a fourth channel.
-                // Some senders fill unused OSC color alpha with zero.
-                if (c == 3 && (!it.colorMapAlpha || run.colorComponents < 4)) continue;
-                const double value = run.colorComponents >= 3
-                    ? std::clamp(run.color[size_t(c)] * (c == 3 ? 1.0 : it.master), 0.0, 1.0)
-                    : gray;
-                if (std::abs(ch->number() - value) > 1e-6 && ch->setNumber(value) && it.layer)
+                if (std::abs(ch->number() - (*w)[size_t(c)]) > 1e-6 && ch->setNumber((*w)[size_t(c)]) && it.layer)
                     releaseFromFades(it.layer, prefix + QChar("rgba"[c]));
             }
             continue;

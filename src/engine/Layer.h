@@ -233,7 +233,8 @@ struct Layer {
     std::unique_ptr<VideoTexture> videoTex; // its picture (created in the render thread)
     // Mipmaps of its picture made for this frame of the video (a plain video: made again only for a new frame)
     GLuint mipTex = 0;
-    uint64_t mipFrame = 0; // VideoTexture::pictureSerial() they were made from
+    uint64_t mipFrame = 0; // VideoTexture::pictureSerial() (plain video) or the render's frame they were made in
+    int mipKind = 0;       // 1: plain video, 2: once per frame of the render
     bool playing = true;
     PlayMode mode = PlayMode::Loop;
     bool ended = false; // Stop mode: the end was reached, the layer shows nothing

@@ -77,6 +77,7 @@ int main(int argc, char **argv)
     QSize comp(3840, 2160);
     bool decode = false, copy = false, software = false;
     QStringList files;
+    bool mipmaps = false;
     const QStringList args = app.arguments();
     for (int i = 1; i < args.size(); ++i) {
         const QString a = args[i];
@@ -88,10 +89,11 @@ int main(int argc, char **argv)
         } else if (a == "--decode") decode = true;
         else if (a == "--copy") copy = true;
         else if (a == "--software") software = true;
+        else if (a == "--mipmaps") mipmaps = true; // the layers drawn smaller, with mipmaps (off by default)
         else files << a;
     }
     if (files.isEmpty()) {
-        std::printf("usage: pinol_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] file...\n");
+        std::printf("usage: pinol_bench [--seconds S] [--fps F] [--comp WxH] [--decode] [--copy] [--software] [--mipmaps] file...\n");
         return 1;
     }
     if (software) VideoDecoder::setHardwareDecoding(false);
@@ -110,7 +112,7 @@ int main(int argc, char **argv)
     Engine::RenderSettings rs;
     rs.frameRate = fps;
     rs.samples = 0;
-    rs.mipmaps = 0;
+    rs.mipmaps = mipmaps ? 1 : 0;
     e.setRenderSettings(rs);
     const int n = int(files.size()), cols = int(std::ceil(std::sqrt(double(n)))), rows = (n + cols - 1) / cols;
     std::vector<quint64> ids;

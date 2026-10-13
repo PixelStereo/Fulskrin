@@ -405,6 +405,10 @@ if(PINOL_TESTS)
           media sound layersource timecode interactions)
     add_test(NAME ${area} COMMAND pinol_tests --area ${area})
   endforeach()
+  # Areas whose checks depend on real time (sound clocks, threads, waits, publishers): label "timing". The CI runs the
+  # others once, these with retries (ctest -L timing --repeat until-pass:3) — their thresholds stay as they are; a CI
+  # runner without a sound card or a GPU is late now and then, a real regression fails every attempt
+  set_tests_properties(sound playback thread publishing timecode snapshots media PROPERTIES LABELS timing)
   add_test(NAME isf COMMAND pinol_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
   if(NOT WIN32) # the application's exit codes in --render mode (Windows: its Qt libraries are deployed separately)
     add_test(NAME render_cli COMMAND ${CMAKE_COMMAND} -DPINOL=$<TARGET_FILE:Pinol> -DOUT=${CMAKE_BINARY_DIR}/render_cli
