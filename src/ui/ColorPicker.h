@@ -3,6 +3,7 @@
 // Does not depend on Engine, layers, undo history or parameter metadata.
 
 #include <QColor>
+#include <QString>
 #include <QWidget>
 #include <array>
 
