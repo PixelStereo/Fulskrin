@@ -1,29 +1,28 @@
-# macOS release signing and notarization
+# macOS releases without a paid Apple Developer account
 
-The macOS release ZIP must be signed with an Apple **Developer ID Application** certificate and notarized by Apple. Ad-hoc signing (`codesign --sign -`) is useful for local/CI builds, but is not sufficient for a quarantined download from GitHub Releases; Gatekeeper can report the app as damaged.
+Pinol can be built and distributed without a paid Apple Developer account. The macOS CI workflow packages the app with its Qt and FFmpeg runtime dependencies and applies an ad-hoc signature to preserve bundle integrity. This is **not** a Developer ID signature and does not constitute Apple notarization.
 
-## Required GitHub Actions secrets
+## First launch on macOS
 
-Configure these in **Settings → Secrets and variables → Actions → Repository secrets**:
+Because the app is not signed with a Developer ID certificate and is not notarized, Gatekeeper may block a ZIP downloaded from GitHub Releases.
 
-- `MACOS_CERTIFICATE_P12_BASE64`: the base64-encoded PKCS#12 export of the Developer ID Application certificate and private key.
-- `MACOS_CERTIFICATE_PASSWORD`: password used when exporting that PKCS#12 file.
-- `MACOS_KEYCHAIN_PASSWORD`: a new password used for the temporary CI keychain.
-- `MACOS_SIGNING_IDENTITY`: the exact identity printed by `security find-identity -v -p codesigning`, usually `Developer ID Application: Your Legal Name (TEAMID)`.
-- `MACOS_NOTARY_APPLE_ID`: Apple Account email used for notarization.
-- `MACOS_NOTARY_TEAM_ID`: the 10-character Apple Developer Team ID.
-- `MACOS_NOTARY_PASSWORD`: an app-specific password for that Apple Account.
+1. Extract the ZIP in Finder.
+2. Control-click `Pinol.app`, choose **Open**, and confirm **Open** if macOS offers that option.
+3. If macOS still says the app is damaged, and only if you trust the downloaded build, open Terminal and run the following command with the real path to the extracted app:
 
-Export the Developer ID Application certificate and private key from Keychain Access as a password-protected `.p12` file. Encode it locally, without committing the certificate to the repository:
+   ```sh
+   xattr -dr com.apple.quarantine "/path/to/Pinol.app"
+   ```
 
-```sh
-base64 < DeveloperID.p12 | pbcopy
-```
+   Replace `/path/to/Pinol.app` with the actual path, then try opening Pinol again.
 
-Paste the clipboard contents into the `MACOS_CERTIFICATE_P12_BASE64` secret. Keep the original `.p12` and all passwords private.
+Removing the quarantine attribute only bypasses the downloaded-file quarantine check; it does not fix a genuinely corrupted app. Users should not do this for software they do not trust.
 
-## Release behavior
+## CI guarantees and limitations
 
-- Pull requests and branch builds use ad-hoc signing for CI inspection. They are **not** suitable as public macOS downloads.
-- A `v*` tag requires the signing and notarization secrets. The workflow signs nested Mach-O code from the inside out, signs the app bundle, verifies the signature, submits the ZIP to Apple's notary service, staples and validates the ticket, and then rebuilds the final ZIP with the stapled app.
-- If the required secrets are absent or notarization fails, the tagged release job fails instead of publishing an app that Gatekeeper is likely to reject.
+- The workflow signs nested Mach-O files and framework/plugin bundles from the inside out, then signs the executable and outer app.
+- `codesign --verify --deep --strict` checks the bundle's signature integrity.
+- The workflow checks that the packaged Mach-O files do not retain absolute Homebrew paths.
+- There is no Developer ID signing or notarization, and macOS may display a security warning. Avoid claiming that these packages are notarized or universally launch without a user override.
+
+A paid Apple Developer account is only needed if the project wants Developer ID distribution and Apple's notarization workflow. The build and GitHub Releases themselves do not require it.
