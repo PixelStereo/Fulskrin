@@ -96,6 +96,24 @@ bool PresetEditor::inSelected(quint64 layer, const QStringList &paths) const
     return false;
 }
 
+// Captures all drivers of the selected parameters, without affecting other preset entries.
+void PresetEditor::capturePresetDrivers(Engine::Preset &preset, quint64 layer, const QStringList &paths) const
+{
+    for (const QString &path : paths) {
+        preset.animations.erase(std::remove_if(preset.animations.begin(), preset.animations.end(), [&](const Animation &a) {
+            return !a.tracks.empty() && a.tracks.front().layer == layer && a.tracks.front().param == path;
+        }), preset.animations.end());
+        Animation a;
+        if (layer && m_engine->layerAnim(layer, path, &a)) preset.animations.push_back(a);
+
+        preset.interactions.erase(std::remove_if(preset.interactions.begin(), preset.interactions.end(), [&](const Interaction &it) {
+            return it.layer == layer && it.param == path;
+        }), preset.interactions.end());
+        for (const Interaction &it : m_engine->interactions())
+            if (it.layer == layer && it.param == path) preset.interactions.push_back(it);
+    }
+}
+
 void PresetEditor::addToNew(quint64 layer, const QStringList &paths)
 {
     const QStringList keep = stored(layer, paths);
@@ -103,6 +121,7 @@ void PresetEditor::addToNew(quint64 layer, const QStringList &paths)
     Engine::Preset p;
     p.name = QStringLiteral("Preset %1").arg(m_engine->presetCount() + 1);
     for (const QString &path : keep) p.values.push_back(m_engine->presetValue(layer, path));
+    capturePresetDrivers(p, layer, keep);
     quint64 id = 0;
     cmd::editPresets(m_undo, m_engine, QStringLiteral("New Preset"), [&](std::vector<Engine::Preset> &all) {
         quint64 next = 1;
@@ -126,6 +145,7 @@ void PresetEditor::addToSelected(quint64 layer, const QStringList &paths)
                 if (k >= 0) p.values[size_t(k)].value = now.value; // in already: its value now
                 else p.values.push_back(now);
             }
+            capturePresetDrivers(p, layer, keep);
         }
     });
 }
@@ -139,6 +159,14 @@ void PresetEditor::removeFromSelected(quint64 layer, const QStringList &paths)
             v.erase(std::remove_if(v.begin(), v.end(),
                                    [&](const Engine::PresetValue &x) { return x.layer == layer && paths.contains(x.path); }),
                     v.end());
+            for (const QString &path : paths) {
+                p.animations.erase(std::remove_if(p.animations.begin(), p.animations.end(), [&](const Animation &a) {
+                    return !a.tracks.empty() && a.tracks.front().layer == layer && a.tracks.front().param == path;
+                }), p.animations.end());
+                p.interactions.erase(std::remove_if(p.interactions.begin(), p.interactions.end(), [&](const Interaction &it) {
+                    return it.layer == layer && it.param == path;
+                }), p.interactions.end());
+            }
         }
     });
 }
