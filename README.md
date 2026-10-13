@@ -1,11 +1,10 @@
+# PINOL
+
+## Pixels In New Optical Languages
+
+A new language for live visuals.
+
 <div align="center">
-
-<h1>PINOL</h1>
-
-<h3>Make space move.</h3>
-
-<p><strong>Real-time video mapping, playback and show control.</strong><br>
-One place to build the picture, shape the stage and run the show.</p>
 
 <p>
   <a href="https://github.com/PixelStereo/Pinol/actions/workflows/build.yml"><img alt="Build" src="https://github.com/PixelStereo/Pinol/actions/workflows/build.yml/badge.svg?branch=main"></a>
