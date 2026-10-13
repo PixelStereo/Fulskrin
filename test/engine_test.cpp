@@ -4564,19 +4564,22 @@ int main(int argc, char **argv)
         e.renderFrame();
         CHECK(std::abs(opacity(b) - 0.4) < 1e-6);
 
-        // OSC -> whole ISF color: a Chataigne scalar maps to grayscale,
-        // 3/4 numeric channels preserve hue, and native OSC 'r' carries RGBA.
+        // OSC -> whole ISF color: never clobber the target's alpha unless
+        // the user explicitly enabled the RGBA mapping option.
         const quint64 colorLayer = e.layerId(e.addLayer("Interaction Color"));
         CHECK(e.setLayerIsf(e.indexOfId(colorLayer), root + "/../isf/generators/SolidColor.fs", &err));
         auto component = [&](const char *channel) {
             return e.parameterValue(colorLayer, QStringLiteral("param/color/") + QString::fromLatin1(channel)).toDouble();
         };
+        CHECK(e.setParameter(colorLayer, "param/color/a", 0.75));
         Interaction color = Interaction::made(InteractionSource::Osc);
         color.oscAddress = QStringLiteral("/chataigne/color");
         color.layer = colorLayer;
         color.param = QStringLiteral("param/color"); // the natural group address
         color.takeover = Takeover::Jump;
-        e.addInteraction(color);
+        CHECK(!color.colorMapAlpha);
+        color.id = e.addInteraction(color);
+        CHECK(!Interaction::fromJson(color.toJson()).colorMapAlpha); // old projects default to preserving alpha
 
         osc::Message colorMessage;
         colorMessage.address = color.oscAddress;
@@ -4586,8 +4589,8 @@ int main(int argc, char **argv)
         e.renderFrame();
         CHECK(std::abs(component("r") - 0.25) < 1e-6 &&
               std::abs(component("g") - 0.25) < 1e-6 &&
-              std::abs(component("b") - 0.25) < 1e-6);
-        CHECK(std::abs(component("a") - 1.0) < 1e-6); // grayscale leaves alpha untouched
+              std::abs(component("b") - 0.25) < 1e-6 &&
+              std::abs(component("a") - 0.75) < 1e-6);
 
         colorMessage.types = QStringLiteral("fff");
         colorMessage.args = {QVariant(0.1), QVariant(0.6), QVariant(0.9)};
@@ -4596,26 +4599,52 @@ int main(int argc, char **argv)
         CHECK(std::abs(component("r") - 0.1) < 1e-6 &&
               std::abs(component("g") - 0.6) < 1e-6 &&
               std::abs(component("b") - 0.9) < 1e-6 &&
-              std::abs(component("a") - 1.0) < 1e-6);
+              std::abs(component("a") - 0.75) < 1e-6);
 
+        // Even if a sender includes an unused fourth value of ZERO, alpha is
+        // kept unless explicitly mapped (common with Chataigne / OSC color).
         colorMessage.types = QStringLiteral("ffff");
-        colorMessage.args = {QVariant(0.8), QVariant(0.2), QVariant(0.4), QVariant(0.5)};
+        colorMessage.args = {QVariant(0.8), QVariant(0.2), QVariant(0.4), QVariant(0.0)};
         server.handleMessage(colorMessage);
         e.renderFrame();
         CHECK(std::abs(component("r") - 0.8) < 1e-6 &&
               std::abs(component("g") - 0.2) < 1e-6 &&
               std::abs(component("b") - 0.4) < 1e-6 &&
-              std::abs(component("a") - 0.5) < 1e-6);
+              std::abs(component("a") - 0.75) < 1e-6);
 
-        // Decode from real OSC bytes (r = 0xRRGGBBAA).
+        // Decode from real native OSC bytes (r = 0xRRGGBBAA).
         colorMessage.types = QStringLiteral("r");
-        colorMessage.args = {QVariant(qlonglong(0x3366CC80))};
+        colorMessage.args = {QVariant(qlonglong(0x3366CC00))};
         CHECK(server.handlePacket(osc::encode(colorMessage)) == 0);
         e.renderFrame();
         CHECK(std::abs(component("r") - 0x33 / 255.0) < 1e-6 &&
               std::abs(component("g") - 0x66 / 255.0) < 1e-6 &&
               std::abs(component("b") - 0xCC / 255.0) < 1e-6 &&
-              std::abs(component("a") - 0x80 / 255.0) < 1e-6);
+              std::abs(component("a") - 0.75) < 1e-6);
+
+        // Opt-in must be stored in projects and snapshot state.
+        color.colorMapAlpha = true;
+        CHECK(Interaction::fromJson(color.toJson()).colorMapAlpha);
+        CHECK(Interaction::fromJson(color.stateJson()).colorMapAlpha);
+        CHECK(e.setInteraction(color));
+        colorMessage.types = QStringLiteral("ffff");
+        colorMessage.args = {QVariant(0.8), QVariant(0.2), QVariant(0.4), QVariant(0.0)};
+        server.handleMessage(colorMessage);
+        e.renderFrame();
+        CHECK(std::abs(component("a")) < 1e-6); // deliberately mapped zero alpha
+        colorMessage.types = QStringLiteral("r");
+        colorMessage.args = {QVariant(qlonglong(0x3366CC80))};
+        CHECK(server.handlePacket(osc::encode(colorMessage)) == 0);
+        e.renderFrame();
+        CHECK(std::abs(component("a") - 0x80 / 255.0) < 1e-6);
+
+        // Turning it off again immediately preserves alpha on further RGBA packets.
+        color.colorMapAlpha = false;
+        CHECK(e.setInteraction(color));
+        colorMessage.args = {QVariant(qlonglong(0x3366CC00))};
+        CHECK(server.handlePacket(osc::encode(colorMessage)) == 0);
+        e.renderFrame();
+        CHECK(std::abs(component("a") - 0x80 / 255.0) < 1e-6);
 
         // Existing scalar OSC argument mapping continues to work alongside
         // composite colors; only the selected component is changed.
