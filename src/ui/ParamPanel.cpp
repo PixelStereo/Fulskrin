@@ -6,7 +6,10 @@
 #include "Widgets.h"
 
 #include <QCheckBox>
-#include <QColorDialog>
+#include <QGridLayout>
+#include <QSpinBox>
+#include <QVBoxLayout>
+#include <array>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -203,36 +206,122 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, in
             break;
         }
         case IsfInput::Color: {
-            auto *b = new QPushButton;
-            setSwatch(b, in.cValue);
-            connect(b, &QPushButton::clicked, this, [=] {
-                IsfValue cur;
-                {
-                    Engine::Lock lk(&m_engine->mutex());
-                    IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
-                    if (!inst || idx >= int(inst->inputs().size())) return;
-                    cur = inst->inputs()[size_t(idx)].value();
+            // One embedded editor. Each parameter remembers its own view.
+            auto *editor = new QWidget;
+            auto *layout = new QVBoxLayout(editor);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(4);
+            auto *header = new QHBoxLayout;
+            auto *swatch = new QLabel;
+            swatch->setFixedSize(64, 22);
+            auto *mode = new QComboBox;
+            mode->addItems({QStringLiteral("RGBA"), QStringLiteral("HSVA"), QStringLiteral("Palette")});
+            const QString key = QStringLiteral("ui/colorMode/%1/%2/%3")
+                                    .arg(m_layerId).arg(m_slot).arg(in.name);
+            mode->setCurrentIndex(std::clamp(QSettings().value(key, 0).toInt(), 0, 2));
+            header->addWidget(swatch);
+            header->addWidget(mode, 1);
+            layout->addLayout(header);
+            auto *channels = new QWidget;
+            auto *rows = new QFormLayout(channels);
+            rows->setContentsMargins(0, 0, 0, 0);
+            std::array<QSlider *, 4> sliders{};
+            std::array<QLabel *, 4> captions{};
+            std::array<QSpinBox *, 4> numbers{};
+            auto current = [=]() -> QColor {
+                Engine::Lock lk(&m_engine->mutex());
+                IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
+                if (!inst || idx >= int(inst->inputs().size())) return QColor();
+                const IsfValue v = inst->inputs()[size_t(idx)].value();
+                return QColor::fromRgbF(v.c[0], v.c[1], v.c[2], v.c[3]);
+            };
+            auto refresh = [=](const QColor &c) {
+                if (!c.isValid()) return;
+                swatch->setStyleSheet(QStringLiteral("background:%1; border:1px solid #777;")
+                                          .arg(c.name(QColor::HexArgb)));
+                const bool hsv = mode->currentIndex() == 1;
+                const int values[4] = {hsv ? c.hsvHue() : c.red(),
+                                       hsv ? c.hsvSaturation() : c.green(),
+                                       hsv ? c.value() : c.blue(), c.alpha()};
+                const char *rgbNames[] = {"R", "G", "B", "A"};
+                const char *hsvNames[] = {"H", "S", "V", "A"};
+                for (int k = 0; k < 4; ++k) {
+                    captions[k]->setText(QLatin1String(hsv ? hsvNames[k] : rgbNames[k]));
+                    const int maximum = hsv && k == 0 ? 359 : 255;
+                    sliders[k]->setMaximum(maximum);
+                    numbers[k]->setMaximum(maximum);
+                    QSignalBlocker bs(sliders[k]), bn(numbers[k]);
+                    sliders[k]->setValue(std::max(0, values[k]));
+                    numbers[k]->setValue(std::max(0, values[k]));
                 }
-                const QColor start = QColor::fromRgbF(cur.c[0], cur.c[1], cur.c[2], cur.c[3]);
-                // Non-modal dialog: the color is applied live while picking.
-                auto *dlg = new QColorDialog(start, this);
-                dlg->setOption(QColorDialog::ShowAlphaChannel);
-                dlg->setAttribute(Qt::WA_DeleteOnClose);
-                auto apply = [=](const QColor &c) {
-                    float v[4] = {float(c.redF()), float(c.greenF()), float(c.blueF()), float(c.alphaF())};
-                    setValue(idx, label, [v](IsfValue &x) { std::copy(v, v + 4, x.c); });
-                    setSwatch(b, v);
+            };
+            for (int k = 0; k < 4; ++k) {
+                auto *line = new QWidget;
+                auto *h = new QHBoxLayout(line);
+                h->setContentsMargins(0, 0, 0, 0);
+                captions[k] = new QLabel;
+                sliders[k] = new QSlider(Qt::Horizontal);
+                numbers[k] = new QSpinBox;
+                numbers[k]->setFixedWidth(65);
+                h->addWidget(sliders[k], 1);
+                h->addWidget(numbers[k]);
+                rows->addRow(captions[k], line);
+                auto update = [=](int value) {
+                    QColor c = current();
+                    if (!c.isValid()) return;
+                    if (mode->currentIndex() == 1) {
+                        int h = std::max(0, c.hsvHue()), s = c.hsvSaturation(), v = c.value(), alpha = c.alpha();
+                        if (k == 0) h = value;
+                        if (k == 1) s = value;
+                        if (k == 2) v = value;
+                        if (k == 3) alpha = value;
+                        c.setHsv(h, s, v, alpha);
+                    } else {
+                        int v[4] = {c.red(), c.green(), c.blue(), c.alpha()};
+                        v[k] = value;
+                        c.setRgb(v[0], v[1], v[2], v[3]);
+                    }
+                    const float rgba[4] = {float(c.redF()), float(c.greenF()), float(c.blueF()), float(c.alphaF())};
+                    setValue(idx, label, [rgba](IsfValue &x) { std::copy(rgba, rgba + 4, x.c); });
+                    refresh(c);
                 };
-                connect(dlg, &QColorDialog::currentColorChanged, b, apply);
-                connect(dlg, &QColorDialog::rejected, b, [=] { apply(start); });
-                dlg->open();
+                connect(sliders[k], &QSlider::valueChanged, editor, update);
+                connect(numbers[k], qOverload<int>(&QSpinBox::valueChanged), editor, update);
+            }
+            layout->addWidget(channels);
+            auto *palette = new QWidget;
+            auto *paletteGrid = new QGridLayout(palette);
+            paletteGrid->setContentsMargins(0, 0, 0, 0);
+            const QStringList defaults = { "#ffffff", "#808080", "#000000", "#ffff00", "#ff00ff", "#00ffff",
+                "#ff0000", "#00ff00", "#0000ff", "#ff8000", "#8000ff", "#00a080", "#e0b080", "#404040",
+                "#804020", "#ffc0cb", "#4080ff", "#80ff80", "#c0c0c0", "#101010" };
+            for (int n = 0; n < defaults.size(); ++n) {
+                auto *pick = new QPushButton;
+                pick->setFixedHeight(22);
+                pick->setStyleSheet(QStringLiteral("background:%1; border:1px solid #444;").arg(defaults[n]));
+                paletteGrid->addWidget(pick, n / 5, n % 5);
+                connect(pick, &QPushButton::clicked, editor, [=] {
+                    QColor c(defaults[n]);
+                    c.setAlpha(current().alpha());
+                    const float rgba[4] = {float(c.redF()), float(c.greenF()), float(c.blueF()), float(c.alphaF())};
+                    setValue(idx, label, [rgba](IsfValue &x) { std::copy(rgba, rgba + 4, x.c); });
+                    refresh(c);
+                });
+            }
+            layout->addWidget(palette);
+            connect(mode, qOverload<int>(&QComboBox::currentIndexChanged), editor, [=](int index) {
+                QSettings().setValue(key, index);
+                channels->setVisible(index != 2);
+                palette->setVisible(index == 2);
+                refresh(current());
             });
-            m_followers.push_back({idx, [b = QPointer<QPushButton>(b)](const IsfValue &x) {
-                                       if (!b) return;
-                                       const QColor col = QColor::fromRgbF(x.c[0], x.c[1], x.c[2], x.c[3]);
-                                       if (b->text() != col.name(QColor::HexArgb).toUpper()) setSwatch(b, x.c);
-                                   }});
-            field = b;
+            channels->setVisible(mode->currentIndex() != 2);
+            palette->setVisible(mode->currentIndex() == 2);
+            refresh(QColor::fromRgbF(in.cValue[0], in.cValue[1], in.cValue[2], in.cValue[3]));
+            m_followers.push_back({idx, [refresh](const IsfValue &v) {
+                refresh(QColor::fromRgbF(v.c[0], v.c[1], v.c[2], v.c[3]));
+            }});
+            field = editor;
             break;
         }
         case IsfInput::Image: {
