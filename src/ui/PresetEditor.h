@@ -1,4 +1,5 @@
 #pragma once
+#include "../engine/Engine.h"
 // Presets in the interface: which one is selected, the Edit mode, and the parameters' widgets that can go in one.
 //
 // The inspector's widgets of a value register here (AnimateMenu::attach does it). In Edit mode, each one in the
@@ -35,6 +36,7 @@ public:
     void track(QWidget *w, quint64 layer, const QStringList &paths);
     // The preset actions for those values, at the end of a right-click menu
     void fillMenu(QMenu *menu, quint64 layer, const QStringList &paths);
+    void capturePresetDrivers(Engine::Preset &preset, quint64 layer, const QStringList &paths) const;
     void addToNew(quint64 layer, const QStringList &paths);
     void addToSelected(quint64 layer, const QStringList &paths);
     void removeFromSelected(quint64 layer, const QStringList &paths);

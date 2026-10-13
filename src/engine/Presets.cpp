@@ -2,6 +2,7 @@
 #include "EngineInternal.h"
 
 #include <QSet>
+#include <QJsonArray>
 #include <functional>
 
 // ---------------------------------------------------------------------------
@@ -179,7 +180,16 @@ QJsonObject presetToJson(const Engine::Preset &p)
         if (!v.easing.isEmpty()) o["easing"] = v.easing;
         values.append(o);
     }
-    return QJsonObject{{"id", QString::number(p.id)}, {"name", p.name}, {"fade", p.fade}, {"values", values}};
+    QJsonArray animations, interactions;
+    for (const Animation &a : p.animations) {
+        if (a.tracks.empty()) continue;
+        QJsonObject o = layerAnimToJson(a);
+        o["layer"] = QString::number(a.tracks.front().layer);
+        animations.append(o);
+    }
+    for (const Interaction &it : p.interactions) interactions.append(it.toJson());
+    return QJsonObject{{"id", QString::number(p.id)}, {"name", p.name}, {"fade", p.fade},
+                       {"values", values}, {"animations", animations}, {"interactions", interactions}};
 }
 
 Engine::Preset presetFromJson(const QJsonObject &o)
@@ -197,6 +207,15 @@ Engine::Preset presetFromJson(const QJsonObject &o)
         v.time = vo.contains("time") ? std::clamp(vo.value("time").toDouble(), 0.0, 600.0) : -1.0;
         v.easing = vo.value("easing").toString();
         if (!v.path.isEmpty()) p.values.push_back(v);
+    }
+    for (const QJsonValue &v : o.value("animations").toArray()) {
+        const QJsonObject item = v.toObject();
+        const quint64 layer = item.value("layer").toString().toULongLong();
+        if (layer && !item.value("param").toString().isEmpty()) p.animations.push_back(layerAnimFromJson(item, layer));
+    }
+    for (const QJsonValue &v : o.value("interactions").toArray()) {
+        const Interaction it = Interaction::fromJson(v.toObject());
+        if (!it.param.isEmpty()) p.interactions.push_back(it);
     }
     return p;
 }

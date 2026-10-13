@@ -786,7 +786,9 @@ struct LayerNodes {
         }
         for (auto it = parts.cbegin(); it != parts.cend(); ++it) {
             const QStringList &p = it.value();
-            if (p != QStringList{"x", "y"} && p != QStringList{"r", "g", "b"} && p != QStringList{"r", "g", "b", "a"}) continue;
+            if (p != QStringList{"x", "y"} && p != QStringList{"x", "y", "z"} &&
+                p != QStringList{"r", "g", "b"} && p != QStringList{"r", "g", "b", "a"} &&
+                p != QStringList{"h", "s", "l"}) continue;
             QStringList paths;
             QJsonArray range;
             for (const QString &x : p) {
@@ -812,6 +814,20 @@ struct LayerNodes {
                                        return out;
                                    },
                                    edit([paths](Layer &l, const QVariantList &a) {
+                                       // OSC 'r' is one packed RGBA argument, in network byte order.
+                                       // Ordinary numeric RGB(A) arguments continue to work unchanged.
+                                       const bool rgb = paths.size() >= 3 && paths[0].endsWith("/r") &&
+                                                        paths[1].endsWith("/g") && paths[2].endsWith("/b");
+                                       if (rgb && a.size() == 1 && a[0].metaType().id() == QMetaType::LongLong) {
+                                           const quint32 rgba = quint32(a[0].toULongLong());
+                                           const int count = std::min(4, int(paths.size()));
+                                           for (int k = 0; k < count; ++k) {
+                                               Parameter *x = l.parameter(paths[k]);
+                                               if (!x || !x->setNumber(double((rgba >> (24 - k * 8)) & 0xff) / 255.0))
+                                                   return false;
+                                           }
+                                           return true;
+                                       }
                                        if (a.size() < paths.size() - (paths.size() == 4 ? 1 : 0)) return false; // alpha may be left out
                                        for (int k = 0; k < paths.size() && k < a.size(); ++k) {
                                            Parameter *x = l.parameter(paths[k]);

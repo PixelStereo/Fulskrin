@@ -392,6 +392,23 @@ void Engine::recallPreset(int i)
         applyParams(*l, params, timing, easing, fade, *job, false, false, false);
         if (!job->done()) m_fades.push_back(std::move(job));
     }
+    // Restore the captured modulation definitions after writing static values.
+    // Only the drivers explicitly held by the preset are changed; all others stay intact.
+    for (const Animation &a : p.animations) {
+        if (a.tracks.empty()) continue;
+        const quint64 layerId = a.tracks.front().layer;
+        const int idx = indexOfId(layerId);
+        if (idx >= 0 && !isLocked(idx)) setLayerAnim(layerId, a.tracks.front().param, &a);
+    }
+    if (!p.interactions.empty()) {
+        std::vector<Interaction> current = interactions();
+        for (const Interaction &stored : p.interactions) {
+            auto found = std::find_if(current.begin(), current.end(), [&](const Interaction &it) { return it.id == stored.id; });
+            if (found != current.end()) *found = stored;
+            else current.push_back(stored);
+        }
+        setInteractions(current);
+    }
     Lock lk(&m_mutex);
     m_fadeElapsed = 0;
 }

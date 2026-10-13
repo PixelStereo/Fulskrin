@@ -343,6 +343,9 @@ public:
         QString name;
         double fade = 1.0;
         std::vector<PresetValue> values;
+        // Definitions captured with the selected values, not merely their current output.
+        std::vector<Animation> animations;
+        std::vector<Interaction> interactions;
         int indexOf(quint64 layer, const QString &path) const; // -1: not in it
     };
     int presetCount() const;
