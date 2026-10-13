@@ -69,6 +69,13 @@ public:
     bool start();          // starts the render thread (returns false if the platform does not support it)
     void stop();
     bool isThreaded() const { return m_threaded; }
+    // The render thread could not make its OpenGL context current: nothing is rendered (start() again to retry)
+    bool renderFailed() const
+    {
+        std::lock_guard<std::mutex> lk(m_taskMutex);
+        return m_renderFailed;
+    }
+    static void failNextRenderStartForTests() { s_failRenderStart = true; }
     void shutdown();
 
     // Runs fn on the render thread with the OpenGL context current (or immediately in manual mode).
@@ -646,8 +653,10 @@ private:
         std::function<void()> fn;
         bool done = false;
     };
-    std::mutex m_taskMutex;
+    mutable std::mutex m_taskMutex;
     std::condition_variable m_taskCv;
+    bool m_renderFailed = false; // m_taskMutex held
+    static std::atomic<bool> s_failRenderStart;
     std::deque<std::shared_ptr<Task>> m_tasks;
 
     // Output window (read by the render thread)

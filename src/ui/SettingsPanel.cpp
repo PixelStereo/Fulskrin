@@ -7,6 +7,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
+#include <QNetworkInterface>
 #include <QPushButton>
 #include <QFileInfo>
 #include <QSettings>
@@ -25,6 +26,7 @@ static const char *kFollowKey = "ui/followFades";
 static const char *kOscKey = "osc/enabled";
 static const char *kOscPortKey = "osc/udpPort";        // (osc/port, osc/queryPort: earlier defaults, ignored)
 static const char *kQueryPortKey = "osc/oscQueryPort";
+static const char *kOscListenKey = "osc/listen"; // the address listened on ("": every interface)
 static const char *kTransitionKey = "snapshots/transition";
 static const char *kRateKey = "render/frameRate";
 static const char *kSamplesKey = "render/antialiasing";
@@ -68,6 +70,7 @@ int SettingsPanel::colorModels() { return QSettings().value(kColorKey, int(Color
 bool SettingsPanel::oscEnabled() { return QSettings().value(kOscKey, true).toBool(); }
 int SettingsPanel::oscPort() { return QSettings().value(kOscPortKey, kDefaultOscPort).toInt(); }
 int SettingsPanel::oscQueryPort() { return QSettings().value(kQueryPortKey, kDefaultQueryPort).toInt(); }
+QString SettingsPanel::oscListen() { return QSettings().value(kOscListenKey).toString(); }
 
 QString SettingsPanel::defaultTransition(const IsfLibrary &library)
 {
@@ -288,12 +291,34 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     of->addRow(new ResetLabel(QStringLiteral("OSC port (UDP)"), [this] { m_oscPort->setValue(kDefaultOscPort); }), m_oscPort);
     of->addRow(new ResetLabel(QStringLiteral("OSCQuery port"), [this] { m_queryPort->setValue(kDefaultQueryPort); }),
                m_queryPort);
+    // Where OSC and OSCQuery listen: every network interface, this computer only, or one interface (a show network)
+    m_oscListen = new QComboBox;
+    m_oscListen->addItem(QStringLiteral("All network interfaces"), QString());
+    m_oscListen->addItem(QStringLiteral("This computer only"), QStringLiteral("127.0.0.1"));
+    for (const QNetworkInterface &nif : QNetworkInterface::allInterfaces()) {
+        if (!(nif.flags() & QNetworkInterface::IsUp) || (nif.flags() & QNetworkInterface::IsLoopBack)) continue;
+        for (const QNetworkAddressEntry &e : nif.addressEntries())
+            if (e.ip().protocol() == QAbstractSocket::IPv4Protocol)
+                m_oscListen->addItem(QStringLiteral("%1 · %2").arg(nif.humanReadableName(), e.ip().toString()), e.ip().toString());
+    }
+    {
+        const QString saved = oscListen();
+        int i = m_oscListen->findData(saved);
+        if (i < 0) { // an interface that is not up now: kept as chosen
+            m_oscListen->addItem(QStringLiteral("%1 (not connected)").arg(saved), saved);
+            i = m_oscListen->count() - 1;
+        }
+        m_oscListen->setCurrentIndex(i);
+    }
+    of->addRow(new ResetLabel(QStringLiteral("Listen on"), [this] { m_oscListen->setCurrentIndex(0); }), m_oscListen);
     m_oscStatus = note(QString());
     of->addRow(m_oscStatus);
     of->addRow(note(QStringLiteral(
         "Announced by zeroconf (_oscjson._tcp, _osc._udp): OSCQuery clients (score, Chataigne, Vezér…) find it "
         "by themselves. Addresses: /composition/…, /layer/&lt;name&gt;/… "
-        "(groups: /layer/&lt;group&gt;/layer/&lt;name&gt;/…). The whole tree: http://&lt;this machine&gt;:&lt;OSCQuery port&gt;/")));
+        "(groups: /layer/&lt;group&gt;/layer/&lt;name&gt;/…). The whole tree: http://&lt;this machine&gt;:&lt;OSCQuery port&gt;/<br>"
+        "No password: any machine on a network listened on can control the show. On a shared network, listen on the "
+        "show's interface only, or on this computer only.")));
     oscPage->addWidget(osc);
     audioPage->addWidget(buildAudio());
     for (QVBoxLayout *l : {playbackPage, renderPage, audioPage, interfacePage, oscPage}) l->addStretch();
@@ -302,11 +327,13 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
         s.setValue(kOscKey, m_osc->isChecked());
         s.setValue(kOscPortKey, m_oscPort->value());
         s.setValue(kQueryPortKey, m_queryPort->value());
+        s.setValue(kOscListenKey, m_oscListen->currentData().toString());
         emit oscChanged();
     };
     connect(m_osc, &QCheckBox::toggled, this, apply);
     connect(m_oscPort, qOverload<int>(&QSpinBox::valueChanged), this, apply);
     connect(m_queryPort, qOverload<int>(&QSpinBox::valueChanged), this, apply);
+    connect(m_oscListen, qOverload<int>(&QComboBox::currentIndexChanged), this, apply);
 }
 
 // Audio: the sound card of this machine (the volume is the composition's)

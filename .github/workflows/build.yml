@@ -78,7 +78,7 @@ jobs:
   # The HAP and Snappy readers against damaged files: a short libFuzzer run with ASan / UBSan, seeded with the
   # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
   fuzz:
-    name: Fuzzing (HAP, Snappy)
+    name: Fuzzing (HAP, Snappy, OSC)
     runs-on: ubuntu-24.04
     needs: media
     steps:
@@ -98,12 +98,16 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DPINOL_FUZZ=ON
-          cmake --build build-fuzz --target fuzz_hap -j4
+          cmake --build build-fuzz --target fuzz_hap fuzz_osc -j4
       - name: Fuzz (2 minutes)
         run: |
           sh test/make_fuzz_corpus.sh "$PWD/fuzz_corpus"
           mkdir -p fuzz_crashes
           ./build-fuzz/fuzz_hap -fork=4 -max_total_time=120 -rss_limit_mb=4096 -artifact_prefix=fuzz_crashes/ fuzz_corpus
+      - name: Fuzz OSC (1 minute)
+        run: |
+          mkdir -p fuzz_crashes
+          ./build-fuzz/fuzz_osc -fork=4 -max_total_time=60 -rss_limit_mb=2048 -artifact_prefix=fuzz_crashes/osc- fuzz_corpus/osc
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

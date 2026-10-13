@@ -37,10 +37,14 @@ int main(int argc, char *argv[])
     QCommandLineOption renderOpt("render", "Render the project headless and save the output as PNG.", "output.png");
     QCommandLineOption framesOpt("frames", "Number of frames to render before capture (with --render).", "n", "30");
     QCommandLineOption shotOpt("screenshot", "Capture the main window, then quit (tests).", "capture.png");
+    QCommandLineOption strictOpt("strict", "With --render: a layer or effect in error fails the render (exit code 4).");
     cli.addOption(renderOpt);
+    cli.addOption(strictOpt);
     cli.addOption(framesOpt);
     cli.addOption(shotOpt);
     cli.addPositionalArgument("project", ".pinol project to open");
+    // --render exit codes: 0 rendered, 1 OpenGL unavailable, 2 output not written, 3 project not loaded,
+    // 4 a layer or an effect in error (--strict)
     cli.process(app);
     const QString project = cli.positionalArguments().value(0);
 
@@ -59,19 +63,30 @@ int main(int argc, char *argv[])
     if (cli.isSet(renderOpt)) {
         if (!project.isEmpty()) {
             QString perr;
-            engine.loadProject(project, nullptr, &perr);
-            if (!perr.isEmpty()) qWarning("%s", qPrintable(perr));
+            if (!engine.loadProject(project, nullptr, &perr)) {
+                qCritical("Project not loaded: %s", qPrintable(perr.isEmpty() ? project : perr));
+                engine.shutdown();
+                return 3;
+            }
+            if (!perr.isEmpty()) qWarning("%s", qPrintable(perr)); // loaded, with warnings (missing media…)
         }
         const int frames = qMax(1, cli.value(framesOpt).toInt());
         for (int i = 0; i < frames; ++i) {
             engine.renderFrame();
             QThread::msleep(16);
         }
+        bool layerErrors = false;
         for (int i = 0; i < engine.layerCount(); ++i) {
             Layer *l = engine.layer(i);
-            if (!l->error.isEmpty()) qWarning("Layer %s: %s", qPrintable(l->name), qPrintable(l->error));
+            if (!l->error.isEmpty()) {
+                qWarning("Layer %s: %s", qPrintable(l->name), qPrintable(l->error));
+                layerErrors = true;
+            }
             for (auto &fx : l->effects)
-                if (!fx->error().isEmpty()) qWarning("FX %s: %s", qPrintable(fx->name()), qPrintable(fx->error()));
+                if (!fx->error().isEmpty()) {
+                    qWarning("FX %s: %s", qPrintable(fx->name()), qPrintable(fx->error()));
+                    layerErrors = true;
+                }
         }
         for (int v : engine.viewports()) {
             const quint64 id = engine.layerId(v);
@@ -84,7 +99,11 @@ int main(int argc, char *argv[])
         }
         const bool ok = engine.grabOutput().save(cli.value(renderOpt));
         engine.shutdown();
-        return ok ? 0 : 2;
+        if (!ok) {
+            qCritical("Output not written: %s", qPrintable(cli.value(renderOpt)));
+            return 2;
+        }
+        return layerErrors && cli.isSet(strictOpt) ? 4 : 0;
     }
 
     // GUI: rendering runs in its own thread, independent of the UI. The system asks for the camera and local network

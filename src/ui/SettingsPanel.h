@@ -38,6 +38,7 @@ public:
     static bool oscEnabled();
     static int oscPort();      // UDP, OSC messages
     static int oscQueryPort(); // TCP, OSCQuery (HTTP + WebSocket)
+    static QString oscListen(); // the address OSC and OSCQuery listen on ("": every network interface)
 
     // The inspector's fields move with the values while a snapshot fades them (on unless changed); off, they
     // stay still and show the snapshot's values once the fade is over
@@ -73,4 +74,5 @@ private:
     QCheckBox *m_osc = nullptr;
     QSpinBox *m_oscPort = nullptr, *m_queryPort = nullptr;
     QLabel *m_oscStatus = nullptr;
+    class QComboBox *m_oscListen = nullptr;
 };

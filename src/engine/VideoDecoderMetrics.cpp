@@ -1,5 +1,6 @@
 #include "VideoDecoder.h"
 
+#include <algorithm>
 #include <cstdint>
 
 // Instrumentation lives separately from packet parsing, codec setup and frame delivery so it can
@@ -19,20 +20,25 @@ VideoDecoder::Metrics VideoDecoder::metrics() const
     m.lastFrameLatenessMs = double(m_metricLastLateNs.load(std::memory_order_relaxed)) / 1e6;
     m.maxFrameLatenessMs = double(m_metricMaxLateNs.load(std::memory_order_relaxed)) / 1e6;
 
-    static constexpr double upperMs[] = {0.25, 0.5, 1, 2, 4, 8, 16, 33, 50, 100, 250, 500};
+    // Percentiles from the buckets: a bucket's upper bound, never more than the longest measured (the last bucket,
+    // beyond 2 s, has no bound: the longest is given)
+    uint64_t counts[kDecodeBuckets];
     uint64_t total = 0;
-    for (const auto &bucket : m_metricDecodeBuckets) total += bucket.load(std::memory_order_relaxed);
-    if (total) {
-        const uint64_t target = (total * 95 + 99) / 100;
+    for (size_t i = 0; i < kDecodeBuckets; ++i) total += counts[i] = m_metricDecodeBuckets[i].load(std::memory_order_relaxed);
+    auto percentile = [&](uint64_t pct) {
+        if (!total) return 0.0;
+        const uint64_t target = (total * pct + 99) / 100;
         uint64_t seen = 0;
-        for (size_t i = 0; i < m_metricDecodeBuckets.size(); ++i) {
-            seen += m_metricDecodeBuckets[i].load(std::memory_order_relaxed);
-            if (seen >= target) {
-                m.decodeTimeP95Ms = upperMs[i];
-                break;
-            }
+        for (size_t i = 0; i < kDecodeBuckets; ++i) {
+            seen += counts[i];
+            if (seen >= target)
+                return i < kDecodeBuckets - 1 ? std::min(double(kDecodeBucketNs[i]) / 1e6, m.decodeTimeMaxMs) : m.decodeTimeMaxMs;
         }
-    }
+        return m.decodeTimeMaxMs;
+    };
+    m.decodeTimeP95Ms = percentile(95);
+    m.decodeTimeP99Ms = percentile(99);
+    m.decodesOverFrame = m_metricOverFrame.load(std::memory_order_relaxed);
     return m;
 }
 
@@ -50,6 +56,7 @@ void VideoDecoder::resetMetrics()
     m_metricLastLateNs = 0;
     m_metricMaxLateNs = 0;
     for (auto &bucket : m_metricDecodeBuckets) bucket = 0;
+    m_metricOverFrame = 0;
 }
 
 void VideoDecoder::recordQueueDepth(size_t depth)
@@ -63,10 +70,9 @@ void VideoDecoder::recordDecodeTime(uint64_t nanoseconds)
     m_metricDecodeNsTotal.fetch_add(nanoseconds, std::memory_order_relaxed);
     uint64_t previous = m_metricDecodeNsMax.load(std::memory_order_relaxed);
     while (previous < nanoseconds && !m_metricDecodeNsMax.compare_exchange_weak(previous, nanoseconds, std::memory_order_relaxed)) {}
-    static constexpr uint64_t limitsNs[] = {250000, 500000, 1000000, 2000000, 4000000, 8000000,
-                                             16000000, 33000000, 50000000, 100000000, 250000000};
     size_t bucket = 0;
-    while (bucket < 11 && nanoseconds > limitsNs[bucket]) ++bucket;
+    while (bucket < kDecodeBuckets - 1 && nanoseconds > kDecodeBucketNs[bucket]) ++bucket;
+    if (m_fps > 0 && double(nanoseconds) > 1e9 / m_fps) m_metricOverFrame.fetch_add(1, std::memory_order_relaxed);
     m_metricDecodeBuckets[bucket].fetch_add(1, std::memory_order_relaxed);
 }
 

@@ -1425,11 +1425,12 @@ void MainWindow::startOsc()
     }
     const bool on = SettingsPanel::oscEnabled();
     const int udp = SettingsPanel::oscPort(), http = SettingsPanel::oscQueryPort();
+    const QString listen = SettingsPanel::oscListen();
     QString status;
     QMetaObject::invokeMethod(
         m_osc,
-        [this, on, udp, http, &status] {
-            if (on) m_osc->start(quint16(udp), quint16(http));
+        [this, on, udp, http, listen, &status] {
+            if (on) m_osc->start(quint16(udp), quint16(http), QStringLiteral("Pinol"), true, listen);
             else m_osc->stop();
             status = m_osc->status();
         },

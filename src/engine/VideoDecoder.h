@@ -94,12 +94,15 @@ public:
         uint64_t queueHighWatermark = 0;
         double decodeTimeTotalMs = 0;
         double decodeTimeMaxMs = 0;
-        double decodeTimeP95Ms = 0;   // bucket estimate, not an exact percentile
+        double decodeTimeP95Ms = 0;   // bucket estimates (upper bound of the bucket, at most the max), not exact
+        double decodeTimeP99Ms = 0;
+        uint64_t decodesOverFrame = 0; // decodes longer than one frame of the file (1 / fps): a deadline missed
         double lastFrameLatenessMs = 0;
         double maxFrameLatenessMs = 0;
     };
     Metrics metrics() const;
     void resetMetrics();
+    void recordDecodeTime(uint64_t nanoseconds); // decode thread (and tests)
 
     // --- Upload buffers (render thread)
     size_t stagingSize() const { return m_stagingSize.load(); } // bytes of one frame (0: not known yet)
@@ -193,9 +196,14 @@ private:
     std::atomic<uint64_t> m_metricLate{0}, m_metricBudgetHolds{0}, m_metricQueueHigh{0};
     std::atomic<uint64_t> m_metricDecodeNsTotal{0}, m_metricDecodeNsMax{0};
     std::atomic<uint64_t> m_metricLastLateNs{0}, m_metricMaxLateNs{0};
-    std::array<std::atomic<uint64_t>, 12> m_metricDecodeBuckets{};
+    // Decode times by bucket: up to 0.25, 0.5, 1, 2, 4, 8, 16, 33, 50, 100, 250, 500, 1000, 2000 ms, then beyond
+    static constexpr size_t kDecodeBuckets = 15;
+    static constexpr uint64_t kDecodeBucketNs[kDecodeBuckets - 1] = {
+        250000, 500000, 1000000, 2000000, 4000000, 8000000, 16000000, 33000000,
+        50000000, 100000000, 250000000, 500000000, 1000000000, 2000000000};
+    std::array<std::atomic<uint64_t>, kDecodeBuckets> m_metricDecodeBuckets{};
+    std::atomic<uint64_t> m_metricOverFrame{0};
     void recordQueueDepth(size_t depth);
-    void recordDecodeTime(uint64_t nanoseconds);
     void accountFrame(VideoFrame &frame); // counted in the process-wide budget of decoded frames
 
     bool m_quit = false, m_seekPending = false, m_eof = false, m_needFirst = true;

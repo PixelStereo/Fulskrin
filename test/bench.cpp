@@ -56,8 +56,8 @@ static int decodeOnly(const QStringList &files, double seconds)
         std::printf("  %-34s %-26s %5dx%-5d %6.1f frames/s (file: %.2f)\n", qPrintable(QFileInfo(files[int(i)]).fileName()),
                     qPrintable(dec[i]->codecName()), dec[i]->width(), dec[i]->height(), got[i] / s, dec[i]->fps());
         const VideoDecoder::Metrics m = dec[i]->metrics();
-        std::printf("      decode p95/max %.2f/%.2f ms; decoded %llu; budget holds %llu; threads %d\n",
-                    m.decodeTimeP95Ms, m.decodeTimeMaxMs,
+        std::printf("      decode p95/p99/max %.2f/%.2f/%.2f ms; decoded %llu; budget holds %llu; threads %d\n",
+                    m.decodeTimeP95Ms, m.decodeTimeP99Ms, m.decodeTimeMaxMs,
                     static_cast<unsigned long long>(m.decodedFrames),
                     static_cast<unsigned long long>(m.budgetHolds), dec[i]->decodeThreads());
     }
@@ -194,8 +194,9 @@ int main(int argc, char **argv)
         }
         std::printf("  %-34s %-26s %6.1f frames/s of %.2f  %s  [%s]\n", qPrintable(QFileInfo(files[k]).fileName()),
                     qPrintable(codec), rate, fileFps, good ? "ok" : "DROPS", qPrintable(format));
-        std::printf("      decode p95/max %.2f/%.2f ms; late %llu; skipped %llu; fetch misses %llu; queue high %llu\n",
-                    m.decodeTimeP95Ms, m.decodeTimeMaxMs,
+        std::printf("      decode p95/p99/max %.2f/%.2f/%.2f ms, over a frame %llu; late %llu; skipped %llu; fetch misses %llu; queue high %llu\n",
+                    m.decodeTimeP95Ms, m.decodeTimeP99Ms, m.decodeTimeMaxMs,
+                    static_cast<unsigned long long>(m.decodesOverFrame),
                     static_cast<unsigned long long>(m.lateFrames),
                     static_cast<unsigned long long>(m.skippedFrames),
                     static_cast<unsigned long long>(m.fetchMisses),
