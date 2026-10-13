@@ -5016,6 +5016,11 @@ int main(int argc, char **argv)
             send(0.6, 0.7, 0.8); // and follows from now on
             CHECK(rgbNear(0.6, 0.7, 0.8));
             e.setInteractions({});
+            // The color the checks below start from (the packed 'r' above)
+            CHECK(e.setParameter(colorLayer, "param/color/r", 0x33 / 255.0) &&
+                  e.setParameter(colorLayer, "param/color/g", 0x66 / 255.0) &&
+                  e.setParameter(colorLayer, "param/color/b", 0xCC / 255.0) &&
+                  e.setParameter(colorLayer, "param/color/a", 0x80 / 255.0));
         }
 
         // Existing scalar OSC argument mapping continues to work alongside
