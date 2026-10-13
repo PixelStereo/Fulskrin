@@ -1319,6 +1319,9 @@ int OscServer::handlePacket(const QByteArray &packet)
 
 bool OscServer::handleMessage(const osc::Message &m)
 {
+    QStringList args;
+    for (const QVariant &arg : m.args) args << arg.toString();
+    emit eventObserved(QStringLiteral("OSC IN"), m.address + (args.isEmpty() ? QString() : QStringLiteral("  ") + args.join(QStringLiteral(", "))));
     // Every number it carries is also an interaction's source (Interactions.h), the show's own addresses included
     for (int k = 0; k < m.args.size(); ++k) {
         const QVariant &a = m.args[k];
@@ -1573,6 +1576,7 @@ void OscServer::pushListened()
                 m.types += (t == 'T' || t == 'F') ? (v.value(k).toBool() ? QChar('T') : QChar('F')) : t;
             }
             m.args = v;
+                emit eventObserved(QStringLiteral("OSC OUT"), m.address);
             sendWs(c.socket, 2, osc::encode(m));
         }
     }

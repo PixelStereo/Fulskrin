@@ -280,6 +280,7 @@ endif()
 set(APP_SOURCES
   src/main.cpp
   src/ui/MainWindow.cpp
+  src/ui/LogPanel.cpp
   src/ui/LayerInspector.cpp
   src/ui/ParamPanel.cpp
   src/ui/PresetEditor.cpp

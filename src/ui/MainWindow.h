@@ -9,6 +9,7 @@ class MappingView;
 class LayerInspector;
 class LayerTable;
 class MediaBin;
+class LogPanel;
 class CompositionPanel;
 class SettingsPanel;
 class SnapshotPanel;
@@ -113,6 +114,7 @@ private:
     LayerInspector *m_inspector = nullptr;
     LayerTable *m_layerTable = nullptr;
     MediaBin *m_bin = nullptr;
+    LogPanel *m_logs = nullptr;
     CompositionPanel *m_composition = nullptr;
     SettingsPanel *m_settings = nullptr;
     SnapshotPanel *m_snapshots = nullptr;
