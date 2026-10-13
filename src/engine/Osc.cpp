@@ -786,7 +786,9 @@ struct LayerNodes {
         }
         for (auto it = parts.cbegin(); it != parts.cend(); ++it) {
             const QStringList &p = it.value();
-            if (p != QStringList{"x", "y"} && p != QStringList{"r", "g", "b"} && p != QStringList{"r", "g", "b", "a"}) continue;
+            if (p != QStringList{"x", "y"} && p != QStringList{"x", "y", "z"} &&
+                p != QStringList{"r", "g", "b"} && p != QStringList{"r", "g", "b", "a"} &&
+                p != QStringList{"h", "s", "l"}) continue;
             QStringList paths;
             QJsonArray range;
             for (const QString &x : p) {
