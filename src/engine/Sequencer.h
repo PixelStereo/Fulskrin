@@ -20,6 +20,7 @@
 #include <QJsonArray>
 #include <QObject>
 #include <QRecursiveMutex>
+#include "AnnotatedMutex.h"
 #include <QString>
 #include <algorithm>
 #include <functional>
@@ -72,7 +73,7 @@ public:
         std::vector<Step> steps;
     };
 
-    Sequencer(Engine &engine, QRecursiveMutex &mutex);
+    Sequencer(Engine &engine, Annotated<QRecursiveMutex> &mutex);
 
     int count() const;
     Sequence sequence(int i) const;
@@ -113,7 +114,7 @@ private:
     void startTimer();
 
     Engine &m_engine;
-    QRecursiveMutex &m_mutex;
+    Annotated<QRecursiveMutex> &m_mutex;
     std::vector<Sequence> m_sequences;
     int m_current = -1, m_position = -1;
     std::vector<Run> m_runs; // of the current sequence

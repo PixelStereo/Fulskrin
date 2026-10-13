@@ -21,6 +21,8 @@
 // ---------------------------------------------------------------------------
 // Render thread, OpenGL context, start and stop
 // ---------------------------------------------------------------------------
+std::atomic<bool> Engine::s_failRenderStart{false};
+
 class RenderThread : public QThread
 {
 public:
@@ -317,6 +319,10 @@ bool Engine::start()
         return false;
     }
     m_quit = false;
+    {
+        std::lock_guard<std::mutex> lk(m_taskMutex);
+        m_renderFailed = false;
+    }
     // The context must not be current on any thread before being handed to the render thread.
     if (QOpenGLContext::currentContext() == m_context) doneCurrent();
     m_thread = new RenderThread(this);
@@ -332,6 +338,7 @@ void Engine::stop()
     m_quit = true;
     m_taskCv.notify_all();
     m_thread->wait();
+    tsanAcquire(&m_thread);
     delete m_thread;
     m_thread = nullptr;
     m_threaded = false;
@@ -372,6 +379,7 @@ void Engine::runGl(std::function<void()> fn, bool wait)
     auto task = std::make_shared<Task>();
     task->fn = std::move(fn);
     std::unique_lock<std::mutex> lk(m_taskMutex);
+    if (m_renderFailed) return; // the render thread could not start: nothing runs there
     m_tasks.push_back(task);
     if (!wait) return;
     m_taskCv.wait(lk, [&] { return task->done || !m_threaded; });
@@ -398,8 +406,18 @@ void Engine::runPendingTasks()
 
 void Engine::renderLoop()
 {
-    if (!m_context->makeCurrent(m_surface)) {
+    if (s_failRenderStart.exchange(false) || !m_context->makeCurrent(m_surface)) {
         qCritical("Render thread: unable to make the OpenGL context current.");
+        // Nothing will be rendered: the tasks waiting, and those asked from now on, return without running
+        {
+            std::lock_guard<std::mutex> lk(m_taskMutex);
+            m_renderFailed = true;
+            for (auto &t : m_tasks) t->done = true;
+            m_tasks.clear();
+        }
+        m_taskCv.notify_all();
+        m_context->moveToThread(m_ownerThread);
+        tsanRelease(&m_thread);
         return;
     }
     m_currentSurface = m_surface;
@@ -432,6 +450,7 @@ void Engine::renderLoop()
     m_context->doneCurrent();
     m_currentSurface = nullptr;
     m_context->moveToThread(m_ownerThread);
+    tsanRelease(&m_thread); // what the render thread did is done before stop() goes on
 }
 
 void Engine::releaseAll()

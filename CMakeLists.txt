@@ -69,6 +69,7 @@ add_library(pinol_engine STATIC
   src/engine/AudioOutput.cpp
   src/engine/MiniaudioImpl.cpp
   src/engine/Osc.cpp
+  src/engine/OscCodec.cpp
   src/engine/Zeroconf.cpp
   src/engine/Snapshots.cpp
   src/engine/Sequencer.cpp
@@ -375,6 +376,11 @@ if(PINOL_FUZZ)
   target_link_libraries(fuzz_hap PRIVATE Qt6::Core)
   target_compile_options(fuzz_hap PRIVATE -g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
   target_link_options(fuzz_hap PRIVATE -fsanitize=fuzzer,address,undefined)
+  add_executable(fuzz_osc EXCLUDE_FROM_ALL test/fuzz_osc.cpp src/engine/OscCodec.cpp)
+  target_include_directories(fuzz_osc PRIVATE src/engine)
+  target_link_libraries(fuzz_osc PRIVATE Qt6::Core)
+  target_compile_options(fuzz_osc PRIVATE -g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
+  target_link_options(fuzz_osc PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -395,6 +401,10 @@ if(PINOL_TESTS)
     add_test(NAME ${area} COMMAND pinol_tests --area ${area})
   endforeach()
   add_test(NAME isf COMMAND pinol_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
+  if(NOT WIN32) # the application's exit codes in --render mode (Windows: its Qt libraries are deployed separately)
+    add_test(NAME render_cli COMMAND ${CMAKE_COMMAND} -DPINOL=$<TARGET_FILE:Pinol> -DOUT=${CMAKE_BINARY_DIR}/render_cli
+             -P "${CMAKE_SOURCE_DIR}/test/render_cli.cmake")
+  endif()
   # Several videos played together: cmake --build build --target pinol_bench
   add_executable(pinol_bench EXCLUDE_FROM_ALL test/bench.cpp)
   target_link_libraries(pinol_bench PRIVATE pinol_engine)

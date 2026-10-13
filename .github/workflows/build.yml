@@ -75,10 +75,51 @@ jobs:
           name: Pinol-linux
           path: Pinol-linux-x86_64*.tar.gz
 
+  # The threads that share data (decoders, sound callback, OSC) under ThreadSanitizer: a race in Pinol's code
+  # fails the job. Libraries not built with it (Qt, Mesa, FFmpeg) are suppressed in test/tsan.supp; the engine's
+  # Qt mutexes and the render thread's join are annotated (src/engine/AnnotatedMutex.h).
+  tsan:
+    name: ThreadSanitizer (video, sound, OSC)
+    runs-on: ubuntu-24.04
+    needs: media
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-media
+          path: test/media
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config clang-18 libclang-rt-18-dev qt6-base-dev libqt6opengl6-dev \
+            qt6-multimedia-dev libgl1-mesa-dev libgl1-mesa-dri libavformat-dev libavcodec-dev libswscale-dev \
+            libswresample-dev libavutil-dev libasound2-dev xvfb
+      - name: Build
+        run: |
+          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_CXX_FLAGS=-fsanitize=thread -DCMAKE_C_FLAGS=-fsanitize=thread \
+            -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+          cmake --build build-tsan --target pinol_tests -j4
+      - name: Tests under ThreadSanitizer
+        run: |
+          export TSAN_OPTIONS="halt_on_error=1 exitcode=66 suppressions=$PWD/test/tsan.supp"
+          # The decoders' threads, the sound callback and its decode threads, the OSC server. (The render-thread areas
+          # render with llvmpipe, itself far too slow under ThreadSanitizer on a CI runner: run them locally.)
+          for area in sound video osc; do
+            echo "::group::$area"
+            start=$(date +%s)
+            timeout 600 xvfb-run -a ./build-tsan/pinol_tests --area $area
+            echo "$area: $(( $(date +%s) - start )) s"
+            echo "::endgroup::"
+          done
+
   # The HAP and Snappy readers against damaged files: a short libFuzzer run with ASan / UBSan, seeded with the
   # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
   fuzz:
-    name: Fuzzing (HAP, Snappy)
+    name: Fuzzing (HAP, Snappy, OSC)
     runs-on: ubuntu-24.04
     needs: media
     steps:
@@ -98,12 +139,16 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DPINOL_FUZZ=ON
-          cmake --build build-fuzz --target fuzz_hap -j4
+          cmake --build build-fuzz --target fuzz_hap fuzz_osc -j4
       - name: Fuzz (2 minutes)
         run: |
           sh test/make_fuzz_corpus.sh "$PWD/fuzz_corpus"
           mkdir -p fuzz_crashes
           ./build-fuzz/fuzz_hap -fork=4 -max_total_time=120 -rss_limit_mb=4096 -artifact_prefix=fuzz_crashes/ fuzz_corpus
+      - name: Fuzz OSC (1 minute)
+        run: |
+          mkdir -p fuzz_crashes
+          ./build-fuzz/fuzz_osc -fork=4 -max_total_time=60 -rss_limit_mb=2048 -artifact_prefix=fuzz_crashes/osc- fuzz_corpus/osc
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

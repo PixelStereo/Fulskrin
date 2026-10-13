@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <thread>
 
 struct AudioOutputPrivate {
     ma_context context{};
@@ -131,25 +132,43 @@ double AudioOutput::latency() const
     return double(p.internalPeriodSizeInFrames) * std::max<ma_uint32>(1, p.internalPeriods) / rate;
 }
 
+void AudioOutput::publish(std::shared_ptr<const Mix> next)
+{
+    const std::shared_ptr<const Mix> old = std::move(m_owned);
+    m_owned = std::move(next);
+    m_mix.store(m_owned.get());
+    // A callback that may still read the old list: wait for it to end (one period at most)
+    const uint64_t e = m_epoch.load();
+    if (e & 1)
+        while (m_epoch.load() == e) std::this_thread::yield();
+}
+
 void AudioOutput::addStream(const std::shared_ptr<AudioStream> &s)
 {
     if (!s) return;
     std::lock_guard<std::mutex> lk(m_streamsMutex);
-    if (std::find(m_streams.begin(), m_streams.end(), s) == m_streams.end()) m_streams.push_back(s);
+    if (std::find(m_owned->streams.begin(), m_owned->streams.end(), s) != m_owned->streams.end()) return;
+    auto next = std::make_shared<Mix>(*m_owned);
+    next->streams.push_back(s);
+    publish(std::move(next));
 }
 
 void AudioOutput::removeStream(const AudioStream *s)
 {
-    // Once this returns, the callback no longer uses the stream (it mixes under the same lock).
+    // Once this returns, the callback no longer uses the stream
     std::lock_guard<std::mutex> lk(m_streamsMutex);
-    m_streams.erase(std::remove_if(m_streams.begin(), m_streams.end(), [s](const auto &p) { return p.get() == s; }),
-                    m_streams.end());
+    auto next = std::make_shared<Mix>(*m_owned);
+    next->streams.erase(std::remove_if(next->streams.begin(), next->streams.end(), [s](const auto &p) { return p.get() == s; }),
+                        next->streams.end());
+    publish(std::move(next));
 }
 
 void AudioOutput::setTap(std::function<void(const float *, int)> fn)
 {
     std::lock_guard<std::mutex> lk(m_streamsMutex);
-    m_tap = std::move(fn);
+    auto next = std::make_shared<Mix>(*m_owned);
+    next->tap = std::move(fn);
+    publish(std::move(next));
 }
 
 void AudioOutput::fadeTo(float target, double seconds)
@@ -163,9 +182,10 @@ void AudioOutput::fadeTo(float target, double seconds)
 void AudioOutput::render(float *out, int frames)
 {
     std::memset(out, 0, size_t(frames) * 2 * sizeof(float));
-    std::lock_guard<std::mutex> lk(m_streamsMutex);
+    m_epoch.fetch_add(1); // odd: mixing (a writer waits for this callback before freeing the list it reads)
+    const Mix *mix = m_mix.load();
     const double lat = latency();
-    for (const auto &s : m_streams) s->mix(out, frames, lat);
+    for (const auto &s : mix->streams) s->mix(out, frames, lat);
 
     const float goal = std::max(0.0f, m_volume.load());
     const float ramp = 1.0f / (0.01f * kSampleRate);
@@ -184,5 +204,6 @@ void AudioOutput::render(float *out, int frames)
     }
     m_fadeLevel = fade;
     for (int c = 0; c < 2; ++c) m_peak[c] = std::max(pk[c], m_peak[c].load() * 0.9f);
-    if (m_tap) m_tap(out, frames);
+    if (mix->tap) mix->tap(out, frames);
+    m_epoch.fetch_add(1);
 }

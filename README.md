@@ -23,7 +23,7 @@ macOS). macOS, Windows, Linux.
   (its OSC address: `/interaction/<name>/master`…); snapshots keep them in a part of their own, presets hold any of
   their values, both faded in their time. Any value's right-click: its OSC address, and Learn Interaction (a new one
   driving it, its source learnt; several sources at once: you choose).
-- **Control**: OSC and OSCQuery (UDP 1234, TCP 5678, Zeroconf). One address per value everywhere: OSC, project file, snapshots, timelines (`/layer/<name>/position/x`, `…/fx/<fx>/param/<input>`, `…/<param>/anim/play`).
+- **Control**: OSC and OSCQuery (UDP 1234, TCP 5678, Zeroconf). One address per value everywhere: OSC, project file, snapshots, timelines (`/layer/<name>/position/x`, `…/fx/<fx>/param/<input>`, `…/<param>/anim/play`). No password: in Settings › OSC, *Listen on* limits it to one network interface or to this computer.
 
 ## Build
 
@@ -48,6 +48,11 @@ Requires Qt 6.2+, FFmpeg 4+, CMake 3.21+, C++17, OpenGL 3.3 core.
 
 Tests: `sh test/make_media.sh && cmake --build build --target pinol_tests && ctest --test-dir build`
 (one process per area; `pinol_tests --area snapshots` runs one; CI runs them on the three platforms).
+ThreadSanitizer: build with `-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_FLAGS=-fsanitize=thread
+-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`, run with `TSAN_OPTIONS=suppressions=test/tsan.supp` (Qt, Mesa and FFmpeg
+are not built with it; CI runs the sound, video and OSC areas this way, the render-thread ones are too slow there).
+Headless render: `Pinol --render out.png [--frames N] [--strict] project.pinol`. Exit code 0 rendered, 1 OpenGL
+unavailable, 2 output not written, 3 project not loaded, 4 a layer or an effect in error (with `--strict`).
 Playback benchmark: `cmake --build build --target pinol_bench && sh test/bench_4k.sh build` (how many 4K files
 play together, per codec, with and without zero copy).
 Fuzzing of the HAP and Snappy readers (Clang, libFuzzer + ASan / UBSan; CI runs it two minutes):

@@ -784,6 +784,19 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         VCHECK(decodedBudget::used() == 0);
         decodedBudget::setLimit(size_t(512) << 20);
     }
+    // Decode-time percentiles: bucket bounds, never above the longest measured; the long tail beyond 2 s is given
+    // as the longest, and decodes longer than one frame are counted
+    {
+        VideoDecoder d; // not opened: 25 fps
+        for (int k = 0; k < 90; ++k) d.recordDecodeTime(3000000); // 3 ms
+        for (int k = 0; k < 9; ++k) d.recordDecodeTime(45000000); // 45 ms: longer than a frame at 25 fps (40 ms)
+        d.recordDecodeTime(uint64_t(3.5e9));                         // 3.5 s
+        const VideoDecoder::Metrics m = d.metrics();
+        VCHECK(m.decodeTimeP95Ms == 50 && m.decodeTimeP99Ms == 50 && std::abs(m.decodeTimeMaxMs - 3500) < 1e-6);
+        VCHECK(m.decodesOverFrame == 10);
+        for (int k = 0; k < 5; ++k) d.recordDecodeTime(uint64_t(3.5e9));
+        VCHECK(std::abs(d.metrics().decodeTimeP99Ms - 3500) < 1e-6); // in the last bucket: the longest
+    }
     // Software decoders share the cores evenly: the same threads for each, whatever the order they were opened in
     {
         const bool hw = VideoDecoder::hardwareDecoding();

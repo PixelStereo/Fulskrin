@@ -2,6 +2,8 @@
 #include "Commands.h"
 #include "DeckLink.h"
 #include "Engine.h"
+#include "AudioOutput.h"
+#include "AudioStream.h"
 #include "LayerTree.h"
 #include "Osc.h"
 #include "Parameter.h"
@@ -664,6 +666,36 @@ int main(int argc, char **argv)
         CHECK(osc::match("/layer/*/opacity", "/layer/A_b/opacity") && !osc::match("/layer/*/opacity", "/layer/a/b/opacity"));
         CHECK(osc::match("/l/{foo,bar}/[a-c]?", "/l/bar/bx") && !osc::match("/l/{foo,bar}/[!a-c]", "/l/foo/a"));
         CHECK(osc::safeName(" My layer/1 ") == "My_layer_1");
+        // Hostile packets (lengths read from the network): refused, never read out of bounds
+        {
+            auto be32 = [](qint32 v) {
+                char n[4];
+                qToBigEndian(v, n);
+                return QByteArray(n, 4);
+            };
+            std::vector<osc::Message> none;
+            // A blob announcing nearly 2 GiB, then an int: the length must not wrap the read position
+            CHECK(!osc::decode(QByteArray("/a\0\0,bi\0", 8) + be32(0x7ffffffc) + be32(1), none));
+            CHECK(!osc::decode(QByteArray("/a\0\0,b\0\0", 8) + be32(-4), none)); // negative
+            CHECK(!osc::decode(QByteArray("/a\0\0,b\0\0", 8) + be32(64) + QByteArray(8, 'x'), none)); // truncated
+            // A bundle element as large as possible, then another one
+            CHECK(!osc::decode(QByteArray("#bundle\0", 8) + QByteArray(8, '\0') + be32(0x7ffffff0) + be32(8), none));
+            CHECK(!osc::decode(QByteArray("#bundle\0", 8) + QByteArray(8, '\0') + be32(0), none)); // empty element
+            // Nested deeper than 8 bundles
+            QByteArray deep = osc::encode({"/x", "i", {1}});
+            for (int k = 0; k < 10; ++k) deep = QByteArray("#bundle\0", 8) + QByteArray(8, '\0') + be32(qint32(deep.size())) + deep;
+            CHECK(!osc::decode(deep, none));
+            // Strings without their end, an address alone, a packet too large
+            CHECK(!osc::decode(QByteArray("/abc"), none));
+            CHECK(!osc::decode(QByteArray("/a\0\0,s\0\0abc", 11), none));
+            CHECK(osc::decode(QByteArray("/a\0\0", 4), none) && none.back().args.isEmpty());
+            CHECK(!osc::decode(QByteArray("/a\0\0", 4) + QByteArray(2 << 20, '\0'), none));
+            // The other argument types travel both ways (character, color, MIDI, time tag)
+            osc::Message more{"/m", "crmt", {QStringLiteral("Z"), 0x11223344LL, 0x00904064LL, 42LL}};
+            std::vector<osc::Message> back2;
+            CHECK(osc::decode(osc::encode(more), back2) && back2.size() == 1 && back2[0].args[0].toString() == "Z" &&
+                  back2[0].args[1].toLongLong() == 0x11223344LL && back2[0].args[3].toLongLong() == 42);
+        }
 
         e.newProject();
         e.setCompositionSize(QSize(64, 32));
@@ -672,6 +704,23 @@ int main(int argc, char **argv)
         e.addEffect(li, isf + "/effects/FlipCrop.fs", &err);
         const int gi = e.addGroup("G", V + 0);
         e.setStructure(tree::intoGroup(e.structure(), {e.layerId(V + 1)}, e.layerId(gi)));
+        {
+            // Listening on this computer only: reached on 127.0.0.1; an address that is not one is refused
+            OscServer local(&e);
+            CHECK(local.start(0, 0, "test", false, "127.0.0.1") && local.oscPort() > 0);
+            QUdpSocket sender;
+            const float before = e.layer(V + 1)->opacity;
+            sender.writeDatagram(osc::encode({"/layer/G/layer/My_layer/opacity", "f", {0.125}}), QHostAddress::LocalHost,
+                                 local.oscPort());
+            QElapsedTimer t;
+            t.start();
+            while (std::abs(e.layer(V + 1)->opacity - 0.125f) > 1e-6 && t.elapsed() < 3000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            CHECK(std::abs(e.layer(V + 1)->opacity - 0.125f) < 1e-6);
+            e.layer(V + 1)->opacity = before;
+            OscServer wrong(&e);
+            CHECK(!wrong.start(0, 0, "test", false, "not-an-address") && wrong.status().contains("not an address"));
+        }
         OscServer server(&e);
         CHECK(server.start(0, 0, "test", false));
         CHECK(server.oscPort() > 0 && server.queryPort() > 0);
@@ -2942,8 +2991,22 @@ int main(int argc, char **argv)
         std::printf("SKIP render thread, sound and threaded video: no OpenGL on another thread on this platform\n");
     } else {
     e.newProject();
+    // The render thread cannot make its OpenGL context current: what waits on it returns at once (nothing hangs), and
+    // a new start works
+    {
+        Engine::failNextRenderStartForTests();
+        CHECK(e.start());
+        QElapsedTimer t;
+        t.start();
+        while (!e.renderFailed() && t.elapsed() < 5000) QThread::msleep(5);
+        bool ran = false;
+        e.runGl([&] { ran = true; }, true);
+        CHECK(e.renderFailed() && !ran);
+        e.stop();
+        CHECK(!e.isThreaded());
+    }
     CHECK(e.start());
-    CHECK(e.isThreaded());
+    CHECK(e.isThreaded() && !e.renderFailed());
     CHECK(waitFrames(5));
     if (area("thread")) {
     { // A window gets the viewport's picture from the render thread: through Metal on macOS, OpenGL elsewhere
@@ -3476,6 +3539,40 @@ int main(int argc, char **argv)
         AudioStream::Info ai;
         CHECK(AudioStream::probe(root + "/media/tone.wav", &ai) && ai.sampleRate == 44100 && ai.channels == 1);
         CHECK(!AudioStream::probe(root + "/media/h264.mp4", &ai));
+
+        // The audio callback takes no lock: streams added and removed from another thread while it mixes, and
+        // streams seeking all the time, never stop it (it keeps its pace) and nothing is used after removal
+        {
+            AudioOutput out;
+            CHECK(out.start(QString(), &err, true));
+            std::atomic<long long> mixed{0};
+            out.setTap([&](const float *, int n) { mixed += n; });
+            std::vector<std::shared_ptr<AudioStream>> streams;
+            for (int k = 0; k < 4; ++k) {
+                auto st = std::make_shared<AudioStream>();
+                CHECK(st->open(root + "/media/tone.wav", AudioOutput::kSampleRate, &err));
+                streams.push_back(st);
+            }
+            QElapsedTimer t;
+            t.start();
+            uint64_t id = 1;
+            int cycles = 0;
+            while (t.elapsed() < 1500) {
+                for (auto &st : streams) {
+                    // A new timeline id each time: the callback asks its stream to seek
+                    st->setTransport(double(cycles % 7) * 0.3, true, 1.0, Timeline{}, ++id, 1.0f);
+                    out.addStream(st);
+                }
+                QThread::msleep(3);
+                for (auto &st : streams) out.removeStream(st.get());
+                ++cycles;
+            }
+            const double expected = t.elapsed() / 1000.0 * AudioOutput::kSampleRate;
+            CHECK(cycles > 50 && double(mixed.load()) > expected * 0.8); // the callback kept its pace
+            for (auto &st : streams) st->close(); // removed: closing cannot race the callback
+            out.setTap(nullptr);
+            out.stop();
+        }
 
         // --- Play modes (the video with sound of the previous test is muted meanwhile)
         e.setLayerMuted(v, true);

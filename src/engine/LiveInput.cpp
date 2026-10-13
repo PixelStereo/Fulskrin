@@ -9,6 +9,7 @@
 #include <QImage>
 #include <QMetaObject>
 #include <QMutex>
+#include "AnnotatedMutex.h"
 #include <QThread>
 #include <QUrl>
 #include <algorithm>
@@ -79,7 +80,7 @@ public:
     }
 
 private:
-    QMutex m_mutex;
+    Annotated<QMutex> m_mutex; // the camera thread writes, the render thread reads
     QByteArray m_rgba;
     int m_w = 0, m_h = 0;
     bool m_fresh = false;
