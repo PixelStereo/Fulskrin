@@ -1,17 +1,23 @@
 <div align="center">
 
-# PINOL
+<h1>PINOL</h1>
 
-### Make space move.
+<h3>Make space move.</h3>
 
-**Real-time video mapping, playback and show control.**  
-One place to build the picture, shape the stage and run the show.
+<p><strong>Real-time video mapping, playback and show control.</strong><br>
+One place to build the picture, shape the stage and run the show.</p>
 
-[![Build](https://github.com/PixelStereo/Pinol/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/PixelStereo/Pinol/actions/workflows/build.yml)
-![Platforms](https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-24272C?style=flat-square)
-![Built with Qt](https://img.shields.io/badge/Qt%206%20%C2%B7%20C%2B%2B17%20%C2%B7%20FFmpeg-24272C?style=flat-square)
+<p>
+  <a href="https://github.com/PixelStereo/Pinol/actions/workflows/build.yml"><img alt="Build" src="https://github.com/PixelStereo/Pinol/actions/workflows/build.yml/badge.svg?branch=main"></a>
+  <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-24272C?style=flat-square">
+  <img alt="Qt 6 · C++17 · FFmpeg" src="https://img.shields.io/badge/Qt%206%20%C2%B7%20C%2B%2B17%20%C2%B7%20FFmpeg-24272C?style=flat-square">
+</p>
 
-**[Explore the features](#built-for-the-show) &nbsp;·&nbsp; [Get started](#get-started) &nbsp;·&nbsp; [Build from source](#build-from-source)**
+<p><strong>
+<a href="#built-for-the-show">Explore the features</a> &nbsp;·&nbsp;
+<a href="#get-started">Get started</a> &nbsp;·&nbsp;
+<a href="#build-from-source">Build from source</a>
+</strong></p>
 
 </div>
 
@@ -155,12 +161,16 @@ For details on dependencies, supported workflows and implementation, browse the 
 
 <div align="center">
 
-### Bring the image to life.
+<h3>Bring the image to life.</h3>
 
-**PINOL** — from the first pixel to the final cue.
+<p><strong>PINOL</strong> — from the first pixel to the final cue.</p>
 
-[Report an issue](https://github.com/PixelStereo/Pinol/issues) · [Explore the code](https://github.com/PixelStereo/Pinol) · [View builds](https://github.com/PixelStereo/Pinol/actions/workflows/build.yml)
+<p>
+<a href="https://github.com/PixelStereo/Pinol/issues">Report an issue</a> &nbsp;·&nbsp;
+<a href="https://github.com/PixelStereo/Pinol">Explore the code</a> &nbsp;·&nbsp;
+<a href="https://github.com/PixelStereo/Pinol/actions/workflows/build.yml">View builds</a>
+</p>
 
-<sub>Built for projection, installations and live performance.</sub>
+<p><sub>Built for projection, installations and live performance.</sub></p>
 
 </div>
