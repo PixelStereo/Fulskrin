@@ -8,6 +8,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSettings>
+#include <QScrollArea>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -235,29 +236,42 @@ ColorPicker::ColorPicker(bool withAlpha, QWidget *parent) : QWidget(parent), m_w
     layout->addWidget(m_wheelPage);
 
     m_palettePage = new QWidget;
-    auto *palette = new QGridLayout(m_palettePage);
+    auto *paletteLayout = new QVBoxLayout(m_palettePage);
+    paletteLayout->setContentsMargins(0, 0, 0, 0);
+    paletteLayout->setSpacing(0);
+    // One continuous row, never wrapping. Narrow inspectors can scroll
+    // horizontally without squeezing the color buttons below a usable size.
+    auto *paletteScroll = new QScrollArea;
+    paletteScroll->setFrameShape(QFrame::NoFrame);
+    paletteScroll->setWidgetResizable(false);
+    paletteScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    paletteScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    paletteScroll->setFixedHeight(39);
+    auto *paletteContents = new QWidget;
+    auto *palette = new QHBoxLayout(paletteContents);
     palette->setContentsMargins(0, 0, 0, 0);
-    palette->setSpacing(3);
+    palette->setSpacing(1);
     const QStringList defaults = {
         "#ffffff", "#808080", "#000000", "#ffff00", "#ff00ff", "#00ffff",
         "#ff0000", "#00ff00", "#0000ff", "#ff8000", "#8000ff", "#00a080",
         "#e0b080", "#404040", "#804020", "#ffc0cb", "#4080ff", "#80ff80",
         "#c0c0c0", "#101010"
     };
-    for (int i = 0; i < defaults.size(); ++i) {
+    for (const QString &hex : defaults) {
         auto *pick = new QToolButton;
-        pick->setFixedHeight(23);
-        pick->setMinimumWidth(22);
-        pick->setStyleSheet(QStringLiteral("background:%1; border:1px solid #555;").arg(defaults[i]));
-        pick->setToolTip(defaults[i]);
-        palette->addWidget(pick, i / 5, i % 5);
-        connect(pick, &QToolButton::clicked, this, [this, color = QColor(defaults[i])] {
+        pick->setFixedSize(16, 22);
+        pick->setStyleSheet(QStringLiteral("background:%1; border:1px solid #555;").arg(hex));
+        pick->setToolTip(hex);
+        palette->addWidget(pick);
+        connect(pick, &QToolButton::clicked, this, [this, color = QColor(hex)] {
             QColor c = color;
             c.setAlpha(m_color.alpha());
             editColor(c);
         });
     }
-    for (int i = 0; i < 5; ++i) palette->setColumnStretch(i, 1);
+    paletteContents->adjustSize();
+    paletteScroll->setWidget(paletteContents);
+    paletteLayout->addWidget(paletteScroll);
     layout->addWidget(m_palettePage);
 
     updateControls();
