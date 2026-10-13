@@ -1,5 +1,6 @@
 // Engine: one frame — the sources are updated, every layer is rendered in dependency order, the
 // composition is assembled, then read back for the interface preview and for publishing.
+#include <QJsonArray>
 #include "EngineInternal.h"
 #include "TimecodeClock.h"
 
@@ -1037,6 +1038,36 @@ void Engine::renderFrame()
 QJsonObject Engine::frameTimingJson() const
 {
     QJsonObject o = m_frameTiming.stats().json();
+    // The pace the render keeps: the frame rate asked, else the output window's screen, else the main screen's
+    const double rate = effectiveRender().frameRate;
+    o["main_screen_hz"] = screenRefreshRate();
+    // How late the cue clock fired the steps (after their pre-wait, or the GO of the step before)
+    const Sequencer::CueTiming ct = m_sequencer->cueTiming();
+    auto r2 = [](double ms) { return std::round(ms * 100.0) / 100.0; };
+    o["cue_late"] = QJsonObject{{"count", double(ct.fired)}, {"last_ms", r2(ct.last * 1e3)}, {"max_ms", r2(ct.max * 1e3)},
+                                {"mean_ms", r2(ct.fired ? ct.total / double(ct.fired) * 1e3 : 0)},
+                                {"p99_ms", r2(ct.percentile(0.99) * 1e3)}};
+    // Each output window: its screen's rate, the pictures shown, and those not shown by cause
+    QJsonArray outs;
+    double paceHz = rate > 0 ? rate : 0;
+    {
+        std::lock_guard<std::mutex> g(m_outputStatsMutex);
+        for (const OutputStats &s : m_outputStats) {
+            outs.append(QJsonObject{{"name", s.name},
+                                    {"metal", s.metal},
+                                    {"shown", s.exposed},
+                                    {"screen_hz", s.hz},
+                                    {"presented", double(s.presented)},
+                                    {"no_drawable", double(s.noDrawable)},
+                                    {"surfaces_busy", double(s.surfacesBusy)},
+                                    {"failed", double(s.failed)},
+                                    {"no_picture", double(s.noPicture)},
+                                    {"not_render_thread", double(s.notRenderThread)}});
+            if (rate <= 0 && s.exposed && s.hz > 1) paceHz = s.hz; // the last one shown sets the pace
+        }
+    }
+    o["outputs"] = outs;
+    o["pace_hz"] = paceHz > 0 ? paceHz : screenRefreshRate();
     o["outputs_dropped"] = double(m_outputsDropped.load());
     o["gpu_shares_skipped"] = double(m_sharesSkipped.load());          // Syphon / Spout, one frame later: not ready
     o["readbacks_skipped"] = double(m_publishing.readbacksSkipped()); // NDI / OMT: the GPU not done in time

@@ -7,8 +7,9 @@
 #include <cmath>
 #include <limits>
 
-static constexpr double kEdges[FrameTiming::Histogram::kBuckets - 1] = {0.5, 1,  2,    4,  8,   12,  16.7, 20,
-                                                                         25,  33.4, 50, 66.7, 100, 200, 500};
+// Fine around the usual frame periods (120, 60, 50, 30, 25 Hz), so that the percentiles read where frames land
+static constexpr double kEdges[FrameTiming::Histogram::kBuckets - 1] = {
+    0.5, 1, 2, 4, 6, 8, 8.4, 10, 12, 14, 16, 16.8, 18, 20, 20.5, 22, 25, 30, 33.5, 40, 41, 50, 66.7, 100, 200, 500};
 
 double FrameTiming::Histogram::edge(int k)
 {

@@ -120,3 +120,20 @@ sound card, nor Syphon / NDI receivers).
 
 Not done here: the long runs (1 h to 8 h), the macOS Intel matrix, and splitting the large classes (MainWindow,
 LayerInspector, SnapshotPanel, VideoDecoder). These need either hardware or a refactor plan of their own.
+
+## Output pace and quitting (13 October 2026, measured on a MacBook at 50 Hz with an AirPlay output)
+
+- With a window shown, the render now follows that window's screen (`pace_hz`), not the main screen's: before, a
+  frame the output did not show (no surface from macOS) was followed by one at the main screen's pace, and missed
+  deadlines were counted against the wrong period.
+- Without a vertical sync to wait for, frames are due at absolute deadlines one period apart (`FramePacer`): a late
+  wake-up is caught up on the next frame instead of adding up.
+- `/composition/timing` lists each output (`outputs`): its screen's rate, pictures shown, and those not shown by
+  cause (`no_drawable`, `surfaces_busy`, `failed`, `no_picture`, `not_render_thread`), plus `cue_late` (how late the
+  cue clock fired) and finer histogram buckets around 8.3, 16.7, 20, 33.3 and 40 ms.
+- macOS: no App Nap, no timer coalescing, no idle sleep while Pinol runs (`NSActivityUserInitiated |
+  NSActivityLatencyCritical`).
+- Quitting with an output in fullscreen: the outputs leave their Space first (4 s at most), then Pinol closes. A
+  Metal surface still read is released without waiting for the GPU. A watchdog ends the process if quitting takes
+  more than 10 s.
+- AirPlay is a virtual screen (compressed, over Wi-Fi): fine to check that an output works, not to judge its pace.

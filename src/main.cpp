@@ -10,6 +10,17 @@
 #include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <thread>
+
+#ifdef Q_OS_MACOS
+#include "MacPresentation.h"
+#endif
+
+static std::atomic<bool> s_quitDone{false}; // set once quitting is over (the watchdog below)
 
 int main(int argc, char *argv[])
 {
@@ -109,6 +120,9 @@ int main(int argc, char *argv[])
     // GUI: rendering runs in its own thread, independent of the UI. The system asks for the camera and local network
     // access first, before the media bin looks for NDI and OMT sources.
     requestSystemPermissions();
+#ifdef Q_OS_MACOS
+    macKeepLiveOutputActive();
+#endif
     engine.start();
 
     int rc;
@@ -137,7 +151,17 @@ int main(int argc, char *argv[])
             });
         }
         rc = app.exec();
+        // Quitting: the windows, the render thread and the decoders stop below. A last resort if that never ends
+        // (a driver or a screen that does not answer): after 10 s the process ends anyway, instead of staying hung
+        // with no window left. Its project is already saved (or was declined) by then.
+        std::thread([] {
+            for (int k = 0; k < 100 && !s_quitDone.load(); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (s_quitDone.load()) return;
+            std::fprintf(stderr, "Pinol: quitting took more than 10 s, the process ends now\n");
+            std::_Exit(3);
+        }).detach();
     }
     engine.shutdown();
+    s_quitDone = true;
     return rc;
 }

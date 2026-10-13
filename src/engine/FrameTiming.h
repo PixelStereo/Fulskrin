@@ -15,12 +15,37 @@
 #include <atomic>
 #include <mutex>
 
+// The render thread's pace without a vertical sync to wait for: absolute deadlines, one period apart
+struct FramePacer {
+    // A frame started at `start`, done at `now`: how long to sleep (ns) before the next one is due. `next`: when it is
+    // due (-1: not yet known; kept between calls). Late by less than a period: no sleep, the schedule is kept (caught
+    // up); by more: the schedule starts again from now (no burst of frames to catch up)
+    static qint64 next(qint64 &next, qint64 start, qint64 now, qint64 periodNs)
+    {
+        if (periodNs <= 0) return 0;
+        if (next < 0 || start - next > periodNs || next - start > periodNs) next = start; // first frame, or far off
+        next += periodNs;
+        if (now >= next) {
+            if (now - next > periodNs) next = now; // too late: from now on
+            return 0;
+        }
+        return next - now;
+    }
+    // The vertical sync paced this frame: the schedule follows it (no sleep)
+    static qint64 resync(qint64 &next, qint64 now, qint64 periodNs)
+    {
+        next = now;
+        (void)periodNs;
+        return 0;
+    }
+};
+
 class FrameTiming
 {
 public:
-    // Milliseconds in fixed buckets: ≤ 0.5, 1, 2, 4, 8, 12, 16.7, 20, 25, 33.4, 50, 66.7, 100, 200, 500, beyond
+    // Milliseconds in fixed buckets (FrameTiming.cpp), fine around 8.3, 16.7, 20, 33.3 and 40 ms; the last: beyond
     struct Histogram {
-        static constexpr int kBuckets = 16;
+        static constexpr int kBuckets = 27;
         std::array<quint64, kBuckets> buckets{};
         quint64 count = 0;
         double total = 0, max = 0;

@@ -19,6 +19,8 @@ OutputWindow::OutputWindow(Engine *engine, quint64 viewport) : m_engine(engine),
     setTitle(QStringLiteral("Pinol — Output"));
     create();
     m_engine->setViewportWindow(m_viewport, this);
+    // Moved to another screen: its refresh rate is the render's pace from now on
+    connect(this, &QWindow::screenChanged, this, [this] { sync(); });
 }
 
 OutputWindow::~OutputWindow()
@@ -31,10 +33,12 @@ void OutputWindow::sync()
     if (!m_viewport) return; // disposed
     const bool exposed = isVisible() && isExposed();
     const QSize px = size() * devicePixelRatio();
-    if (exposed == m_lastExposed && px == m_lastSize) return;
+    const double hz = screen() ? screen()->refreshRate() : 0;
+    if (exposed == m_lastExposed && px == m_lastSize && hz == m_lastHz) return;
     m_lastExposed = exposed;
     m_lastSize = px;
-    m_engine->setViewportExposed(m_viewport, exposed, px);
+    m_lastHz = hz;
+    m_engine->setViewportExposed(m_viewport, exposed, px, hz);
 }
 
 // Fullscreen takes a Space of its own on macOS, as any other application does. Leaving it is asynchronous

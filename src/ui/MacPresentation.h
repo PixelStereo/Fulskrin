@@ -18,3 +18,6 @@ void macEnterFullScreen(QWindow *w);
 
 // Leaves fullscreen and calls `done` once the Space is gone. Calls `done` at once if there is none.
 void macExitFullScreen(QWindow *w, std::function<void()> done);
+
+// For as long as Pinol runs: no App Nap, no timer coalescing, no idle sleep of the machine (a live show)
+void macKeepLiveOutputActive();

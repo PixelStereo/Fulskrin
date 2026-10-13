@@ -44,4 +44,5 @@ private:
     quint64 m_viewport = 0;
     bool m_lastExposed = false;
     QSize m_lastSize;
+    double m_lastHz = 0; // its screen's refresh rate, as last told to the engine
 };

@@ -57,8 +57,10 @@ struct Slot {
     GLuint tex = 0, fbo = 0;
     id<MTLTexture> mtl = nil;
     int w = 0, h = 0;
-    std::atomic<bool> busy{false};    // Metal still reads it (set at commit, cleared by the completion handler)
-    id<MTLCommandBuffer> cmd = nil;   // the last command buffer that read it: waited for before the slot goes
+    // Metal still reads it: set at commit, cleared by the completion handler. Shared with that handler, so that a
+    // slot released before Metal is done (a window closed, Pinol quitting) is never written to once gone, and its
+    // release never waits for the GPU (the command buffer keeps its own references to the texture and the surface)
+    std::shared_ptr<std::atomic<bool>> busy = std::make_shared<std::atomic<bool>>(false);
 };
 
 struct MetalOutput::D {
@@ -81,8 +83,8 @@ struct MetalOutput::D {
     // Waits at most `maxUs` for Metal to let go of the slot. True: it is free (OpenGL may write it)
     static bool waitIdle(const Slot &s, int maxUs)
     {
-        for (int k = 0; s.busy.load() && k * 50 < maxUs; ++k) QThread::usleep(50);
-        return !s.busy.load();
+        for (int k = 0; s.busy->load() && k * 50 < maxUs; ++k) QThread::usleep(50);
+        return !s.busy->load();
     }
     // A free slot of the ring, the next one first; none after `maxUs`: null (the frame is dropped). A slot still read
     // is never written again: OpenGL would tear the picture Metal is drawing.
@@ -90,7 +92,7 @@ struct MetalOutput::D {
     {
         for (int k = 0; k < 3; ++k) {
             Slot &s = ring[(next + k) % 3];
-            if (!s.busy.load()) {
+            if (!s.busy->load()) {
                 next = (next + k) % 3;
                 return &s;
             }
@@ -100,11 +102,9 @@ struct MetalOutput::D {
     }
     void releaseSlot(Slot &s, QOpenGLExtraFunctions *f)
     {
-        // Gone for good (resized, closed): wait for Metal to finish with it, however long. Its completion handler
-        // writes into the slot, and its texture must not be deleted under a draw.
-        if (s.cmd) [s.cmd waitUntilCompleted];
-        s.cmd = nil;
-        s.busy = false;
+        // Gone for good (resized, closed): no wait. A command buffer still reading it holds its texture and its
+        // surface itself, and its completion handler clears a flag of its own: the slot starts again with a new one
+        if (s.busy->load()) s.busy = std::make_shared<std::atomic<bool>>(false);
         if (f) {
             if (s.fbo) f->glDeleteFramebuffers(1, &s.fbo);
             if (s.tex) f->glDeleteTextures(1, &s.tex);
@@ -224,10 +224,10 @@ std::shared_ptr<MetalOutput> MetalOutput::forWindow(QWindow *w)
     return out;
 }
 
-bool MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool waitForScreen)
+MetalOutput::Result MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool waitForScreen)
 {
     QOpenGLContext *ctx = QOpenGLContext::currentContext();
-    if (!ctx || !framebuffer || w <= 0 || h <= 0 || pixels.isEmpty()) return false;
+    if (!ctx || !framebuffer || w <= 0 || h <= 0 || pixels.isEmpty()) return Result::NoPicture;
     auto *f = ctx->extraFunctions();
     @autoreleasepool {
         // At most 8 ms for a surface (half a frame at 60 Hz): beyond, the frame is dropped rather than the render
@@ -236,10 +236,10 @@ bool MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool
         if (!free) {
             ++d->dropped;
             d->warnOnce("every shared surface is still read by Metal: frame dropped");
-            return false;
+            return Result::SurfacesBusy;
         }
         Slot &s = *free;
-        if (!d->ensure(s, w, h, f)) return false;
+        if (!d->ensure(s, w, h, f)) return Result::Failed;
         d->next = (d->next + 1) % 3;
         // OpenGL: the picture into the shared surface, turned upside down (OpenGL's rows go up, the surface's down)
         f->glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
@@ -254,9 +254,9 @@ bool MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool
         }
         d->layer.displaySyncEnabled = waitForScreen ? YES : NO;
         id<CAMetalDrawable> drawable = [d->layer nextDrawable];
-        if (!drawable) {
+        if (!drawable) { // macOS gave no surface for the window (a screen asleep, AirPlay, a Space in transition)
             d->warnOnce("no drawable from the window's layer");
-            return false;
+            return Result::NoDrawable;
         }
         MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = drawable.texture;
@@ -269,14 +269,13 @@ bool MetalOutput::present(unsigned framebuffer, int w, int h, QSize pixels, bool
         [enc setFragmentSamplerState:d->sampler atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [enc endEncoding];
-        s.busy = true;
-        Slot *slot = &s;
-        [cmd addCompletedHandler:^(id<MTLCommandBuffer>) { slot->busy = false; }];
+        s.busy->store(true);
+        std::shared_ptr<std::atomic<bool>> busy = s.busy;
+        [cmd addCompletedHandler:^(id<MTLCommandBuffer>) { busy->store(false); }];
         [cmd presentDrawable:drawable];
         [cmd commit];
-        s.cmd = cmd;
     }
-    return true;
+    return Result::Shown;
 }
 
 void MetalOutput::releaseGl()
