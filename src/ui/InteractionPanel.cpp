@@ -26,6 +26,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QTabBar>
 #include <QTimer>
@@ -79,6 +80,44 @@ QLabel *note(const QString &t)
     l->setWordWrap(true);
     l->setStyleSheet("color:#888; font-size:11px;");
     return l;
+}
+
+// Two independent SliderField controls, with the same numeric boxes and
+// painting as the Temp/Tint parameters. RangeField's overlapping handles are
+// difficult to grab precisely, especially for narrow ranges.
+struct RangeSliders {
+    QWidget *widget;
+    SliderField *minimum;
+    SliderField *maximum;
+};
+
+RangeSliders makeRangeSliders(double lo, double hi, double lowValue, double highValue, int decimals)
+{
+    auto *root = new QWidget;
+    auto *column = new QVBoxLayout(root);
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(3);
+    const double upper = std::max(hi, lo + 1e-6);
+    auto add = [&](const QString &caption, double value) {
+        auto *row = new QHBoxLayout;
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(5);
+        auto *label = new QLabel(caption);
+        label->setFixedWidth(30);
+        auto *field = new SliderField;
+        field->setRange(lo, upper);
+        field->setDecimals(decimals);
+        field->setSingleStep(std::max(std::pow(10.0, -decimals), (upper - lo) / 100.0));
+        field->setSnaps({lo, upper});
+        field->setValue(value);
+        row->addWidget(label);
+        row->addWidget(field, 1);
+        column->addLayout(row);
+        return field;
+    };
+    auto *minimum = add(QStringLiteral("Min"), lowValue);
+    auto *maximum = add(QStringLiteral("Max"), highValue);
+    return {root, minimum, maximum};
 }
 
 QProgressBar *meter()
@@ -940,67 +979,101 @@ void InteractionPanel::rebuildSettings()
         edit(QStringLiteral("Change Toggle"), [on](Interaction &x) { x.toggle = on; });
     });
 
-    auto *srcRange = new RangeField;
-    srcRange->setRange(std::min(srcLo, it.srcMin), std::max(srcHi, it.srcMax));
-    srcRange->setDecimals(srcHi - srcLo > 10 ? 0 : 2);
-    srcRange->setValues(std::min(it.srcMin, it.srcMax), std::max(it.srcMin, it.srcMax));
-    srcRange->setToolTip(QStringLiteral("The part of the source's values used: its low end gives 0, its high end 1"));
-    auto *srcLabel = new ResetLabel(QStringLiteral("Source range"), [edit, srcRange, srcLo, srcHi] {
-        srcRange->setValues(srcLo, srcHi);
+    // Two sliders with editable number boxes; when one endpoint crosses the
+    // other, move the opposite endpoint too instead of silently swapping values.
+    // This keeps the displayed limits consistent with the interaction engine.
+    const double srcBarMin = std::min(srcLo, it.srcMin);
+    const double srcBarMax = std::max(srcHi, it.srcMax);
+    auto srcFields = makeRangeSliders(srcBarMin, srcBarMax,
+                                      std::min(it.srcMin, it.srcMax),
+                                      std::max(it.srcMin, it.srcMax),
+                                      srcHi - srcLo > 10 ? 0 : 2);
+    srcFields.widget->setToolTip(QStringLiteral("The source input interval; Min maps to 0, Max to 1"));
+    auto *srcLabel = new ResetLabel(QStringLiteral("Source range"), [edit, srcFields, srcLo, srcHi] {
+        srcFields.minimum->setValue(srcLo);
+        srcFields.maximum->setValue(srcHi);
         edit(QStringLiteral("Reset Source Range"), [srcLo, srcHi](Interaction &x) {
             x.srcMin = srcLo;
             x.srcMax = srcHi;
         });
     });
-    form->addRow(srcLabel, srcRange);
-    attachPreset({srcLabel, srcRange}, {QStringLiteral("source/min"), QStringLiteral("source/max")});
-    connect(srcRange, &RangeField::edited, this, [edit, srcRange](bool, double) {
-        const double lo = srcRange->low(), hi = srcRange->high();
+    form->addRow(srcLabel, srcFields.widget);
+    attachPreset({srcLabel}, {QStringLiteral("source/min"), QStringLiteral("source/max")});
+    attachPreset({srcFields.minimum}, {QStringLiteral("source/min")});
+    attachPreset({srcFields.maximum}, {QStringLiteral("source/max")});
+
+    auto setSource = [edit, srcFields](bool editingMinimum) {
+        double lo = srcFields.minimum->value();
+        double hi = srcFields.maximum->value();
+        if (lo > hi) {
+            if (editingMinimum) srcFields.maximum->setValue(hi = lo);
+            else srcFields.minimum->setValue(lo = hi);
+        }
         edit(QStringLiteral("Change Source Range"), [lo, hi](Interaction &x) {
             x.srcMin = lo;
             x.srcMax = hi;
-        }, QStringLiteral("srcrange"));
-    });
+        }, editingMinimum ? QStringLiteral("srcmin") : QStringLiteral("srcmax"));
+    };
+    connect(srcFields.minimum, &SliderField::valueEdited, this, [setSource](double) { setSource(true); });
+    connect(srcFields.maximum, &SliderField::valueEdited, this, [setSource](double) { setSource(false); });
 
-    // Target range: within the target's own values; inverted, 0 lands on its high end
+    // Target range: Min/Max are ordered endpoints, Invert exchanges where
+    // 0 and 1 land without changing the visual positions of those endpoints.
     ParamInfo tinfo;
     const bool numberTarget = m_engine->parameterInfo(it.layer, it.param, &tinfo) && tinfo.isNumber();
     const double tLo = numberTarget ? std::min({tinfo.min, it.dstMin, it.dstMax}) : 0;
     const double tHi = numberTarget ? std::max({tinfo.max, it.dstMin, it.dstMax}) : 1;
-    auto *dstRange = new RangeField;
-    dstRange->setRange(tLo, tHi);
-    dstRange->setDecimals(tHi - tLo > 10 ? 1 : 2);
-    dstRange->setValues(std::min(it.dstMin, it.dstMax), std::max(it.dstMin, it.dstMax));
-    dstRange->setToolTip(QStringLiteral("Where in the target's values the result lands"));
+    auto dstFields = makeRangeSliders(tLo, tHi,
+                                      std::min(it.dstMin, it.dstMax),
+                                      std::max(it.dstMin, it.dstMax),
+                                      tHi - tLo > 10 ? 1 : 2);
+    dstFields.widget->setToolTip(QStringLiteral("The target interval; invert to map low input to high output"));
     auto *invert = new FlagBox(QStringLiteral("Invert"));
     invert->setChecked(it.dstMin > it.dstMax);
     invert->setToolTip(QStringLiteral("0 lands on the high end, 1 on the low end"));
-    auto *dstRow = new QHBoxLayout;
-    dstRow->addWidget(dstRange, 1);
-    dstRow->addWidget(invert);
-    const double fullLo = numberTarget ? tinfo.min : 0, fullHi = numberTarget ? tinfo.max : 1;
-    auto *dstLabel = new ResetLabel(QStringLiteral("Target range"), [edit, dstRange, invert, fullLo, fullHi] {
-        dstRange->setValues(fullLo, fullHi);
-        invert->blockSignals(true);
+    auto *dstRoot = new QWidget;
+    auto *dstLayout = new QVBoxLayout(dstRoot);
+    dstLayout->setContentsMargins(0, 0, 0, 0);
+    dstLayout->setSpacing(3);
+    dstLayout->addWidget(dstFields.widget);
+    dstLayout->addWidget(invert);
+    const double fullLo = numberTarget ? tinfo.min : 0;
+    const double fullHi = numberTarget ? tinfo.max : 1;
+    auto *dstLabel = new ResetLabel(QStringLiteral("Target range"), [edit, dstFields, invert, fullLo, fullHi] {
+        dstFields.minimum->setValue(fullLo);
+        dstFields.maximum->setValue(fullHi);
+        QSignalBlocker blocker(invert);
         invert->setChecked(false);
-        invert->blockSignals(false);
         edit(QStringLiteral("Reset Target Range"), [fullLo, fullHi](Interaction &x) {
             x.dstMin = fullLo;
             x.dstMax = fullHi;
         });
     });
-    form->addRow(dstLabel, dstRow);
-    attachPreset({dstLabel, dstRange, invert}, {QStringLiteral("target/min"), QStringLiteral("target/max")});
-    auto setTarget = [edit, dstRange, invert](const QString &merge) {
-        const double lo = dstRange->low(), hi = dstRange->high();
+    form->addRow(dstLabel, dstRoot);
+    attachPreset({dstLabel}, {QStringLiteral("target/min"), QStringLiteral("target/max")});
+    attachPreset({dstFields.minimum}, {QStringLiteral("target/min")});
+    attachPreset({dstFields.maximum}, {QStringLiteral("target/max")});
+    attachPreset({invert}, {QStringLiteral("target/min"), QStringLiteral("target/max")});
+
+    auto setTarget = [edit, dstFields, invert](bool editingMinimum, const QString &merge) {
+        double lo = dstFields.minimum->value();
+        double hi = dstFields.maximum->value();
+        if (lo > hi) {
+            if (editingMinimum) dstFields.maximum->setValue(hi = lo);
+            else dstFields.minimum->setValue(lo = hi);
+        }
         const bool inv = invert->isChecked();
         edit(QStringLiteral("Change Target Range"), [lo, hi, inv](Interaction &x) {
             x.dstMin = inv ? hi : lo;
             x.dstMax = inv ? lo : hi;
         }, merge);
     };
-    connect(dstRange, &RangeField::edited, this, [setTarget](bool, double) { setTarget(QStringLiteral("dstrange")); });
-    connect(invert, &QCheckBox::toggled, this, [setTarget](bool) { setTarget(QString()); });
+    connect(dstFields.minimum, &SliderField::valueEdited, this,
+            [setTarget](double) { setTarget(true, QStringLiteral("dstmin")); });
+    connect(dstFields.maximum, &SliderField::valueEdited, this,
+            [setTarget](double) { setTarget(false, QStringLiteral("dstmax")); });
+    connect(invert, &QCheckBox::toggled, this,
+            [setTarget](bool) { setTarget(false, QString()); });
 
     // Filter
     auto *filterRow = new QHBoxLayout;
