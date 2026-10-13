@@ -134,8 +134,39 @@ jobs:
       - name: Engine tests
         run: |
           ctest --test-dir build --output-on-failure
+      - name: Import Developer ID certificate for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD MACOS_KEYCHAIN_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required GitHub Actions secret: $name"
+              exit 1
+            fi
+          done
+          KEYCHAIN_PATH="$RUNNER_TEMP/pinol-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+
       - name: Package .app with runtime dependencies
         shell: bash
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
         run: |
           set -euo pipefail
           APP="build/Pinol.app"
@@ -163,23 +194,37 @@ jobs:
           # Resolve and bundle every non-system dependency recursively, including @rpath libraries
           # (e.g. WebP -> SharpYUV). The helper fails closed when a dependency is missing/ambiguous.
           python3 scripts/macos_bundle_deps.py "$APP"
-          # All install_name_tool edits are complete. Re-sign modified nested code from the
-          # inside out so no later binary edit invalidates a signature. This is an ad-hoc
-          # build signature (not Developer ID signing or notarization).
+          # Local/PR artifacts use ad-hoc signatures for CI inspection only. A downloaded
+          # release must have a Developer ID signature and notarization, otherwise Gatekeeper
+          # can report the quarantined app as "damaged".
+          SIGN_IDENTITY="-"
+          SIGN_FLAGS=()
+          IS_RELEASE_TAG=false
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == v* ]]; then
+            IS_RELEASE_TAG=true
+            : "${MACOS_SIGNING_IDENTITY:?Missing GitHub Actions secret MACOS_SIGNING_IDENTITY}"
+            SIGN_IDENTITY="$MACOS_SIGNING_IDENTITY"
+            SIGN_FLAGS=(--options runtime --timestamp)
+          fi
+
+          # All install_name_tool edits are complete. Sign every nested Mach-O first.
           while IFS= read -r -d '' binary; do
             file "$binary" | grep -q "Mach-O" || continue
-            codesign --force --sign - "$binary"
+            codesign --force --sign "$SIGN_IDENTITY" "${SIGN_FLAGS[@]}" "$binary"
           done < <(find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" -type f -print0)
 
           # Sign framework/plugin bundles after their inner Mach-O files, deepest bundles first.
           while IFS= read -r -d '' bundle; do
-            codesign --force --sign - "$bundle"
+            codesign --force --sign "$SIGN_IDENTITY" "${SIGN_FLAGS[@]}" "$bundle"
           done < <(find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" -depth -type d \( -name "*.framework" -o -name "*.bundle" \) -print0)
 
-          # Sign the main executable, then the outer .app bundle last.
-          codesign --force --sign - "$EXE"
-          codesign --force --sign - "$APP"
+          # Sign the executable and outer app last.
+          codesign --force --sign "$SIGN_IDENTITY" "${SIGN_FLAGS[@]}" "$EXE"
+          codesign --force --sign "$SIGN_IDENTITY" "${SIGN_FLAGS[@]}" "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
+          if [[ "$IS_RELEASE_TAG" == true ]]; then
+            codesign -dv --verbose=4 "$APP" 2>&1 | grep -F "Authority=Developer ID Application:"
+          fi
 
           # No absolute Homebrew references may remain in the packaged Mach-O files.
           while IFS= read -r -d '' binary; do
@@ -205,7 +250,28 @@ jobs:
           EOF
           TAG_SUFFIX=""
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then TAG_SUFFIX="-$GITHUB_REF_NAME"; fi
-          ditto -c -k --keepParent "$APP" "Pinol-macos${TAG_SUFFIX}.zip"
+          ZIP_PATH="Pinol-macos${TAG_SUFFIX}.zip"
+          ditto -c -k --keepParent "$APP" "$ZIP_PATH"
+
+          # Notarize release archives and staple the ticket into the .app before producing
+          # the final ZIP. Without this, macOS may show "Pinol is damaged" for a quarantined download.
+          if [[ "$IS_RELEASE_TAG" == true ]]; then
+            for name in MACOS_NOTARY_APPLE_ID MACOS_NOTARY_TEAM_ID MACOS_NOTARY_PASSWORD; do
+              if [[ -z "${!name:-}" ]]; then
+                echo "::error::Missing required GitHub Actions secret: $name"
+                exit 1
+              fi
+            done
+            xcrun notarytool submit "$ZIP_PATH" \
+              --apple-id "$MACOS_NOTARY_APPLE_ID" \
+              --team-id "$MACOS_NOTARY_TEAM_ID" \
+              --password "$MACOS_NOTARY_PASSWORD" \
+              --wait
+            xcrun stapler staple "$APP"
+            xcrun stapler validate "$APP"
+            rm -f "$ZIP_PATH"
+            ditto -c -k --keepParent "$APP" "$ZIP_PATH"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: Pinol-macos
