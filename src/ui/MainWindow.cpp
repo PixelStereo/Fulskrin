@@ -8,6 +8,7 @@
 #include "MappingView.h"
 #include "CompositionPanel.h" // CompositionPanel
 #include "MediaBin.h"
+#include "LogPanel.h"
 #include "SnapshotPanel.h"
 #include "SequencePanel.h"
 #include "TimelinePanel.h"
@@ -122,9 +123,13 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_leftTabs->addTab(m_layerTable, QStringLiteral("Layers"));
     m_interactions = new InteractionPanel(m_engine, m_undo);
     m_leftTabs->addTab(m_interactions, QStringLiteral("Interactions"));
+    m_logs = new LogPanel;
+    m_leftTabs->addTab(m_logs, QStringLiteral("Logs"));
+    connect(m_engine, &Engine::eventObserved, m_logs, &LogPanel::appendEvent, Qt::QueuedConnection);
     m_leftTabs->setTabToolTip(0, QStringLiteral("Media Bin (Shift+1)"));
     m_leftTabs->setTabToolTip(1, QStringLiteral("Layers (Shift+2)"));
     m_leftTabs->setTabToolTip(2, QStringLiteral("Interactions: keys, MIDI, OSC and values of the show driving others (Shift+3)"));
+    m_leftTabs->setTabToolTip(3, QStringLiteral("Event log: OSC, MIDI and keyboard (Shift+4)"));
     connect(m_interactions, &InteractionPanel::edited, this, &MainWindow::markDirty);
     connect(m_interactions, &InteractionPanel::showRequested, this, [this] { m_leftTabs->setCurrentWidget(m_interactions); });
     m_leftTabs->tabBar()->setChangeCurrentOnDrag(true);
@@ -444,6 +449,7 @@ bool MainWindow::eventFilter(QObject *o, QEvent *e)
             if (k->key() == Qt::Key_1 || k->key() == Qt::Key_Exclam) tab = 0;
             if (k->key() == Qt::Key_2 || k->key() == Qt::Key_At || k->key() == Qt::Key_QuoteDbl) tab = 1;
             if (k->key() == Qt::Key_3 || k->key() == Qt::Key_NumberSign || k->key() == Qt::Key_sterling) tab = 2;
+            if (k->key() == Qt::Key_4 || k->key() == Qt::Key_Dollar) tab = 3;
             if (tab >= 0 && !k->isAutoRepeat()) {
                 m_leftTabs->setCurrentIndex(tab);
                 return true;
@@ -1415,6 +1421,10 @@ void MainWindow::startOsc()
         m_osc = new OscServer(m_engine);
         m_osc->moveToThread(m_oscThread);
         connect(m_oscThread, &QThread::finished, m_osc, &QObject::deleteLater);
+        connect(m_osc, &OscServer::eventObserved, this,
+                [this](const QString &channel, const QString &message) {
+                    if (m_logs) m_logs->appendEvent(channel, message);
+                }, Qt::QueuedConnection);
         connect(m_osc, &OscServer::edited, this, [this] {
             markDirty();
             refreshLayerList();

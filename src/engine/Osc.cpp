@@ -1319,6 +1319,9 @@ int OscServer::handlePacket(const QByteArray &packet)
 
 bool OscServer::handleMessage(const osc::Message &m)
 {
+    QStringList args;
+    for (const QVariant &arg : m.args) args << arg.toString();
+    emit eventObserved(QStringLiteral("OSC IN"), m.address + (args.isEmpty() ? QString() : QStringLiteral("  ") + args.join(QStringLiteral(", "))));
     // Every number it carries is also an interaction's source (Interactions.h), the show's own addresses included
     for (int k = 0; k < m.args.size(); ++k) {
         const QVariant &a = m.args[k];
@@ -1549,6 +1552,7 @@ void OscServer::pushListened()
             m_treeSignature = sig;
             const QByteArray msg = QJsonDocument(QJsonObject{{"COMMAND", "PATH_CHANGED"}, {"DATA", "/"}}).toJson(QJsonDocument::Compact);
             for (const Client &c : std::as_const(m_clients))
+                emit eventObserved(QStringLiteral("OSC OUT"), QString::fromUtf8(msg));
                 if (c.websocket) sendWs(c.socket, 1, msg);
         }
     }

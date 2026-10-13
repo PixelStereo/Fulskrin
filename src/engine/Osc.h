@@ -124,6 +124,7 @@ public:
 
 signals:
     void edited(); // values changed through OSC: the interface refreshes
+    void eventObserved(const QString &channel, const QString &message);
 
 private:
     struct Client {

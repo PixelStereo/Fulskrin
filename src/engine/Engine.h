@@ -575,6 +575,7 @@ signals:
     void snapshotRecalled(int index);
     void timecodeRoutingChanged(); // timecode / MIDI outputs, their patch, or which layer drives which output
     void interactionsChanged();    // the list of interactions (not their values)
+    void eventObserved(const QString &channel, const QString &message);
     // Their values changed by a preset, a snapshot, a timeline, OSC (sent once for many, from the main thread)
     void interactionValuesChanged();
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI

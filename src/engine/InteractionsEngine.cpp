@@ -116,6 +116,10 @@ bool Engine::interactionLevels(quint64 id, double *level, double *output, double
 
 void Engine::feedInteraction(const InteractionEvent &e)
 {
+    if (e.source == InteractionSource::Keyboard || e.source == InteractionSource::Midi) {
+        const QString channel = e.source == InteractionSource::Keyboard ? QStringLiteral("KEYBOARD") : QStringLiteral("MIDI IN");
+        emit eventObserved(channel, e.describe() + QStringLiteral(" = ") + QString::number(e.value, 'g', 5));
+    }
     std::lock_guard<std::mutex> lk(m_interactionEventsMutex);
     if (m_interactionEvents.size() < 8192) m_interactionEvents.push_back(e); // a flood is cut, not kept forever
     if (!m_interactionLearn || (m_learnKind && e.source != *m_learnKind)) return;
