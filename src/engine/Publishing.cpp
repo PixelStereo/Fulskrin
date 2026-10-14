@@ -282,7 +282,13 @@ void Publishing::readback(quint64 viewport, const RenderTarget &out, double fps,
         pub.pboPending = false;
     }
     pub.readback.ensure(w, h);
-    if (!pub.readback.fbo) return; // preserve last sent image if the GPU runs out of targets
+    // On allocation failure ensure() deliberately preserves its old
+    // framebuffer. That older texture may be a different size or precision:
+    // never draw/read w*h pixels into/from it (or framebuffer zero).
+    if (!pub.readback.ready(w, h)) {
+        ++m_readbacksSkipped;
+        return; // keep the last successfully sent picture; retry next frame
+    }
 
     // 1) Current frame flipped (top-to-bottom rows), then read back asynchronously into a PBO
     pub.readback.bind();
