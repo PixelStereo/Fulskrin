@@ -20,39 +20,56 @@ constexpr int kHeight = 64;
 int compareImage(const QString &name, const QImage &image, const QJsonObject &refs, const QString &tmp)
 {
     const QJsonArray checks = refs.value(name).toArray();
-    int failures = 0;
+    int failedRegions = 0;
+    int checkedPixels = 0;
     if (image.size() != QSize(kWidth, kHeight) || checks.isEmpty()) {
-        std::printf("FAIL golden %s: viewport is %dx%d (expected 128x64), or reference is absent\n",
+        std::printf("FAIL golden %s: viewport %dx%d instead of 128x64, or no references\n",
                     qPrintable(name), image.width(), image.height());
         return 1;
     }
     for (const QJsonValue &v : checks) {
         const QJsonObject o = v.toObject();
-        const int x = o.value("x").toInt(-1), y = o.value("y").toInt(-1);
+        const QJsonArray rect = o.value("rect").toArray();
         const QJsonArray rgb = o.value("rgb").toArray();
         const int tol = o.value("tolerance").toInt(3);
-        if (x < 0 || x >= image.width() || y < 0 || y >= image.height() || rgb.size() != 3 || tol < 0) {
-            std::printf("FAIL golden %s: invalid reference sample\n", qPrintable(name));
-            ++failures;
+        if (rect.size() != 4 || rgb.size() != 3 || tol < 0) {
+            std::printf("FAIL golden %s: invalid region reference\n", qPrintable(name));
+            ++failedRegions;
             continue;
         }
-        const QColor c = image.pixelColor(x, y);
-        const int got[3] = {c.red(), c.green(), c.blue()};
-        bool matches = true;
-        for (int k = 0; k < 3; ++k)
-            if (std::abs(got[k] - rgb[k].toInt(-1000)) > tol) matches = false;
-        if (!matches) {
-            std::printf("FAIL golden %s at (%d,%d): RGB actual %d,%d,%d; expected %d,%d,%d (+/-%d)\n",
-                        qPrintable(name), x, y, got[0], got[1], got[2],
-                        rgb[0].toInt(), rgb[1].toInt(), rgb[2].toInt(), tol);
-            ++failures;
+        const int x0 = rect[0].toInt(-1), y0 = rect[1].toInt(-1);
+        const int x1 = rect[2].toInt(-1), y1 = rect[3].toInt(-1);
+        if (x0 < 0 || y0 < 0 || x1 > image.width() || y1 > image.height() || x1 <= x0 || y1 <= y0) {
+            std::printf("FAIL golden %s: region outside image\n", qPrintable(name));
+            ++failedRegions;
+            continue;
+        }
+        int badPixels = 0;
+        for (int y = y0; y < y1; ++y) {
+            for (int x = x0; x < x1; ++x) {
+                const QColor c = image.pixelColor(x, y);
+                const int got[3] = {c.red(), c.green(), c.blue()};
+                ++checkedPixels;
+                if (std::abs(got[0] - rgb[0].toInt(-1000)) <= tol &&
+                    std::abs(got[1] - rgb[1].toInt(-1000)) <= tol &&
+                    std::abs(got[2] - rgb[2].toInt(-1000)) <= tol) continue;
+                if (++badPixels <= 5)
+                    std::printf("FAIL golden %s (%d,%d): RGB %d,%d,%d expected %d,%d,%d (+/-%d)\n",
+                                qPrintable(name), x, y, got[0], got[1], got[2],
+                                rgb[0].toInt(), rgb[1].toInt(), rgb[2].toInt(), tol);
+            }
+        }
+        if (badPixels) {
+            std::printf("FAIL golden %s: %d/%d pixels in region [%d,%d,%d,%d]\n",
+                        qPrintable(name), badPixels, (x1-x0)*(y1-y0), x0, y0, x1, y1);
+            ++failedRegions;
         }
     }
-    if (failures) {
+    if (failedRegions) {
         const QString path = tmp + "/golden-" + name + "-actual.png";
         if (image.save(path)) std::printf("Golden render diagnostic: %s\n", qPrintable(path));
-    } else std::printf("ok golden %s (%d samples)\n", qPrintable(name), int(checks.size()));
-    return failures;
+    } else std::printf("ok golden %s (%d validated pixels)\n", qPrintable(name), checkedPixels);
+    return failedRegions;
 }
 }
 
