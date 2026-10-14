@@ -127,6 +127,14 @@ int main(int argc, char *argv[])
     macKeepLiveOutputActive();
 #endif
     engine.start();
+    // Start before any project-open or recovery dialog: a modal prompt must not
+    // prevent telemetry from recording the show startup and subsequent events.
+    EnduranceLogger endurance;
+    if (cli.isSet(enduranceOpt)) {
+        QString logError;
+        if (!endurance.start(engine, cli.value(enduranceOpt), &logError))
+            qWarning("Pinol endurance recorder: %s", qPrintable(logError));
+    }
 
     int rc;
     {
@@ -155,16 +163,7 @@ int main(int argc, char *argv[])
                 QCoreApplication::exit(0); // no "Save?" dialog
             });
         }
-        EnduranceLogger endurance;
-        if (cli.isSet(enduranceOpt)) {
-            QString logError;
-            if (!endurance.start(engine, cli.value(enduranceOpt), &logError)) {
-                QMessageBox::warning(&w, "Pinol endurance recorder",
-                    QStringLiteral("Could not create endurance metrics CSV: ") + logError);
-            }
-        }
         rc = app.exec();
-        endurance.stop();
         // Quitting: the windows, the render thread and the decoders stop below. A last resort if that never ends
         // (a driver or a screen that does not answer): after 10 s the process ends anyway, instead of staying hung
         // with no window left. Its project is already saved (or was declined) by then.
@@ -175,6 +174,7 @@ int main(int argc, char *argv[])
             std::_Exit(3);
         }).detach();
     }
+    endurance.stop();
     engine.shutdown();
     s_quitDone = true;
     return rc;
