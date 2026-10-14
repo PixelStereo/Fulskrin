@@ -756,18 +756,43 @@ int VideoDecoder::decodeNext(VideoFrame &f, double skipBefore)
             return 1;
         }
         if (r == AVERROR_EOF) return 0;
-        if (r != AVERROR(EAGAIN)) return -1;
+        if (r != AVERROR(EAGAIN)) {
+            markDecodeError(r, false);
+            return -1;
+        }
         if (m_draining) return 0;
 
         r = readVideoPacket();
         if (r < 0) {
-            avcodec_send_packet(m_codec, nullptr); // flush
+            // A disk/NAS error is not a clean end-of-media. Do not quietly loop it.
+            if (r != AVERROR_EOF) {
+                markDecodeError(r, true);
+                return -1;
+            }
+            const int sent = avcodec_send_packet(m_codec, nullptr); // drain delayed pictures
+            if (sent < 0 && sent != AVERROR_EOF) {
+                markDecodeError(sent, false);
+                return -1;
+            }
             m_draining = true;
             continue;
         }
-        avcodec_send_packet(m_codec, m_packet);
+        const int sent = avcodec_send_packet(m_codec, m_packet);
         av_packet_unref(m_packet);
+        if (sent < 0) { // including an unexpected EAGAIN: never silently discard a packet
+            markDecodeError(sent, false);
+            return -1;
+        }
     }
+}
+
+void VideoDecoder::markDecodeError(int code, bool demux)
+{
+    m_lastAvError.store(code, std::memory_order_relaxed);
+    if (demux) ++m_metricDemuxErrors;
+    else ++m_metricCodecErrors;
+    qWarning("Pinol decoder %s error: FFmpeg code %d; playback will pause until the next seek",
+             demux ? "I/O" : "codec", code);
 }
 
 // Starts producing a leg at a position within it.
@@ -777,6 +802,7 @@ void VideoDecoder::startLeg(const Timeline::Leg &leg, double position)
     m_backStack.clear();
     m_leg = leg;
     m_legDone = false;
+    m_legFrames = 0;
     if (leg.forward) {
         doSeek(position);
         m_discardBefore = position - 0.5 / m_fps;
@@ -791,6 +817,14 @@ void VideoDecoder::finishLeg()
     if (m_timeline.mode == Timeline::Once || m_duration <= 0) {
         std::lock_guard<std::mutex> lk(m_mutex);
         m_eof = true;
+        return;
+    }
+    // Entirely damaged files (or empty in/out segments) must not seek/decode in
+    // an unbounded, CPU-consuming Loop/PingPong with no picture ever delivered.
+    if (m_legFrames == 0) {
+        ++m_metricEmptyLoopStops;
+        std::lock_guard<std::mutex> lk(m_mutex);
+        m_eof = true; // an explicit seek clears this and permits a user retry
         return;
     }
     const Timeline::Leg next = m_timeline.nextLeg(m_leg);
