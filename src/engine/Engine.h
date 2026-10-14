@@ -572,6 +572,8 @@ public:
     // on its own thread; elsewhere (or without Metal) through OpenGL
     static bool metalOutput() { return MetalOutput::available(); }
     QString glRenderer() const { return m_glRenderer; } // the OpenGL renderer's name
+    QString glVersion() const { return m_glVersion; }
+    QString glVendor() const { return m_glVendor; }
     quint64 windowFrames(quint64 viewport); // pictures the viewport's window was given (tests)
     void setViewportWindow(quint64 viewport, QWindow *w);
     // refreshHz: its screen's (0: not known). The render keeps that pace while the window is shown, and counts its
@@ -837,7 +839,7 @@ private:
     std::vector<Preset> m_presets;
     quint64 m_nextPresetId = 1;
     std::vector<std::shared_ptr<FadeJob>> m_fades;
-    QString m_glRenderer;
+    QString m_glRenderer, m_glVersion, m_glVendor;
     // A snapshot gives a layer another source: the outgoing one keeps playing, invisible, and the two pictures
     // are mixed by an ISF transition into the layer's picture (before its mapping) until it is over
     struct SourceTransition {
