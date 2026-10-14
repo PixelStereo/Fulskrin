@@ -1101,6 +1101,7 @@ void main(){ gl_FragColor = definitely_not_defined; }
         const QString longAddress = QStringLiteral("/") + QString(96, QChar('a'));
         CHECK(!osc::match(manyStars + "z", longAddress));
         CHECK(osc::match(manyStars + "a", longAddress));
+        CHECK(!osc::match("/[", "/[") && !osc::match("/{", "/{")); // invalid grammar, even if literal equal
         // Explicit CPU/memory limits for remote OSC paths.
         CHECK(!osc::match(QStringLiteral("/") + QString(9000, 'a'), longAddress));
         CHECK(osc::safeName(" My layer/1 ") == "My_layer_1");
