@@ -281,7 +281,8 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             layer(index)->genWidth = src.value("width").toInt(m_compSize.width());
             layer(index)->genHeight = src.value("height").toInt(m_compSize.height());
         }
-        if (!setLayerIsf(index, path, &err) && warnings) *warnings << name + ": " + err;
+        // A project: the generator stays even when its shader is missing or broken (path, values, error shown)
+        if (!setLayerIsf(index, path, &err, IsfFailure::KeepWithError) && warnings) *warnings << name + ": " + err;
         IsfInstance *gen;
         {
             Lock lk(&m_mutex);
@@ -320,7 +321,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
     for (const QJsonValue &v : o.value("fx").toArray()) {
         const QJsonObject e = v.toObject();
         const QString p = resolvePath(e, projectDir);
-        const int fi = addEffect(index, p, &err);
+        const int fi = addEffect(index, p, &err, IsfFailure::KeepWithError); // kept, broken or not (see IsfFailure)
         if (fi < 0) continue;
         IsfInstance *inst;
         {

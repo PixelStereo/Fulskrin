@@ -401,7 +401,7 @@ if(PINOL_TESTS)
   # CTest: each area in a process of its own (a new engine), then every bundled shader compiled and rendered.
   # Test media first: sh test/make_media.sh
   enable_testing()
-  foreach(area gpu_targets golden video project playback undo structure compositing osc snapshots masks rendering thread publishing
+  foreach(area gpu_targets golden isf_safe video project playback undo structure compositing osc snapshots masks rendering thread publishing
           media sound layersource timecode interactions)
     add_test(NAME ${area} COMMAND pinol_tests --area ${area})
   endforeach()

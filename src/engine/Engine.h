@@ -153,7 +153,13 @@ public:
 
     bool setLayerVideo(int i, const QString &path, QString *err = nullptr);
     bool setLayerImage(int i, const QString &path, QString *err = nullptr);
-    bool setLayerIsf(int i, const QString &path, QString *err = nullptr);
+    // What a shader that does not load (missing, does not compile) does to the layer:
+    //  - Refuse (an operator replacing a source, live): nothing changes, the source shown stays; false and err;
+    //  - KeepWithError (a project opened, an undo, a snapshot): it takes its place all the same, with its path, its
+    //    values and its error (black, or the image passed through for an effect), so that nothing of the show is lost
+    //    on the next save and it works again once the shader is there
+    enum class IsfFailure { Refuse, KeepWithError };
+    bool setLayerIsf(int i, const QString &path, QString *err = nullptr, IsfFailure onFailure = IsfFailure::Refuse);
     bool setLayerAudio(int i, const QString &path, QString *err = nullptr);
     // Video, image or audio according to the file: a video file without a picture becomes an audio layer.
     bool setLayerFile(int i, const QString &path, QString *err = nullptr);
@@ -277,7 +283,8 @@ public:
     void setLayerTextContent(int i, const QString &text);
     void editLayerText(int i, const std::function<void(Layer &)> &edit); // style (bold, outline, shadow…), under the lock
 
-    int addEffect(int layerIndex, const QString &path, QString *err = nullptr);
+    // -1 when refused (see IsfFailure); with KeepWithError, a broken effect joins the chain and passes the image through
+    int addEffect(int layerIndex, const QString &path, QString *err = nullptr, IsfFailure onFailure = IsfFailure::Refuse);
     void removeEffect(int layerIndex, int fx);
     void moveEffect(int layerIndex, int from, int to);
     bool setIsfImageInput(IsfInstance *inst, int input, const QString &path, QString *err = nullptr);
