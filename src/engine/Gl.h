@@ -51,6 +51,13 @@ struct RenderTarget {
     int bits = 8; // 8 or 16 (the 10-bit choice); float targets are 32
     // (Re)creates if the size or format changes. Returns true if recreated (contents cleared).
     bool ensure(int w, int h, bool isFloat = false);
+    // An allocation failure can leave the previous complete FBO in place.
+    // Callers must check all dimensions and precision, not only fbo != 0.
+    bool ready(int requestedW, int requestedH, bool floating = false) const
+    {
+        return fbo && tex && w == requestedW && h == requestedH &&
+               isFloat == floating && bits == (floating ? 32 : renderBits());
+    }
     void bind() const;
     void clear(float r = 0, float g = 0, float b = 0, float a = 0) const;
     void destroy();
