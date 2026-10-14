@@ -1071,7 +1071,11 @@ void main(){ gl_FragColor = definitely_not_defined; }
               timing.contains("cue_to_frame") && timing.contains("outputs_dropped"));
         CHECK(timing.value("outputs").isArray() && timing.value("pace_hz").toDouble() > 0 &&
               timing.value("cue_late").toObject().contains("p99_ms"));
+        CHECK(timing.value("cue_capture").toObject().contains("p99_ms") &&
+              timing.value("cue_recall").toObject().contains("p95_ms") &&
+              timing.value("cue_execution").toObject().contains("max_ms"));
         CHECK(srv.handleMessage({"/composition/timing/reset", "N", {QVariant()}}) && e.frameTiming().frames == 0);
+        CHECK(e.sequencer().cueTiming().fired == 0 && e.sequencer().cueWorkTiming().total.count == 0);
     }
     // 4d. OSC and OSCQuery
     {
@@ -1979,6 +1983,21 @@ void main(){ gl_FragColor = definitely_not_defined; }
                 std::printf("cue clock: %llu fired, late %.2f ms (max %.2f, p99 <= %.2f)\n", (unsigned long long)t.fired,
                             t.last * 1e3, t.max * 1e3, t.percentile(0.99) * 1e3);
                 CHECK(t.fired == 1 && t.max < 0.2 && t.percentile(0.99) <= t.max + 1e-12);
+                const Sequencer::CueWorkTiming w = e.sequencer().cueWorkTiming();
+                const QJsonObject measured = e.frameTimingJson();
+                std::printf("cue work: Undo capture %.3f ms, apply %.3f ms, total %.3f ms\n",
+                            w.capture.max, w.recall.max, w.total.max);
+                CHECK(w.capture.count == 1 && w.recall.count == 1 && w.total.count == 1);
+                CHECK(w.total.max >= w.capture.max && w.total.max >= w.recall.max);
+                CHECK(w.total.percentile(0.99) <= w.total.max + 1e-9);
+                CHECK(measured.value("cue_capture").toObject().value("count").toInt() == 1 &&
+                      measured.value("cue_recall").toObject().value("count").toInt() == 1 &&
+                      measured.value("cue_execution").toObject().value("count").toInt() == 1);
+                // Reset of /composition/timing must clear *both* clock lateness and expensive cue work.
+                e.resetFrameTiming();
+                CHECK(e.sequencer().cueTiming().fired == 0 &&
+                      e.sequencer().cueWorkTiming().capture.count == 0 &&
+                      e.sequencer().cueWorkTiming().total.count == 0);
             }
             // The undo of a recall made elsewhere: not recalled a second time when pushed, its state back on undo
             {
