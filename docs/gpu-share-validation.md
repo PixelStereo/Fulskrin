@@ -1,6 +1,6 @@
 # GPU sharing: acceptance checks for Syphon and Spout
 
-This change makes one-frame-delayed GPU sharing the default. Viewports allocate up to three render targets while the delayed path is actively sharing. The third target is **not** allocated if no Syphon/Spout receiver is being published or if immediate sharing is selected.
+This change makes one-frame-delayed GPU sharing the default. Viewports allocate up to three render targets while the delayed path is actively sharing. On a fresh viewport the third target is allocated on demand by the delayed path. Once allocated, it may remain cached after switching back to immediate sharing; the viewport teardown releases all three targets.
 
 ## What the unit test proves
 
