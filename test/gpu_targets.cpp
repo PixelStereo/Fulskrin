@@ -3,6 +3,7 @@
 // after the replacement objects are created.
 #include "Engine.h"
 #include "Gl.h"
+#include <QImage>
 #include <cstdio>
 
 int runGpuTargetTests(Engine &e)
@@ -48,5 +49,31 @@ int runGpuTargetTests(Engine &e)
         } else std::printf("skip GPU target: driver has no multisample support\n");
         gl()->glBindFramebuffer(GL_FRAMEBUFFER, 0);
     });
+
+    // Source-grab is a one-off GPU readback. The target is allocated inside
+    // grabLayerSource(), so injecting its failure is deterministic (unlike
+    // failing a target somewhere in the middle of the whole scene render).
+    e.newProject();
+    e.setCompositionSize(QSize(64, 36));
+    const int layer = e.addLayer(QStringLiteral("Green test input"));
+    QString err;
+    if (e.setLayerInput(layer, QStringLiteral("input:test:0,255,0"), &err)) {
+        for (int k = 0; k < 3; ++k) e.renderFrame();
+        const QImage before = e.grabLayerSource(layer);
+        check(!before.isNull() && before.pixelColor(before.width() / 2, before.height() / 2).green() > 240,
+              "source grab succeeds with a valid intermediate target");
+
+        failNextRenderTargetAllocationForTests();
+        const QImage unavailable = e.grabLayerSource(layer);
+        check(unavailable.isNull(), "source grab fails safely (no default framebuffer readback)");
+
+        const QImage recovered = e.grabLayerSource(layer);
+        check(!recovered.isNull() && recovered.pixelColor(recovered.width() / 2, recovered.height() / 2).green() > 240,
+              "source grab recovers after one failed target allocation");
+    } else {
+        std::printf("FAIL GPU target: could not open synthetic test input: %s\n", qPrintable(err));
+        ++failures;
+    }
+    e.newProject();
     return failures;
 }
