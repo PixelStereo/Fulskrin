@@ -1128,6 +1128,12 @@ void main(){ gl_FragColor = definitely_not_defined; }
             CHECK(osc::match("/l/" + stars + "a" + stars + "a" + stars + "b", "/l/" + QString(200, 'a') + "b"));
             CHECK(t.elapsed() < 500);
         }
+        // Bounds apply to attacker-controlled wildcard input, including
+        // literal paths (which otherwise bypass the tokenized matching path).
+        CHECK(!osc::match(QStringLiteral("/") + QString(8192, 'a'), "/a"));
+        CHECK(!osc::match("/a", QStringLiteral("/") + QString(8192, 'a')));
+        CHECK(!osc::match(QStringLiteral("/") + QString(4097, '*'), "/a"));
+        CHECK(osc::match("/l/*/opacity", "/l/Video/opacity"));
         CHECK(osc::safeName(" My layer/1 ") == "My_layer_1");
         // Hostile packets (lengths read from the network): refused, never read out of bounds
         {
@@ -1148,6 +1154,14 @@ void main(){ gl_FragColor = definitely_not_defined; }
             QByteArray deep = osc::encode({"/x", "i", {1}});
             for (int k = 0; k < 10; ++k) deep = QByteArray("#bundle\0", 8) + QByteArray(8, '\0') + be32(qint32(deep.size())) + deep;
             CHECK(!osc::decode(deep, none));
+            // A small, structurally valid bundle must not schedule thousands
+            // of OSC messages (including when messages are nested).
+            QByteArray flood("#bundle\0", 8);
+            flood += QByteArray(8, '\0');
+            const QByteArray item = osc::encode({"/x", "", {}});
+            for (int k = 0; k < 1100; ++k) flood += be32(qint32(item.size())) + item;
+            std::vector<osc::Message> flooded;
+            CHECK(!osc::decode(flood, flooded) && flooded.size() <= 1024);
             // Strings without their end, an address alone, a packet too large
             CHECK(!osc::decode(QByteArray("/abc"), none));
             CHECK(!osc::decode(QByteArray("/a\0\0,s\0\0abc", 11), none));
