@@ -3251,6 +3251,21 @@ void main(){ gl_FragColor = definitely_not_defined; }
     } // masks
 
     if (area("rendering")) {
+    // A delayed GPU share reads the old front at the end of this tick.
+    // The renderer must not write into that buffer on the next tick.
+    {
+        int oldFront = 0, back = 1;
+        for (int k = 0; k < 12; ++k) {
+            const int next = Layer::nextViewportBack(oldFront, back, true);
+            CHECK(next >= 0 && next < 3 && next != oldFront && next != back);
+            oldFront = back;
+            back = next;
+        }
+        CHECK(Layer::nextViewportBack(0, 1, false) == 0);
+        CHECK(Layer::nextViewportBack(1, 2, false) == 1);
+        // Toggling modes after a triple-buffer tick must never select the front.
+        CHECK(Layer::nextViewportBack(2, 0, false) == 2);
+    }
     // Test card: a viewport shows it instead of its picture: the corners 1 red, 2 green, 3 blue, 4 yellow clockwise from
     // the top left, a dark plate in the middle, and motion
     {
