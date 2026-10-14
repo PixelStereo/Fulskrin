@@ -253,6 +253,7 @@ struct Layer {
 
     // Video / image / live input: source texture (fed in the render thread)
     Texture2D sourceTex;
+    QString imageColorInfo; // tagged source profile and original depth, before 8-bit upload
     std::unique_ptr<LiveInput> input; // a live input (its URI in sourcePath): frames come in on its own thread
     QImage pendingImage; // image to upload to the GPU on the next frame
     int srcWidth = 0, srcHeight = 0;
