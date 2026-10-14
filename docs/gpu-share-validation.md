@@ -12,7 +12,7 @@ It does **not** prove that a vendor publisher has completed its internal copy. `
 
 1. On macOS, connect an actual Syphon receiver; on Windows, connect an actual Spout receiver. Test on the drivers and GPU used for live work, not only llvmpipe.
 2. Run 1080p and 4K at 30/60 fps, with two viewports and substantial GPU load.
-3. Render a test pattern with a per-frame 24-bit ID, redundantly encoded in multiple distant patches, plus a border alternating colors on every frame. Capture decoded pixels **at the receiver**. For each captured frame, require identical IDs and border phase everywhere; enforce increasing IDs, allowing skipped IDs but not repetitions or backwards IDs (except when the receiver itself explicitly duplicates a frame).
+3. Use the bundled `ShareFrameId.fs` ISF diagnostic generator, with no additional color effects or viewport transformations. Its interior encodes `FRAMEINDEX` as RGB bytes (red is least significant), and the border alternates black/white by frame. Capture decoded pixels **at the receiver**. Require identical IDs in distant interior regions, border phase consistent with ID parity, and monotonically increasing IDs (allow drops but investigate duplicates/repeats and backwards IDs).
 4. Toggle immediate/delayed sharing, disconnect and reconnect receivers, resize viewports, and stress VRAM pressure. Compare render p95/p99, shares_skipped and visible artifacts.
 5. Check Syphon/Spout SDK versions. If a publisher does not guarantee source ownership or completed submission after publish returns, add a publisher-owned staging copy with a verifiable completion strategy before releasing this PR.
 6. Run a sustained live project on the actual show machine. Keep the PR draft if any receiver shows mixed, torn or stale frames.
