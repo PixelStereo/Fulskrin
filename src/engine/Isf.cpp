@@ -714,6 +714,60 @@ bool IsfInstance::load(const QString &path)
     return true;
 }
 
+bool IsfInstance::reloadSafely()
+{
+    // A new shader must never destroy the live picture before it is valid.
+    // Build all OpenGL programs, image imports and sampler locations in a
+    // separate instance, then exchange resource ownership in one GL task.
+    IsfInstance prepared;
+    if (!prepared.load(m_path)) {
+        m_error = prepared.error();
+        prepared.releaseGl(); // a failed compile may have allocated import textures
+        return false;
+    }
+
+    // Preserve user controls and current playback time. The shader may add
+    // or remove inputs; restore matches by their parameter path/name.
+    const QJsonObject state = save(QString());
+    prepared.restore(state, QString());
+    prepared.m_time = m_time;
+    prepared.m_frameIndex = m_frameIndex;
+    for (IsfInput &in : prepared.m_inputs) {
+        if (IsfInput *old = input(in.name)) {
+            // Engine-provided texture inputs are not serialized.
+            in.extTex = old->extTex;
+            in.extW = old->extW;
+            in.extH = old->extH;
+        }
+    }
+
+    // Keep *this and all existing IsfInstance* references stable. The
+    // temporary now owns the retired GL objects and disposes them here,
+    // while the engine's context is current. No stale program is drawn.
+    using std::swap;
+    swap(m_path, prepared.m_path);
+    swap(m_name, prepared.m_name);
+    swap(m_description, prepared.m_description);
+    swap(m_credit, prepared.m_credit);
+    swap(m_error, prepared.m_error);
+    swap(m_isFilter, prepared.m_isFilter);
+    swap(m_inputs, prepared.m_inputs);
+    swap(m_passes, prepared.m_passes);
+    swap(m_targets, prepared.m_targets);
+    swap(m_imported, prepared.m_imported);
+    swap(m_program, prepared.m_program);
+    swap(m_locPassIndex, prepared.m_locPassIndex);
+    swap(m_locRenderSize, prepared.m_locRenderSize);
+    swap(m_locTime, prepared.m_locTime);
+    swap(m_locTimeDelta, prepared.m_locTimeDelta);
+    swap(m_locDate, prepared.m_locDate);
+    swap(m_locFrameIndex, prepared.m_locFrameIndex);
+    swap(m_time, prepared.m_time);
+    swap(m_frameIndex, prepared.m_frameIndex);
+    prepared.releaseGl();
+    return true;
+}
+
 bool IsfInstance::setImageInput(int index, const QString &path, QString *err)
 {
     if (index < 0 || index >= int(m_inputs.size())) return false;
