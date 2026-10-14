@@ -12,4 +12,4 @@ This produces `session.csv` (metadata header with build SHA, OpenGL vendor/rende
 4. Check exact driver using the OpenGL version string; set `PINOL_GPU_DRIVER` if additional vendor driver information is known.
 5. **This does not validate receiver-side tearing**; test real receivers separately as described in `docs/gpu-share-validation.md` on the corresponding PR.
 
-Some GPU drivers do not expose free VRAM. If a project was not saved at startup, the header fingerprint reports `unsaved`; project changes are logged separately. Decoder error counts require a separate instrumentation change.
+Some GPU drivers do not expose free VRAM. If a project was not saved at startup, the header fingerprint reports `unsaved`; project changes are logged separately. Decoder error counters become nonzero once the independent FFmpeg hardening PR (#170) adds `ffmpeg_errors_total` and `empty_video_loops_stopped_total` to `resourcesJson()`; until then these two columns remain zero. Merge #170 before using telemetry for a final endurance acceptance test.
