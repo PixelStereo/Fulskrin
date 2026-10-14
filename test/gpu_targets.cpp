@@ -24,11 +24,18 @@ int runGpuTargetTests(Engine &e)
         failNextRenderTargetAllocationForTests();
         check(!t.ensure(64, 64) && t.fbo == previousFbo && t.tex == previousTex && t.w == 32 && t.h == 32,
               "failed replacement preserves the existing image and dimensions");
+        check(t.ready(32, 32) && !t.ready(64, 64),
+              "the previous framebuffer remains valid only for its original dimensions");
         t.bind();
         check(gl()->glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,
               "retained framebuffer remains complete");
         check(t.ensure(64, 64) && t.fbo && t.tex && t.w == 64 && t.h == 64,
               "retry allocates a new complete framebuffer");
+        check(t.ready(64, 64), "new framebuffer has the requested dimensions and color depth");
+        setRenderBits(16);
+        check(!t.ready(64, 64), "an 8-bit FBO is not a valid 16-bit replacement");
+        check(t.ensure(64, 64) && t.ready(64, 64), "framebuffer upgrades precision on next successful allocation");
+        setRenderBits(8);
         t.destroy();
 
         GLint maximum = 0;
@@ -72,6 +79,33 @@ int runGpuTargetTests(Engine &e)
               "source grab recovers after one failed target allocation");
     } else {
         std::printf("FAIL GPU target: could not open synthetic test input: %s\n", qPrintable(err));
+        ++failures;
+    }
+    // A preprocessing target is required for ROI/color transformations.
+    // If allocating it fails, showing the unprocessed source would bypass
+    // show-critical crop/color settings. This scene must fail closed.
+    e.newProject();
+    e.setCompositionSize(QSize(64, 36));
+    e.fadeCompositionOpacity(1.0, 0.0);
+    e.setBlackout(false, 0.0);
+    const int adjusted = e.addLayer(QStringLiteral("ROI allocation fault"));
+    if (e.setLayerInput(adjusted, QStringLiteral("input:test:0,255,0"), &err)) {
+        for (int k = 0; k < 3; ++k) e.renderFrame();
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(adjusted)->roi = QRectF(0, 0, 0.5, 1);
+        }
+        failNextRenderTargetAllocationForTests();
+        e.renderFrame();
+        const QImage rejected = e.grabOutput();
+        check(!rejected.isNull() && rejected.pixelColor(rejected.width() / 2, rejected.height() / 2).green() < 5,
+              "failed ROI/prep allocation never displays the unprocessed media");
+        e.renderFrame();
+        const QImage restored = e.grabOutput();
+        check(!restored.isNull() && restored.pixelColor(restored.width() / 2, restored.height() / 2).green() > 240,
+              "ROI/prep allocation recovers on the next frame");
+    } else {
+        std::printf("FAIL GPU target: could not set up ROI synthetic input: %s\\n", qPrintable(err));
         ++failures;
     }
     e.newProject();
