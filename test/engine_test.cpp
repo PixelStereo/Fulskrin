@@ -44,6 +44,7 @@
 
 static int failures = 0;
 int runVideoTests(Engine &e, const QString &root, const QString &tmp); // video_test.cpp
+int runCueCaptureTests(Engine &e); // cue_capture.cpp
 int runGpuTargetTests(Engine &e); // gpu_targets.cpp
 int runGoldenRenderTests(Engine &e, const QString &root, const QString &tmp); // golden_render.cpp
 #define CHECK(cond)                                                                 \
@@ -151,6 +152,9 @@ int main(int argc, char **argv)
         return ok == total ? 0 : 1;
     }
 
+    if (area("cue_capture")) {
+        failures += runCueCaptureTests(e);
+    } // cue_capture
     if (area("gpu_targets")) {
         failures += runGpuTargetTests(e);
     } // gpu_targets
