@@ -1062,6 +1062,13 @@ QJsonObject Engine::frameTimingJson() const
     o["cue_late"] = QJsonObject{{"count", double(ct.fired)}, {"last_ms", r2(ct.last * 1e3)}, {"max_ms", r2(ct.max * 1e3)},
                                 {"mean_ms", r2(ct.fired ? ct.total / double(ct.fired) * 1e3 : 0)},
                                 {"p99_ms", r2(ct.percentile(0.99) * 1e3)}};
+    // Cue clock execution time (not timer scheduling lateness). These values
+    // let operators distinguish a slow Undo capture from a slow source/fade
+    // application, even when the clock itself fires exactly on time.
+    const Sequencer::CueWorkTiming work = m_sequencer->cueWorkTiming();
+    o["cue_capture"] = work.capture.json();
+    o["cue_recall"] = work.recall.json();
+    o["cue_execution"] = work.total.json();
     // Each output window: its screen's rate, the pictures shown, and those not shown by cause
     QJsonArray outs;
     double paceHz = rate > 0 ? rate : 0;
@@ -1092,6 +1099,7 @@ QJsonObject Engine::frameTimingJson() const
 void Engine::resetFrameTiming()
 {
     m_frameTiming.reset();
+    m_sequencer->resetCueTiming(); // the OSC timing reset must reset every reported cue histogram too
     m_outputsDropped = 0;
     m_sharesSkipped = 0;
 }
