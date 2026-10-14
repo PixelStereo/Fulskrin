@@ -5376,6 +5376,70 @@ int main(int argc, char **argv)
             e.layer(B())->roi = Layer::fullRoi();
         }
 
+        // The other parts, one at a time: shape masks, routing in the viewports, animations, transport; nothing else
+        {
+            const quint64 vp = e.mainViewportId();
+            e.setLayerMasks(idA, {Mask::ellipse(QRectF(0.2, 0.2, 0.5, 0.5))});
+            {
+                Engine::Lock lk(&e.mutex());
+                e.layer(A())->viewportOpacity[vp] = 0.4f;
+            }
+            Engine::Animation pulse = e.makeLayerAnim(idA, "opacity", int(Engine::AnimWave::Sine));
+            e.setLayerAnims(idA, {pulse});
+            const QJsonObject more = e.layerJson(A());
+            unsigned rev = 0;
+            {
+                Engine::Lock lk(&e.mutex());
+                rev = e.layer(B())->masksRevision;
+            }
+            CHECK(e.applyLayerParts(B(), more, Engine::PartMasks));
+            {
+                Engine::Lock lk(&e.mutex());
+                const Layer *l = e.layer(B());
+                CHECK(l->masks.size() == 1 && l->masks[0].shape == Mask::Shape::Ellipse && l->masksRevision != rev);
+                CHECK(l->viewportOpacity.empty() && l->anims.empty()); // not the other parts
+            }
+            CHECK(e.applyLayerParts(B(), more, Engine::PartViewports));
+            {
+                Engine::Lock lk(&e.mutex());
+                CHECK(std::abs(e.layer(B())->opacityIn(vp) - 0.4f) < 1e-6 && e.layer(B())->anims.empty());
+            }
+            CHECK(e.applyLayerParts(B(), more, Engine::PartAnimations));
+            {
+                Engine::Lock lk(&e.mutex());
+                CHECK(e.layer(B())->anims.size() == 1 && e.layer(B())->anims[0].tracks.front().param == "opacity" &&
+                      e.layer(B())->anims[0].tracks.front().layer == idB);
+            }
+            CHECK(Engine::partOf("in") == Engine::PartTransport && Engine::partOf("volume") == Engine::PartTransport &&
+                  Engine::partOf("text/content") == Engine::PartSource && (Engine::PartAll & Engine::PartMasks));
+            // Cleared again for what follows
+            e.setLayerMasks(idA, {});
+            e.setLayerMasks(idB, {});
+            e.setLayerAnims(idA, {});
+            e.setLayerAnims(idB, {});
+            Engine::Lock lk(&e.mutex());
+            e.layer(A())->viewportOpacity.clear();
+            e.layer(B())->viewportOpacity.clear();
+        }
+        // Transport alone between two videos: the in / out points and the speed, each keeping its own media
+        {
+            const int v1 = e.addLayer("T1"), v2 = e.addLayer("T2");
+            const quint64 t1 = e.layerId(v1), t2 = e.layerId(v2);
+            CHECK(e.setLayerVideo(e.indexOfId(t1), root + "/media/h264.mp4", &err) &&
+                  e.setLayerVideo(e.indexOfId(t2), root + "/media/av.mp4", &err));
+            e.setLayerInOut(e.indexOfId(t1), 0.5, 1.5);
+            e.setLayerSpeed(e.indexOfId(t1), 0.5);
+            CHECK(e.applyLayerParts(e.indexOfId(t2), e.layerJson(e.indexOfId(t1)), Engine::PartTransport));
+            {
+                Engine::Lock lk(&e.mutex());
+                const Layer *l = e.layer(e.indexOfId(t2));
+                CHECK(std::abs(l->inPoint - 0.5) < 1e-6 && std::abs(l->outPoint - 1.5) < 1e-6 && std::abs(l->speed - 0.5) < 1e-6);
+                CHECK(l->sourcePath.endsWith("av.mp4"));
+            }
+            e.removeLayer(e.indexOfId(t1));
+            e.removeLayer(e.indexOfId(t2));
+        }
+
         // B's picture is A's, after A's effect chain
         CHECK(e.setLayerSourceLayer(B(), idA, LayerTap::PostFx, &err));
         e.renderFrame();

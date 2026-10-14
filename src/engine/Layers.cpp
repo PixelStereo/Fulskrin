@@ -544,7 +544,10 @@ int Engine::partOf(const QString &path)
         return PartSpatial;
     if (under("fx/")) return PartEffects;
     if (path == "opacity" || path == "blend_mode") return PartCompositing;
-    return PartSource; // the generator's, the text's, the transport's, the sound's
+    if (path == "speed" || path == "play_mode" || path == "in" || path == "out" || path == "play" || path == "restart" ||
+        path == "volume" || path == "mute")
+        return PartTransport;
+    return PartSource; // the generator's, the text's, the timecode's
 }
 
 bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
@@ -573,10 +576,13 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
     if (parts & PartSource) {
         QJsonObject merged = layerJson(i);
         merged["source"] = o.value("source");
-        if (o.contains("play")) merged["play"] = o.value("play");
+        if ((parts & PartTransport) && o.contains("play")) merged["play"] = o.value("play");
         if (parts & PartColor) merged["mask"] = o.value("mask");
         if (parts & PartSpatial) merged["mesh"] = o.value("mesh");
         if (parts & PartEffects) merged["fx"] = o.value("fx");
+        if (parts & PartMasks) merged["masks"] = o.value("masks");
+        if (parts & PartViewports) merged["viewports"] = o.value("viewports");
+        if (parts & PartAnimations) merged["anims"] = o.value("anims");
         merged["params"] = merge(merged.value("params").toObject());
         replaceLayerJson(i, merged);
         fixLayerReferences(); // a pasted layer source must not make the picture feed back
@@ -591,6 +597,18 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
         if (!l) return false;
         if (parts & PartColor) l->color.maskLayer = o.value("mask").toString().toULongLong();
         if ((parts & PartSpatial) && o.contains("mesh") && !l->isViewport) l->mapping.setMeshJson(o.value("mesh").toObject());
+        if (parts & PartMasks) {
+            l->masks = masks::fromJson(o.value("masks").toArray());
+            ++l->masksRevision; // drawn again
+        }
+        if ((parts & PartViewports) && !l->isViewport) {
+            l->viewportOpacity.clear();
+            const QJsonObject vo = o.value("viewports").toObject();
+            for (auto v = vo.begin(); v != vo.end(); ++v)
+                if (const quint64 vid = v.key().toULongLong(); vid && indexOfId(vid) >= 0)
+                    l->viewportOpacity[vid] = float(std::clamp(v.value().toDouble(1.0), 0.0, 1.0));
+        }
+        if (parts & PartAnimations) recallLayerAnims(*l, o.value("anims").toArray());
         QJsonObject values;
         for (auto it = from.constBegin(); it != from.constEnd(); ++it)
             if (partOf(it.key()) & parts) values.insert(it.key(), it.value());

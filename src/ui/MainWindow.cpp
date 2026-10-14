@@ -5,6 +5,10 @@
 #include "MacPresentation.h"
 #endif
 #include <QElapsedTimer>
+#include <QHBoxLayout>
+#include <QDialogButtonBox>
+#include <QDialog>
+#include <QCheckBox>
 #include <memory>
 #include "Engine.h"
 #include "LayerInspector.h"
@@ -564,6 +568,14 @@ void MainWindow::buildMenus()
                      &MainWindow::addEmptyLayer);
     QAction *dup = layer->addAction(QStringLiteral("Duplicate"), this, &MainWindow::duplicateCurrentLayer);
     dup->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    // Copy a layer, then paste all of it or some of its parts onto others (as DaVinci Resolve's Paste Attributes)
+    layer->addAction(QStringLiteral("Copy Attributes"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_C), this, [this] {
+        if (currentLayer() >= 0) copyLayerParams(currentLayer());
+    });
+    layer->addAction(QStringLiteral("Paste Attributes…"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_V), this,
+                     &MainWindow::pasteAttributesDialog);
+    layer->addAction(QStringLiteral("Paste All Attributes"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_V), this,
+                     [this] { pasteLayerParams(Engine::PartAll, QStringLiteral("Attributes")); });
     layer->addAction(QStringLiteral("Delete (Del in list)"), this, &MainWindow::removeCurrentLayer);
     layer->addSeparator();
     layer->addAction(QStringLiteral("New Group (selected layers go into it)"), QKeySequence(Qt::CTRL | Qt::Key_G), this,
@@ -1194,13 +1206,74 @@ void MainWindow::duplicateCurrentLayer()
 // Copy / paste of layer parameters (right-click on a layer)
 // ---------------------------------------------------------------------------
 
+// The parts of a layer a paste can carry, as the menus and the dialog name them
+static std::vector<std::pair<int, QString>> attributeParts()
+{
+    return {{Engine::PartSource, QStringLiteral("Source (media, generator, text)")},
+            {Engine::PartTransport, QStringLiteral("Transport and Sound (speed, mode, in / out, play, volume)")},
+            {Engine::PartRoi, QStringLiteral("ROI")},
+            {Engine::PartColor, QStringLiteral("Color")},
+            {Engine::PartSpatial, QStringLiteral("Spatial (mapping, corners, mesh)")},
+            {Engine::PartMasks, QStringLiteral("Masks")},
+            {Engine::PartEffects, QStringLiteral("FX")},
+            {Engine::PartCompositing, QStringLiteral("Compositing (opacity, blend)")},
+            {Engine::PartViewports, QStringLiteral("Viewports (routing)")},
+            {Engine::PartAnimations, QStringLiteral("Animations")}};
+}
+
+void MainWindow::pasteAttributesDialog()
+{
+    if (m_paramClipboard.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Copy a layer's attributes first (right-click › Copy Attributes, Ctrl+Alt+C)."), 5000);
+        return;
+    }
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Paste Attributes from \"%1\"").arg(m_paramClipboardName));
+    auto *v = new QVBoxLayout(&dlg);
+    QSettings s;
+    const int last = s.value("ui/pasteParts", int(Engine::PartAll & ~Engine::PartSource)).toInt();
+    std::vector<std::pair<int, QCheckBox *>> boxes;
+    for (const auto &[part, label] : attributeParts()) {
+        auto *b = new QCheckBox(label);
+        b->setChecked(last & part);
+        if (part == Engine::PartSource)
+            b->setToolTip(QStringLiteral("The media is opened again in the layers pasted onto (their media changes)"));
+        v->addWidget(b);
+        boxes.push_back({part, b});
+    }
+    auto *row = new QHBoxLayout;
+    auto *all = new QPushButton(QStringLiteral("All"));
+    auto *none = new QPushButton(QStringLiteral("None"));
+    row->addWidget(all);
+    row->addWidget(none);
+    row->addStretch();
+    v->addLayout(row);
+    connect(all, &QPushButton::clicked, &dlg, [&] { for (auto &[p, b] : boxes) b->setChecked(true); });
+    connect(none, &QPushButton::clicked, &dlg, [&] { for (auto &[p, b] : boxes) b->setChecked(false); });
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Paste"));
+    v->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted) return;
+    int parts = 0;
+    QStringList names;
+    for (const auto &[p, b] : boxes)
+        if (b->isChecked()) {
+            parts |= p;
+            names << b->text().section(' ', 0, 0);
+        }
+    s.setValue("ui/pasteParts", parts);
+    if (parts) pasteLayerParams(parts, parts == Engine::PartAll ? QStringLiteral("Attributes") : names.join(QStringLiteral(", ")));
+}
+
 void MainWindow::copyLayerParams(int row)
 {
     const QJsonObject o = m_engine->layerJson(row);
     if (o.isEmpty()) return;
     m_paramClipboard = o;
     m_paramClipboardName = o.value("name").toString();
-    statusBar()->showMessage(QStringLiteral("Parameters of \"%1\" copied.").arg(m_paramClipboardName), 4000);
+    statusBar()->showMessage(QStringLiteral("Attributes of \"%1\" copied: Paste Attributes… (Ctrl+Alt+V) onto other layers.").arg(m_paramClipboardName), 5000);
 }
 
 // Pastes the chosen parts onto every selected layer (the one under the cursor if nothing is selected)
@@ -1283,24 +1356,23 @@ void MainWindow::layerContextMenu(int row, const QPoint &globalPos)
             into->setEnabled(!targets.empty());
             into->setToolTip(QStringLiteral("This layer's picture becomes the source of the one chosen"));
         }
-        menu.addAction(QStringLiteral("Copy Parameters"), this, [this, row] { copyLayerParams(row); });
+        menu.addAction(QStringLiteral("Copy Attributes"), this, [this, row] { copyLayerParams(row); });
     }
     QMenu *paste = menu.addMenu(m_paramClipboardName.isEmpty()
-                                    ? QStringLiteral("Paste Parameters")
-                                    : QStringLiteral("Paste Parameters from \"%1\"").arg(m_paramClipboardName));
+                                    ? QStringLiteral("Paste Attributes")
+                                    : QStringLiteral("Paste Attributes from \"%1\"").arg(m_paramClipboardName));
     paste->setEnabled(onLayer && !locked && !m_paramClipboard.isEmpty());
     if (paste->isEnabled()) {
         auto add = [&](const QString &label, int parts, const QString &what) {
             paste->addAction(label, this, [this, parts, what] { pasteLayerParams(parts, what); });
         };
-        add(QStringLiteral("Everything"), Engine::PartAll, QStringLiteral("Parameters"));
+        add(QStringLiteral("Everything"), Engine::PartAll, QStringLiteral("Attributes"));
+        paste->addAction(QStringLiteral("Choose…"), this, &MainWindow::pasteAttributesDialog);
         paste->addSeparator();
-        if (!group) add(QStringLiteral("Source"), Engine::PartSource, QStringLiteral("Source"));
-        add(QStringLiteral("ROI"), Engine::PartRoi, QStringLiteral("ROI"));
-        add(QStringLiteral("Color"), Engine::PartColor, QStringLiteral("Color"));
-        add(QStringLiteral("Spatial"), Engine::PartSpatial, QStringLiteral("Spatial"));
-        add(QStringLiteral("FX"), Engine::PartEffects, QStringLiteral("FX"));
-        add(QStringLiteral("Compositing"), Engine::PartCompositing, QStringLiteral("Compositing"));
+        for (const auto &[part, label] : attributeParts()) {
+            if (group && part == Engine::PartSource) continue;
+            add(label, part, label);
+        }
     }
     menu.addSeparator();
     menu.addAction(QStringLiteral("New Layer"), this, &MainWindow::addEmptyLayer);
