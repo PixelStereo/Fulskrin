@@ -67,6 +67,7 @@ qint64 FrameTiming::nowNs()
 void FrameTiming::noteInput(Input kind, qint64 ns)
 {
     if (kind < 0 || kind >= InputCount) return;
+    m_inputCount[size_t(kind)].fetch_add(1, std::memory_order_relaxed);
     if (ns < 0) ns = nowNs();
     std::atomic<qint64> &slot = m_pending[size_t(kind)];
     qint64 cur = slot.load(std::memory_order_relaxed);
@@ -121,11 +122,23 @@ FrameTiming::Stats FrameTiming::stats() const
     return m_stats;
 }
 
+void FrameTiming::noteEvent(const QString &kind, const QString &detail)
+{
+    const qint64 at = nowNs();
+    std::lock_guard<std::mutex> lk(m_mutex);
+    if (m_window.journal.size() < kJournalPerWindow) m_window.journal.push_back({at, kind, detail});
+    else ++m_window.journalLost;
+}
+
 FrameTiming::Window FrameTiming::takeWindow()
 {
-    std::lock_guard<std::mutex> lk(m_mutex);
-    Window taken = m_window;
-    m_window = Window{};
+    Window taken;
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        taken = std::move(m_window);
+        m_window = Window{};
+    }
+    for (int k = 0; k < InputCount; ++k) taken.inputs[size_t(k)] = m_inputCount[size_t(k)].exchange(0, std::memory_order_relaxed);
     return taken;
 }
 
@@ -134,6 +147,7 @@ void FrameTiming::reset()
     std::lock_guard<std::mutex> lk(m_mutex);
     m_stats = Stats();
     m_window = Window{};
+    for (auto &c : m_inputCount) c.store(0, std::memory_order_relaxed);
     m_lastStart = -1;
     for (auto &p : m_pending) p.store(-1, std::memory_order_relaxed);
 }

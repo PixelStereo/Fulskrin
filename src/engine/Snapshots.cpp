@@ -625,6 +625,7 @@ void Engine::stepCompositionFade(double dt)
 void Engine::recallSnapshot(int i)
 {
     const Snapshot m = snapshot(i);
+    journal(QStringLiteral("snapshot_recall"), m.name);
     if (m.layers.isEmpty() && m.composition.isEmpty() && m.interactions.isEmpty() && interactions().empty()) return;
     if (!m.layers.isEmpty()) applyLayers(m.layers, m.fade, true);
     applyComposition(m.composition, m.fade);

@@ -20,6 +20,9 @@
 #include <mutex>
 #include <thread>
 
+#if __has_include("pinol_build_sha.h")
+#include "pinol_build_sha.h" // generated at every build (cmake/BuildSha.cmake)
+#endif
 #ifndef PINOL_BUILD_SHA
 #define PINOL_BUILD_SHA "unknown"
 #endif
@@ -101,7 +104,7 @@ private:
         csv.write("# PINOL endurance metrics v1\n# ");
         csv.write(QJsonDocument(meta).toJson(QJsonDocument::Compact));
         csv.write("\n");
-        csv.write("utc,frames,missed,interval_p99_ms,interval_max_ms,compute_p95_ms,compute_p99_ms,compute_max_ms,present_p99_ms,present_max_ms,osc_to_frame_p99_ms,cue_to_frame_p99_ms,outputs_dropped_total,shares_skipped_total,decoded_frames_mb,upload_buffers_mb,graphics_memory_free_mb,software_decode_threads,ffmpeg_errors_total,empty_video_loops_stopped_total,resource_warnings,late_events_lost\n");
+        csv.write("utc,frames,missed,interval_p99_ms,interval_max_ms,compute_p95_ms,compute_p99_ms,compute_max_ms,present_p99_ms,present_max_ms,osc_to_frame_p99_ms,cue_to_frame_p99_ms,osc_inputs,cue_inputs,outputs_dropped_total,shares_skipped_total,process_resident_mb,decoded_frames_mb,upload_buffers_mb,graphics_memory_free_mb,graphics_memory_total_mb,software_decode_threads,ffmpeg_errors_total,empty_video_loops_stopped_total,resource_warnings,late_events_lost,journal_lost\n");
         jsonLine(events, QJsonObject{{"kind", "session"}, {"meta", meta}});
         csv.flush();
         events.flush();
@@ -127,12 +130,15 @@ private:
                 hist("compute", "p95_ms"), hist("compute", "p99_ms"), hist("compute", "max_ms"),
                 hist("present", "p99_ms"), hist("present", "max_ms"),
                 hist("osc_to_frame", "p99_ms"), hist("cue_to_frame", "p99_ms"),
+                QString::number(window.inputs[FrameTiming::Osc]), QString::number(window.inputs[FrameTiming::Cue]),
                 val(total, "outputs_dropped"), val(total, "shares_skipped"),
+                val(budget, "process_resident_mb"),
                 val(budget, "decoded_frames_mb"), val(budget, "upload_buffers_mb"),
-                val(budget, "graphics_memory_free_mb"), val(budget, "software_decode_threads"),
+                val(budget, "graphics_memory_free_mb"), val(budget, "graphics_memory_total_mb"),
+                val(budget, "software_decode_threads"),
                 val(budget, "ffmpeg_errors_total"), val(budget, "empty_video_loops_stopped_total"),
                 csvValue(QString::fromUtf8(QJsonDocument(budget.value("warnings").toArray()).toJson(QJsonDocument::Compact))),
-                QString::number(window.eventsLost)};
+                QString::number(window.eventsLost), QString::number(window.journalLost)};
             csv.write(row.join(',').toUtf8());
             csv.write("\n");
 
@@ -142,6 +148,12 @@ private:
                 jsonLine(events, QJsonObject{{"kind", "frame_over_2x_budget"},
                     {"utc", wall.addMSecs(-deltaMs).toString(Qt::ISODateWithMs)},
                     {"at_monotonic_ns", ev.atNs}, {"interval_ms", ev.intervalMs}, {"budget_ms", ev.budgetMs}});
+            }
+            // What the show did in that second (snapshots recalled, timelines driven, layers sought), in order
+            for (const auto &ev : window.journal) {
+                const qint64 deltaMs = (nowNs - ev.atNs) / 1000000;
+                jsonLine(events, QJsonObject{{"kind", ev.kind}, {"detail", ev.detail},
+                    {"utc", wall.addMSecs(-deltaMs).toString(Qt::ISODateWithMs)}, {"at_monotonic_ns", ev.atNs}});
             }
             const QString next = m_engine->projectPath();
             if (next != project) {

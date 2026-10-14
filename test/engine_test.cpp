@@ -1052,6 +1052,18 @@ void main(){ gl_FragColor = definitely_not_defined; }
         const FrameTiming::Window secondWindow = t.takeWindow();
         CHECK(secondWindow.stats.frames == 1 && secondWindow.stats.interval.count == 1);
         CHECK(std::abs(secondWindow.stats.interval.max - 20.0) < 1e-9 && secondWindow.eventCount == 0);
+        // The journal (what the show did) and the inputs are per window too, bounded, and handed over once
+        t.noteInput(FrameTiming::Osc);
+        t.noteInput(FrameTiming::Osc);
+        t.noteInput(FrameTiming::Cue);
+        t.noteEvent(QStringLiteral("snapshot_recall"), QStringLiteral("Scene 2"));
+        for (size_t k = 0; k < FrameTiming::kJournalPerWindow + 3; ++k) t.noteEvent(QStringLiteral("seek"), QString());
+        const FrameTiming::Window journalWindow = t.takeWindow();
+        CHECK(journalWindow.inputs[FrameTiming::Osc] == 2 && journalWindow.inputs[FrameTiming::Cue] == 1);
+        CHECK(journalWindow.journal.size() == FrameTiming::kJournalPerWindow && journalWindow.journalLost == 4);
+        CHECK(journalWindow.journal.front().kind == "snapshot_recall" && journalWindow.journal.front().detail == "Scene 2");
+        const FrameTiming::Window emptyWindow = t.takeWindow();
+        CHECK(emptyWindow.journal.empty() && emptyWindow.inputs[FrameTiming::Osc] == 0);
         CHECK(st.frames == 3 && st.presented == 2 && st.missed == 1);
         CHECK(st.interval.count == 2 && std::abs(st.interval.max - 54.0) < 1e-9);
         CHECK(st.inputToFrame[FrameTiming::Osc].count == 1 && std::abs(st.inputToFrame[FrameTiming::Osc].max - 10.0) < 1e-9);

@@ -89,6 +89,7 @@ kill -9 $APP; sleep 1
 test -s "$OUT/endurance.csv" || fail "endurance CSV not written"
 test -s "$OUT/endurance.csv.events.jsonl" || fail "endurance events log not written"
 grep -q '^# PINOL endurance metrics v1' "$OUT/endurance.csv" || fail "endurance CSV metadata missing"
+grep -q 'process_resident_mb' "$OUT/endurance.csv" || fail "endurance CSV has no process memory column"
 test "$(wc -l < "$OUT/endurance.csv")" -ge 6 || fail "endurance CSV has no periodic samples"
 ../build/Pinol >"$OUT/log2.txt" 2>&1 & APP=$!
 sleep 4; shot 12_recovery

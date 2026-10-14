@@ -2,7 +2,9 @@
 
 Run `Pinol --endurance-csv /path/to/session.csv /path/to/show.pinol` during a real show.
 
-This produces `session.csv` (metadata header with build SHA, OpenGL vendor/renderer/version, OS, project SHA-256, then one row per second) and `session.csv.events.jsonl` (timestamped frames whose interval exceeded twice the target period, plus project changes). Percentiles and maxima in CSV are **window-local**, not cumulative. Events are buffered in a fixed-size 128-entry ring per sample window: excess events are counted in the CSV. Disk I/O happens on a separate worker thread, never in rendering.
+This produces `session.csv` (metadata header with build SHA, OpenGL vendor/renderer/version, OS, project SHA-256, then one row per second) and `session.csv.events.jsonl`: timestamped frames whose interval exceeded twice the target period, and the show's own events (`snapshot_recall`, `timeline`, `seek`, `project_changed`), so that a late frame can be related to the cue that caused it.
+
+The build SHA is regenerated at every build (`cmake/BuildSha.cmake`), not frozen at configure time, and ends in `-dirty` when the build had uncommitted changes. `process_resident_mb` is the whole process's resident memory (Pinol, Qt, FFmpeg, drivers): a steady rise over hours is a leak, whatever the internal budgets say. `osc_inputs` / `cue_inputs` count the inputs of each second. Percentiles and maxima in CSV are **window-local**, not cumulative. Deadline events are buffered 128 per second and journal events 256 per second: excess events are counted in the CSV (`late_events_lost`, `journal_lost`). Disk I/O happens on a separate worker thread, never in rendering.
 
 ## Acceptance test
 

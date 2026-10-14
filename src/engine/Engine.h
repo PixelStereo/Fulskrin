@@ -593,6 +593,8 @@ public:
     QJsonObject frameTimingJson() const; // the same, with the outputs' dropped frames (OSC /composition/timing)
     void resetFrameTiming();
     void noteInput(FrameTiming::Input kind) { m_frameTiming.noteInput(kind); } // any thread
+    // Any thread: what the show did (snapshot recalled, timeline driven, layer sought), for the endurance journal
+    void journal(const QString &kind, const QString &detail) { m_frameTiming.noteEvent(kind, detail); }
     // What the show holds against its budgets (any thread): decoded frames, upload buffers, decoders' threads,
     // graphics memory free (when the driver says: NVIDIA, AMD), and which budget is exceeded now ("warnings").
     // OSC /composition/budget. Sampled by the render thread once a second; a budget newly exceeded is logged.
