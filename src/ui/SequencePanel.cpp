@@ -742,10 +742,12 @@ void SequenceWindow::pollRuns()
         item->setToolTip(active ? QStringLiteral("Cues running (including in the background). Select to control this sequence.")
                                 : QStringLiteral("Select to edit or GO this sequence. Other sequences keep playing."));
     }
+    // Always update Stop: after selecting an idle sequence both run lists may be
+    // empty, but the button may still be enabled for the former selection.
+    m_stop->setEnabled(m_engine->sequencer().running());
     std::vector<Sequencer::Run> runs = m_engine->sequencer().runs();
     if (runs.empty() && m_runs.empty()) return;
     m_runs = std::move(runs);
-    m_stop->setEnabled(m_engine->sequencer().running());
     if (isVisible()) m_steps->viewport()->update();
 }
 
