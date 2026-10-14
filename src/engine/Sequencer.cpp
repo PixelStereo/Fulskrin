@@ -300,8 +300,31 @@ bool Sequencer::goToSequence(quint64 owner, int step, bool chain)
     return true;
 }
 
-bool Sequencer::go() { return goTo(next()); }
-bool Sequencer::back() { return goTo(previous(), false); }
+bool Sequencer::go()
+{
+    quint64 owner;
+    int step;
+    {
+        QMutexLocker lk(&m_mutex);
+        if (m_current < 0) return false;
+        owner = m_sequenceIds[size_t(m_current)];
+        step = next();
+    }
+    return goToSequence(owner, step, true);
+}
+
+bool Sequencer::back()
+{
+    quint64 owner;
+    int step;
+    {
+        QMutexLocker lk(&m_mutex);
+        if (m_current < 0) return false;
+        owner = m_sequenceIds[size_t(m_current)];
+        step = previous();
+    }
+    return goToSequence(owner, step, false);
+}
 
 void Sequencer::stop()
 {
