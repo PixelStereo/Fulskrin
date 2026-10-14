@@ -58,6 +58,10 @@ GLuint compileProgram(const QString &vs, const QString &fs, QString *log)
 }
 
 static std::atomic<int> g_renderBits{8};
+static std::atomic<bool> g_failTarget{false}, g_failMsaa{false};
+void failNextRenderTargetAllocationForTests() { g_failTarget = true; }
+void failNextMsaaAllocationForTests() { g_failMsaa = true; }
+
 void setRenderBits(int bits) { g_renderBits = bits > 8 ? 16 : 8; }
 int renderBits() { return g_renderBits; }
 
@@ -68,25 +72,38 @@ bool RenderTarget::ensure(int nw, int nh, bool flt)
     nh = qMax(1, nh);
     if (fbo && nw == w && nh == h && flt == isFloat && wantBits == bits)
         return false;
-    destroy();
     auto f = gl();
-    w = nw; h = nh; isFloat = flt; bits = wantBits;
-    f->glGenTextures(1, &tex);
-    f->glBindTexture(GL_TEXTURE_2D, tex);
-    f->glTexImage2D(GL_TEXTURE_2D, 0, flt ? GL_RGBA32F : wantBits > 8 ? GL_RGBA16 : GL_RGBA8, w, h, 0, GL_RGBA,
+    GLuint nextTex = 0, nextFbo = 0;
+    f->glGenTextures(1, &nextTex);
+    f->glBindTexture(GL_TEXTURE_2D, nextTex);
+    f->glTexImage2D(GL_TEXTURE_2D, 0, flt ? GL_RGBA32F : wantBits > 8 ? GL_RGBA16 : GL_RGBA8, nw, nh, 0, GL_RGBA,
                     flt ? GL_FLOAT : wantBits > 8 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE, nullptr);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    f->glGenFramebuffers(1, &fbo);
-    f->glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    f->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-    GLenum st = f->glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (st != GL_FRAMEBUFFER_COMPLETE)
-        qWarning() << "Incomplete framebuffer" << Qt::hex << st << w << h << flt;
+    f->glGenFramebuffers(1, &nextFbo);
+    f->glBindFramebuffer(GL_FRAMEBUFFER, nextFbo);
+    f->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, nextTex, 0);
+    const GLenum st = f->glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    const bool forced = g_failTarget.exchange(false);
+    if (st != GL_FRAMEBUFFER_COMPLETE || forced) {
+        qWarning() << "RenderTarget allocation rejected; keeping previous picture:" << Qt::hex << st << nw << nh << flt;
+        f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (nextFbo) f->glDeleteFramebuffers(1, &nextFbo);
+        if (nextTex) f->glDeleteTextures(1, &nextTex);
+        return false; // the previous framebuffer, texture, size and precision are intact
+    }
+    f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    destroy(); // only after the replacement has been validated
+    fbo = nextFbo;
+    tex = nextTex;
+    w = nw;
+    h = nh;
+    isFloat = flt;
+    bits = wantBits;
     clear();
-    return true;
+    return true; // a new, complete target
 }
 
 void RenderTarget::bind() const
@@ -117,20 +134,31 @@ void MsaaBuffer::ensure(int nw, int nh, int s)
 {
     const int wantBits = g_renderBits.load();
     if (fbo && nw == w && nh == h && s == samples && wantBits == bits) return;
-    destroy();
     auto f = gl();
+    GLuint nextRbo = 0, nextFbo = 0;
+    f->glGenRenderbuffers(1, &nextRbo);
+    f->glBindRenderbuffer(GL_RENDERBUFFER, nextRbo);
+    f->glRenderbufferStorageMultisample(GL_RENDERBUFFER, s, wantBits > 8 ? GL_RGBA16 : GL_RGBA8, nw, nh);
+    f->glGenFramebuffers(1, &nextFbo);
+    f->glBindFramebuffer(GL_FRAMEBUFFER, nextFbo);
+    f->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, nextRbo);
+    const GLenum st = f->glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    const bool forced = g_failMsaa.exchange(false);
+    if (st != GL_FRAMEBUFFER_COMPLETE || forced) {
+        qWarning() << "MSAA allocation rejected; keeping previous buffer:" << Qt::hex << st << nw << nh << s;
+        f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (nextFbo) f->glDeleteFramebuffers(1, &nextFbo);
+        if (nextRbo) f->glDeleteRenderbuffers(1, &nextRbo);
+        return;
+    }
+    f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    destroy();
+    fbo = nextFbo;
+    rbo = nextRbo;
     w = nw;
     h = nh;
     samples = s;
     bits = wantBits;
-    f->glGenRenderbuffers(1, &rbo);
-    f->glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-    f->glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, bits > 8 ? GL_RGBA16 : GL_RGBA8, w, h);
-    f->glGenFramebuffers(1, &fbo);
-    f->glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    f->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rbo);
-    const GLenum st = f->glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (st != GL_FRAMEBUFFER_COMPLETE) qWarning() << "Incomplete multisampled framebuffer" << Qt::hex << st << w << h << samples;
 }
 
 void MsaaBuffer::resolveInto(const RenderTarget &target) const
