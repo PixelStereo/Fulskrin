@@ -1028,7 +1028,8 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
         if (!h.ok) return fail(QStringLiteral("not a valid ISF shader."));
         if (h.isFilter) { // an ISF effect joins the layer's (or the group's) effect chain
             const QJsonArray before = m_engine->effectsJson(i);
-            m_engine->addEffect(i, path);
+            QString err;
+            if (m_engine->addEffect(i, path, &err) < 0) return fail(err); // refused: the chain is unchanged
             m_undo->push(new cmd::SetEffects(m_engine, i, before, QStringLiteral("Add FX %1").arg(fi.completeBaseName())));
             selectLayer(i);
             refreshAll();
@@ -1051,8 +1052,10 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
     }
     const QJsonObject before = m_engine->layerJson(i);
     QString err;
-    if (kIsfExt.contains(ext)) m_engine->setLayerIsf(i, path, &err); // a broken shader still loads (error shown)
-    else if (!m_engine->setLayerFile(i, path, &err)) return fail(err);
+    // A shader that does not compile is refused: the source shown stays, the error is said
+    if (kIsfExt.contains(ext)) {
+        if (!m_engine->setLayerIsf(i, path, &err)) return fail(err);
+    } else if (!m_engine->setLayerFile(i, path, &err)) return fail(err);
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(i);

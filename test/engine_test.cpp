@@ -134,9 +134,11 @@ int main(int argc, char **argv)
             bool valid;
             if (h.isFilter) {
                 int fx = e.addEffect(v, path, &msg);
-                valid = e.layer(v)->effects[size_t(fx)]->isValid();
-                for (int i = 0; i < 2; ++i) e.renderFrame();
-                e.removeEffect(v, fx);
+                valid = fx >= 0 && e.layer(v)->effects[size_t(fx)]->isValid();
+                if (valid) {
+                    for (int i = 0; i < 2; ++i) e.renderFrame();
+                    e.removeEffect(v, fx);
+                }
             } else {
                 valid = e.setLayerIsf(g, path, &msg);
                 for (int i = 0; i < 2; ++i) e.renderFrame();
@@ -155,6 +157,129 @@ int main(int argc, char **argv)
     if (area("golden")) {
         failures += runGoldenRenderTests(e, root, tmp);
     } // golden
+    if (area("isf_safe")) {
+        // Live reloading or inserting an invalid shader must never take the
+        // existing source, its program, its parameters or its image away.
+        e.setCompositionSize(QSize(128, 64));
+        e.setViewportSize(e.indexOfId(e.mainViewportId()), QSize(128, 64));
+        e.fadeCompositionOpacity(1.0, 0.0);
+        const QString live = tmp + "/HotReload.fs";
+        QFile original(isf + "/generators/SolidColor.fs");
+        CHECK(original.open(QIODevice::ReadOnly));
+        const QByteArray valid = original.readAll();
+        const QByteArray broken = R"(/*{"INPUTS":[{"NAME":"color","TYPE":"color","DEFAULT":[1,1,1,1]}]}*/
+void main(){ gl_FragColor = definitely_not_defined; }
+)";
+        auto writeShader = [&](const QByteArray &body) {
+            QFile f(live);
+            return f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(body) == body.size();
+        };
+        CHECK(writeShader(valid));
+        int g = e.addLayer(QStringLiteral("Live shader"));
+        CHECK(e.setLayerIsf(g, live, &err));
+        IsfInstance *inst = e.layer(g)->generator.get();
+        CHECK(inst && inst->isValid());
+        IsfInput *color = inst->input(QStringLiteral("color"));
+        CHECK(color != nullptr);
+        if (color) {
+            color->cValue[0] = 0.0f;
+            color->cValue[1] = 1.0f;
+            color->cValue[2] = 0.0f;
+            color->cValue[3] = 1.0f;
+        }
+        e.renderFrame();
+        const QImage before = e.grabViewport(e.mainViewportId());
+        CHECK(!before.isNull() && before.pixelColor(64, 32).green() > 240);
+        CHECK(writeShader(broken));
+        CHECK(!e.reloadIsf(inst));
+        CHECK(inst->isValid() && e.layer(g)->generator.get() == inst);
+        CHECK(inst->error().contains("definitely_not_defined"));
+        e.renderFrame();
+        const QImage afterBadReload = e.grabViewport(e.mainViewportId());
+        CHECK(!afterBadReload.isNull() && afterBadReload.pixelColor(64, 32).green() > 240);
+        CHECK(!e.setLayerIsf(g, live, &err) && err.contains("definitely_not_defined"));
+        CHECK(e.layer(g)->generator.get() == inst && inst->isValid());
+        const int nFx = int(e.layer(g)->effects.size());
+        CHECK(e.addEffect(g, live, &err) == -1);
+        CHECK(int(e.layer(g)->effects.size()) == nFx);
+        CHECK(writeShader(valid));
+        CHECK(e.reloadIsf(inst) && inst->isValid());
+        CHECK(e.layer(g)->generator.get() == inst);
+        color = inst->input(QStringLiteral("color"));
+        CHECK(color && color->cValue[0] == 0.0f && color->cValue[1] == 1.0f);
+        e.renderFrame();
+        const QImage afterRepair = e.grabViewport(e.mainViewportId());
+        CHECK(!afterRepair.isNull() && afterRepair.pixelColor(64, 32).green() > 240);
+        // A project whose shaders are broken or missing when it is opened (another machine, a shader being
+        // edited): the generator and the effect stay, with their paths, values and errors. Saved again, nothing of
+        // them is lost; once the shaders are back, they work again with their values.
+        {
+            e.newProject();
+            const QString gen = tmp + "/KeepGen.fs", fx = tmp + "/KeepFx.fs";
+            QFile::remove(gen);
+            QFile::remove(fx);
+            CHECK(QFile::copy(isf + "/generators/SolidColor.fs", gen) && QFile::copy(isf + "/effects/FlipCrop.fs", fx));
+            QFile::setPermissions(gen, QFile::ReadOwner | QFile::WriteOwner);
+            QFile::setPermissions(fx, QFile::ReadOwner | QFile::WriteOwner);
+            const int gl = e.addLayer(QStringLiteral("Kept generator"));
+            CHECK(e.setLayerIsf(gl, gen, &err));
+            if (IsfInput *c = e.layer(gl)->generator->input(QStringLiteral("color"))) {
+                c->cValue[0] = 0.25f;
+                c->cValue[1] = 0.5f;
+                c->cValue[2] = 0.75f;
+            }
+            CHECK(e.addEffect(gl, fx, &err) == 0);
+            const QString first = tmp + "/keep_first.pinol", second = tmp + "/keep_second.pinol";
+            CHECK(e.saveProject(first, {}, &err));
+            // The generator does not compile any more; the effect's file is gone
+            {
+                QFile f(gen);
+                CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(broken) == broken.size());
+            }
+            CHECK(QFile::remove(fx));
+            err.clear();
+            CHECK(e.loadProject(first, nullptr, &err));
+            std::printf("       opened with broken shaders: %s\n", qPrintable(err.section('\n', 0, 1)));
+            int kept = -1;
+            for (int k = 0; k < e.layerCount(); ++k)
+                if (e.layer(k)->name == QStringLiteral("Kept generator")) kept = k;
+            CHECK(kept >= 0);
+            if (kept >= 0) {
+                const Layer *l = e.layer(kept);
+                CHECK(l->type == SourceType::Isf && l->generator && !l->generator->isValid() && !l->error.isEmpty());
+                CHECK(QFileInfo(l->sourcePath).fileName() == QStringLiteral("KeepGen.fs"));
+                CHECK(l->effects.size() == 1 && !l->effects[0]->isValid() &&
+                      QFileInfo(l->effects[0]->path()).fileName() == QStringLiteral("KeepFx.fs"));
+                e.renderFrame(); // a broken generator and a missing effect render (black / passed through), no crash
+                // An undo of the chain keeps the broken effect too
+                const QJsonArray chain = e.effectsJson(kept);
+                e.setEffectsJson(kept, chain);
+                CHECK(e.layer(kept)->effects.size() == 1);
+            }
+            CHECK(e.saveProject(second, {}, &err));
+            {
+                QFile f(second);
+                CHECK(f.open(QIODevice::ReadOnly));
+                const QByteArray saved = f.readAll();
+                CHECK(saved.contains("KeepGen.fs") && saved.contains("KeepFx.fs")); // nothing lost on save
+            }
+            // The shaders back: the second save opens as the first one was, values included
+            QFile::remove(gen);
+            CHECK(QFile::copy(isf + "/generators/SolidColor.fs", gen) && QFile::copy(isf + "/effects/FlipCrop.fs", fx));
+            CHECK(e.loadProject(second, nullptr, &err));
+            kept = -1;
+            for (int k = 0; k < e.layerCount(); ++k)
+                if (e.layer(k)->name == QStringLiteral("Kept generator")) kept = k;
+            CHECK(kept >= 0);
+            if (kept >= 0) {
+                const Layer *l = e.layer(kept);
+                CHECK(l->generator && l->generator->isValid() && l->effects.size() == 1 && l->effects[0]->isValid());
+                const IsfInput *c = l->generator->input(QStringLiteral("color"));
+                CHECK(c && std::abs(c->cValue[0] - 0.25f) < 1e-6 && std::abs(c->cValue[2] - 0.75f) < 1e-6);
+            }
+            e.newProject();
+        }
+    } // isf_safe
 
     if (area("video")) {
     // 0. Video pipeline: pixel formats, HAP, upload buffers (video_test.cpp). Leaves a new project.
@@ -250,12 +375,13 @@ int main(int argc, char **argv)
     bad.open(QIODevice::WriteOnly);
     bad.write("/*{ \"INPUTS\": [ {\"NAME\":\"inputImage\",\"TYPE\":\"image\"}, ] }*/\nvoid main(){ gl_FragColor = undefinedThing; }\n");
     bad.close();
+    const int beforeFx = int(e.layer(v)->effects.size());
     int fx2 = e.addEffect(v, tmp + "/Broken.fs", &err);
-    CHECK(!e.layer(v)->effects[size_t(fx2)]->isValid());
-    CHECK(e.layer(v)->effects[size_t(fx2)]->error().contains("undefinedThing"));
+    CHECK(fx2 == -1 && int(e.layer(v)->effects.size()) == beforeFx);
+    CHECK(err.contains("undefinedThing"));
     int fx3 = e.addEffect(v, root + "/../isf/effects/Blur.fs", &err);
-    CHECK(e.layer(v)->effects[size_t(fx3)]->isValid());
-    for (int i = 0; i < 5; ++i) e.renderFrame(); // the broken shader passes the image through
+    CHECK(fx3 >= 0 && e.layer(v)->effects[size_t(fx3)]->isValid());
+    for (int i = 0; i < 5; ++i) e.renderFrame(); // still shows the working video and effects
     QImage out = e.grabOutput();
     CHECK(!out.isNull());
     } // playback
