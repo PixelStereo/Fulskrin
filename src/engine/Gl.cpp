@@ -115,6 +115,7 @@ void RenderTarget::bind() const
 
 void RenderTarget::clear(float r, float g, float b, float a) const
 {
+    if (!fbo) return; // do not clear the default/window framebuffer on allocation failure
     auto f = gl();
     bind();
     f->glClearColor(r, g, b, a);
@@ -163,6 +164,7 @@ void MsaaBuffer::ensure(int nw, int nh, int s)
 
 void MsaaBuffer::resolveInto(const RenderTarget &target) const
 {
+    if (!fbo || !target.fbo) return;
     auto f = gl();
     f->glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
     f->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target.fbo);
