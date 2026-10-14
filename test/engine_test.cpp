@@ -45,6 +45,7 @@
 static int failures = 0;
 int runVideoTests(Engine &e, const QString &root, const QString &tmp); // video_test.cpp
 int runGpuTargetTests(Engine &e); // gpu_targets.cpp
+int runGoldenRenderTests(Engine &e, const QString &root, const QString &tmp); // golden_render.cpp
 #define CHECK(cond)                                                                 \
     do {                                                                            \
         if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++failures; } \
@@ -151,6 +152,9 @@ int main(int argc, char **argv)
     if (area("gpu_targets")) {
         failures += runGpuTargetTests(e);
     } // gpu_targets
+    if (area("golden")) {
+        failures += runGoldenRenderTests(e, root, tmp);
+    } // golden
 
     if (area("video")) {
     // 0. Video pipeline: pixel formats, HAP, upload buffers (video_test.cpp). Leaves a new project.
