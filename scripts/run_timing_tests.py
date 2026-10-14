@@ -22,10 +22,12 @@ def main() -> int:
 
     print(
         f"::error::Timing tests failed on first pass (exit {first}). "
-        "Re-running once for diagnosis; the original failure remains CI-failing.",
+        "Re-running the failed ones once for diagnosis; the original failure remains CI-failing.",
         flush=True,
     )
-    second = subprocess.run(cmd, check=False).returncode
+    # Only the tests that failed run again (ctest --rerun-failed): quicker, and the log names them
+    rerun = cmd + ["--rerun-failed"] if any("ctest" in part for part in cmd) else cmd
+    second = subprocess.run(rerun, check=False).returncode
     if second == 0:
         print("::warning::Timing tests recovered on diagnostic rerun: investigate intermittent failures.", flush=True)
     else:
