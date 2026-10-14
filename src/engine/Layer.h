@@ -176,6 +176,25 @@ inline std::atomic<double> &timeScale()
     return k;
 }
 
+// A still image's declared sample depth, from the format Qt decodes it to (before its 8-bit upload): "16-bit",
+// "10-bit", "float" (EXR, HDR…) or "8-bit or less"
+inline QString imageSourceDepth(QImage::Format f)
+{
+    switch (f) {
+    case QImage::Format_RGBA64: case QImage::Format_RGBX64: case QImage::Format_RGBA64_Premultiplied:
+    case QImage::Format_Grayscale16:
+        return QStringLiteral("16-bit");
+    case QImage::Format_BGR30: case QImage::Format_A2BGR30_Premultiplied:
+    case QImage::Format_RGB30: case QImage::Format_A2RGB30_Premultiplied:
+        return QStringLiteral("10-bit");
+    case QImage::Format_RGBX16FPx4: case QImage::Format_RGBA16FPx4: case QImage::Format_RGBA16FPx4_Premultiplied:
+    case QImage::Format_RGBX32FPx4: case QImage::Format_RGBA32FPx4: case QImage::Format_RGBA32FPx4_Premultiplied:
+        return QStringLiteral("float");
+    default:
+        return QStringLiteral("8-bit or less");
+    }
+}
+
 struct Layer {
     // Identity and structure. A group is a layer without source whose picture is the composite of its members;
     // members immediately follow their group in the layer list, and a group can hold other groups.
@@ -253,6 +272,7 @@ struct Layer {
 
     // Video / image / live input: source texture (fed in the render thread)
     Texture2D sourceTex;
+    QString imageColorInfo; // tagged source profile and original depth, before 8-bit upload
     std::unique_ptr<LiveInput> input; // a live input (its URI in sourcePath): frames come in on its own thread
     QImage pendingImage; // image to upload to the GPU on the next frame
     int srcWidth = 0, srcHeight = 0;

@@ -52,6 +52,13 @@ public:
         int width = 0, height = 0;
         double duration = 0, fps = 0;
         QString codec;
+        QString pixelFormat;    // container's declared AVPixelFormat (may be unspecified)
+        int bitDepth = 0;       // actual source component bits, 0: unknown
+        QString matrix;         // YUV matrix coefficients, not the ICC profile
+        QString primaries;      // color primaries
+        QString transfer;       // EOTF / gamma tag
+        QString range;          // full / limited
+        QString colorDescription() const;
     };
     static bool probe(const QString &path, Info *info, QString *err = nullptr);
     void close();
@@ -62,6 +69,7 @@ public:
     double fps() const { return m_fps; }
     // "h264", "prores", "Hap Q"…, followed by the hardware decoder once it delivers frames
     QString codecName() const;
+    const Info &sourceInfo() const { return m_sourceInfo; } // captured before decoder starts; immutable while open
     bool isHap() const { return m_hapTag != 0; }
     bool hardwareActive() const { return m_hwActive.load(); }
     int decodeThreads() const; // FFmpeg's threads for this video (0: HAP, decoded here)
@@ -170,6 +178,7 @@ private:
     int m_softwareThreads = 0; // FFmpeg threads counted in the process-wide budget (0: hardware, HAP, closed)
     double m_duration = 0, m_fps = 25;
     QString m_codecName;
+    Info m_sourceInfo; // immutable tagged source colorimetry/precision, independent of decoder output
     uint32_t m_hapTag = 0;
     std::vector<uint8_t> m_hapScratch; // HAP textures decoded on the CPU: their blocks, decompressed
 

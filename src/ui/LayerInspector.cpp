@@ -84,6 +84,8 @@ struct LayerValues {
     double fps = 0, duration = 0, speed = 1;
     double inPoint = 0, outPoint = -1;
     QString codec;
+    VideoDecoder::Info sourceVideoInfo;
+    QString imageColorInfo;
     bool hasAudio = false, muted = false;
     float volume = 1;
     AudioStream::Info audio;
@@ -142,6 +144,7 @@ struct LayerValues {
             s.videoH = l->video->height();
             s.fps = l->video->fps();
             s.codec = l->video->codecName();
+            s.sourceVideoInfo = l->video->sourceInfo();
             s.duration = l->duration();
         }
         if (l->audio) {
@@ -162,6 +165,7 @@ struct LayerValues {
         s.genSpeed = l->generator ? l->generator->speed : 1.0;
         s.srcW = l->srcWidth;
         s.srcH = l->srcHeight;
+        s.imageColorInfo = l->imageColorInfo;
         s.sourceLayer = l->sourceLayer;
         s.sourceTap = l->sourceTap;
         s.transition = l->transition;
@@ -688,7 +692,8 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         kind = QStringLiteral("Video");
         name = QFileInfo(s.sourcePath).fileName();
         d << QStringLiteral("%1 × %2").arg(s.videoW).arg(s.videoH) << QStringLiteral("%1 fps").arg(s.fps, 0, 'f', 2)
-          << fmtTime(s.duration) << s.codec << (s.hasAudio ? QStringLiteral("sound: ") + audioText(s.audio) : QStringLiteral("no sound"));
+          << fmtTime(s.duration) << s.codec << s.sourceVideoInfo.colorDescription()
+          << (s.hasAudio ? QStringLiteral("sound: ") + audioText(s.audio) : QStringLiteral("no sound"));
         break;
     case SourceType::Audio:
         kind = QStringLiteral("Sound");
@@ -698,7 +703,8 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
     case SourceType::Image:
         kind = QStringLiteral("Image");
         name = QFileInfo(s.sourcePath).fileName();
-        d << QStringLiteral("%1 × %2").arg(s.srcW).arg(s.srcH);
+        d << QStringLiteral("%1 × %2").arg(s.srcW).arg(s.srcH)
+          << s.imageColorInfo;
         break;
     case SourceType::Isf:
         kind = QStringLiteral("ISF Generator");

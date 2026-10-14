@@ -12,6 +12,7 @@ extern "C" {
 }
 
 #include <QFileInfo>
+#include <QStringList>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -238,6 +239,41 @@ bool VideoDecoder::setupHardware(const AVCodec *dec)
     return false;
 }
 
+// These are *declared source tags*. Unknown values must stay unknown; a
+// 10-bit file with missing metadata must not be mislabelled Rec.709/sRGB.
+static void readSourceColor(const AVCodecParameters *par, VideoDecoder::Info *out)
+{
+    if (!par || !out) return;
+    const AVPixelFormat fmt = AVPixelFormat(par->format);
+    if (const char *name = av_get_pix_fmt_name(fmt)) out->pixelFormat = QString::fromLatin1(name);
+    if (const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(fmt)) {
+        for (int i = 0; i < desc->nb_components; ++i)
+            out->bitDepth = std::max(out->bitDepth, int(desc->comp[i].depth));
+    }
+    if (!out->bitDepth && par->bits_per_raw_sample > 0)
+        out->bitDepth = par->bits_per_raw_sample;
+    if (par->color_space != AVCOL_SPC_UNSPECIFIED)
+        if (const char *n = av_color_space_name(par->color_space)) out->matrix = QString::fromLatin1(n);
+    if (par->color_primaries != AVCOL_PRI_UNSPECIFIED)
+        if (const char *n = av_color_primaries_name(par->color_primaries)) out->primaries = QString::fromLatin1(n);
+    if (par->color_trc != AVCOL_TRC_UNSPECIFIED)
+        if (const char *n = av_color_transfer_name(par->color_trc)) out->transfer = QString::fromLatin1(n);
+    if (par->color_range == AVCOL_RANGE_MPEG) out->range = QStringLiteral("limited (TV)");
+    else if (par->color_range == AVCOL_RANGE_JPEG) out->range = QStringLiteral("full (PC)");
+}
+
+QString VideoDecoder::Info::colorDescription() const
+{
+    QStringList fields;
+    if (bitDepth > 0) fields << QStringLiteral("%1-bit source").arg(bitDepth);
+    if (!pixelFormat.isEmpty()) fields << QStringLiteral("pixel format: ") + pixelFormat;
+    fields << QStringLiteral("matrix: ") + (matrix.isEmpty() ? QStringLiteral("unspecified") : matrix);
+    fields << QStringLiteral("primaries: ") + (primaries.isEmpty() ? QStringLiteral("unspecified") : primaries);
+    fields << QStringLiteral("transfer: ") + (transfer.isEmpty() ? QStringLiteral("unspecified") : transfer);
+    fields << QStringLiteral("range: ") + (range.isEmpty() ? QStringLiteral("unspecified") : range);
+    return fields.join(QStringLiteral(" · "));
+}
+
 bool VideoDecoder::open(const QString &path, QString *err)
 {
     close();
@@ -307,9 +343,16 @@ bool VideoDecoder::open(const QString &path, QString *err)
     m_startTime = st->start_time != AV_NOPTS_VALUE ? st->start_time * m_timeBase : 0.0;
     AVRational fr = av_guess_frame_rate(m_fmt, st, nullptr);
     m_fps = (fr.num > 0 && fr.den > 0) ? av_q2d(fr) : 25.0;
+    m_sourceInfo = {};
+    m_sourceInfo.width = m_width;
+    m_sourceInfo.height = m_height;
+    m_sourceInfo.fps = m_fps;
+    m_sourceInfo.codec = m_codecName;
+    readSourceColor(par, &m_sourceInfo);
     if (m_fmt->duration > 0) m_duration = double(m_fmt->duration) / AV_TIME_BASE;
     else if (st->duration > 0) m_duration = st->duration * m_timeBase;
     else m_duration = 0;
+    m_sourceInfo.duration = m_duration;
 
     m_frame = av_frame_alloc();
     m_swFrame = av_frame_alloc();
@@ -353,6 +396,7 @@ bool VideoDecoder::probe(const QString &path, Info *info, QString *err)
         const AVCodecDescriptor *d = avcodec_descriptor_get(st->codecpar->codec_id);
         info->codec = hap::isHapTag(st->codecpar->codec_tag) ? hap::variantName(st->codecpar->codec_tag)
                       : d ? QString::fromUtf8(d->name) : QString();
+        readSourceColor(st->codecpar, info);
         AVRational fr = av_guess_frame_rate(fmt, st, nullptr);
         info->fps = (fr.num > 0 && fr.den > 0) ? av_q2d(fr) : 0.0;
         if (fmt->duration > 0) info->duration = double(fmt->duration) / AV_TIME_BASE;
@@ -406,6 +450,7 @@ void VideoDecoder::close()
     m_hapTag = 0;
     m_stream = -1;
     m_width = m_height = 0;
+    m_sourceInfo = {};
 }
 
 int VideoDecoder::decodeThreads() const { return m_codec ? m_codec->thread_count : 0; }

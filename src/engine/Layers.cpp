@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QImage>
+#include <QColorSpace>
 #include <QJsonArray>
 #include <cmath>
 
@@ -998,6 +999,12 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
         if (err) *err = QStringLiteral("Unreadable image: ") + path;
         return false;
     }
+    const QColorSpace profile = img.colorSpace();
+    const QString colorInfo = QStringLiteral("%1 source · %2").arg(
+        imageSourceDepth(img.format()),
+        profile.isValid() ? QStringLiteral("ICC: ") +
+            (profile.description().isEmpty() ? QStringLiteral("embedded profile") : profile.description())
+                          : QStringLiteral("color profile: untagged/unknown"));
     img = flippedVertically(img.convertToFormat(QImage::Format_RGBA8888));
     std::shared_ptr<Garbage> g;
     {
@@ -1006,6 +1013,7 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
         if (!l) return false;
         g = detachSource(*l);
         l->pendingImage = img; // uploaded to the GPU by the render thread
+        l->imageColorInfo = colorInfo;
         l->srcWidth = img.width();
         l->srcHeight = img.height();
         l->type = SourceType::Image;
