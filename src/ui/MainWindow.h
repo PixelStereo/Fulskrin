@@ -37,6 +37,7 @@ public:
     bool openProject(const QString &path);
     // Offers to restore the session if the application did not exit normally.
     bool offerRecovery(); // true: the autosaved session was restored
+    void openStartupProject(); // at launch: the startup project of the settings, as a template (none: stays empty)
     bool maybeSave();     // unsaved changes: save, discard, or cancel (false)
     void setAutosaveEnabled(bool on) { m_autosaveEnabled = on; }
     void setQuiet(bool on) { m_quiet = on; } // tests: warnings in the status bar, no dialog

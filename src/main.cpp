@@ -143,6 +143,8 @@ int main(int argc, char *argv[])
             };
             if (!restored) w.openProject(project);
             else if (!same(project, engine.projectPath()) && w.maybeSave()) w.openProject(project);
+        } else if (!restored && !cli.isSet(shotOpt)) {
+            w.openStartupProject(); // the one chosen in Settings ▸ Interface, else stays empty
         }
         if (cli.isSet(shotOpt)) {
             QTimer::singleShot(2500, &w, [&w, &cli, &shotOpt] {

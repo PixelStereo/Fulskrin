@@ -539,6 +539,13 @@ static QString projectPreflightError(const QJsonObject &root)
     return {};
 }
 
+bool Engine::loadProjectAsTemplate(const QString &path, QJsonObject *uiState, QString *err)
+{
+    if (!loadProject(path, uiState, err)) return false;
+    setProjectPath(QString()); // untitled: its media keep their absolute paths, made relative again where it is saved
+    return true;
+}
+
 bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err)
 {
     QFile f(path);

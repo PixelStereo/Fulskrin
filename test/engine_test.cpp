@@ -496,6 +496,28 @@ void main(){ gl_FragColor = definitely_not_defined; }
         }
         e.newProject();
     }
+    { // Startup project: loaded as a template — same content, untitled, its file never written over
+        const int gen2 = e.addLayer("Startup layer");
+        CHECK(e.setLayerIsf(gen2, isf + "/generators/TestPattern.fs", &err));
+        const int count = e.layerCount();
+        const QString startup = tmp + "/startup.pinol";
+        CHECK(e.saveProject(startup, {}, &err));
+        QFile sf(startup);
+        CHECK(sf.open(QIODevice::ReadOnly));
+        const QByteArray before = sf.readAll();
+        sf.close();
+        e.newProject();
+        CHECK(e.layerCount() != count);
+        CHECK(e.loadProjectAsTemplate(startup, nullptr, &err));
+        CHECK(e.layerCount() == count);
+        CHECK(e.projectPath().isEmpty());
+        CHECK(e.saveProject(tmp + "/from_startup.pinol", {}, &err));
+        CHECK(sf.open(QIODevice::ReadOnly) && sf.readAll() == before);
+        sf.close();
+        QString missingErr;
+        CHECK(!e.loadProjectAsTemplate(tmp + "/no_such_startup.pinol", nullptr, &missingErr) && !missingErr.isEmpty());
+        e.newProject();
+    }
     } // project
 
     if (area("playback")) {
