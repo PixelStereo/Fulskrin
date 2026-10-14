@@ -153,7 +153,7 @@ int main(int argc, char **argv)
         // Live reloading or inserting an invalid shader must never take the
         // existing source, its program, its parameters or its image away.
         e.setCompositionSize(QSize(128, 64));
-        e.setViewportSize(e.mainViewportId(), QSize(128, 64));
+        e.setViewportSize(e.indexOfId(e.mainViewportId()), QSize(128, 64));
         e.fadeCompositionOpacity(1.0, 0.0);
         const QString live = tmp + "/HotReload.fs";
         QFile original(isf + "/generators/SolidColor.fs");
