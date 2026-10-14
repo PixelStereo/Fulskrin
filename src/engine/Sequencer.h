@@ -168,6 +168,7 @@ private:
     Annotated<QRecursiveMutex> &m_mutex;
     std::vector<Sequence> m_sequences;
     int m_current = -1, m_position = -1;
+    int m_startupSequence = -1; // none by default; adjusted on insert/remove
     std::vector<Run> m_runs; // of the current sequence
     std::function<void(int)> m_recaller;                         // under m_mutex
     std::function<void(int, const RecallBefore &)> m_recorder;   // under m_mutex
