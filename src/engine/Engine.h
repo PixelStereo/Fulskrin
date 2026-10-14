@@ -885,7 +885,7 @@ private:
     FrameTiming m_frameTiming;
     std::atomic<quint64> m_outputsDropped{0}; // frames an output window could not show (Metal: surfaces in use)
     std::atomic<quint64> m_sharesSkipped{0};  // Syphon / Spout one frame later: the previous frame not finished
-    std::atomic<bool> m_shareOneFrameLate{false};
+    std::atomic<bool> m_shareOneFrameLate{true};
     std::atomic<quint64> m_mipmapsMade{0}; // glGenerateMipmap calls (tests: once per layer and frame at most)
     void sampleResources(); // render thread, context current: once a second
     qint64 m_resourcesSampledNs = 0;
