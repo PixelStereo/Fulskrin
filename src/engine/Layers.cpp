@@ -1028,6 +1028,11 @@ bool Engine::setLayerIsf(int i, const QString &path, QString *err)
     IsfInstance *raw = inst.get();
     bool ok = false;
     runGl([raw, path, &ok] { ok = raw->load(path); });
+    if (!ok) {
+        if (err) *err = raw->error();
+        runGl([raw] { raw->releaseGl(); });
+        return false; // leave the previous source and GPU picture untouched
+    }
     std::shared_ptr<Garbage> g;
     {
         Lock lk(&m_mutex);
@@ -1041,7 +1046,6 @@ bool Engine::setLayerIsf(int i, const QString &path, QString *err)
         l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
         l->error = inst->error();
         l->generator = std::move(inst);
-        if (!ok && err) *err = l->error;
     }
     releaseGarbage(g);
     return ok;
@@ -1505,8 +1509,13 @@ int Engine::addEffect(int li, const QString &path, QString *err)
     if (!layer(li)) return -1;
     auto inst = std::make_unique<IsfInstance>();
     IsfInstance *raw = inst.get();
-    runGl([raw, path] { raw->load(path); });
-    if (!raw->isValid() && err) *err = raw->error();
+    bool ok = false;
+    runGl([raw, path, &ok] { ok = raw->load(path); });
+    if (!ok) {
+        if (err) *err = raw->error();
+        runGl([raw] { raw->releaseGl(); });
+        return -1; // never insert a broken effect into a live chain
+    }
     Lock lk(&m_mutex);
     Layer *l = layer(li);
     if (!l) {
@@ -1559,10 +1568,9 @@ bool Engine::reloadIsf(IsfInstance *inst)
     if (!inst) return false;
     bool ok = false;
     runGl([&] {
-        // Keep parameter values across the reload.
-        const QJsonObject saved = inst->save(QString());
-        ok = inst->load(inst->path());
-        inst->restore(saved, QString());
+        // Transactional reload: the previous shader, its uniforms, images
+        // and last good output survive any parse/compile failure.
+        ok = inst->reloadSafely();
     });
     Lock lk(&m_mutex);
     for (auto &l : m_layers)
