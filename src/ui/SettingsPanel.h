@@ -45,6 +45,10 @@ public:
     // stay still and show the snapshot's values once the fade is over
     static bool followFades();
 
+    // The project opened at launch instead of an empty one, as a template (untitled): "" when none is chosen or
+    // "Empty project" is selected
+    static QString startupProject();
+
     void setOscStatus(const QString &s);
     // Transition used when a snapshot gives a layer another source, for the layers that do not choose one:
     // the path saved on this machine (Crossfade by default), found again by its file name in the library

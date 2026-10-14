@@ -814,7 +814,7 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
 {
     auto f = gl();
     out.ensure(outW, outH);
-    if (!out.fbo) return; // no framebuffer: don't draw to OpenGL's default/window target
+    if (!out.ready(outW, outH)) return; // a stale FBO of another size/depth is unsafe too
     if (!m_program) {
         // Broken shader: pass the image through (filter) or render black (generator).
         if (inputTex) rc.blit(inputTex, out);
@@ -884,8 +884,10 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
         if (target) {
             target->rt[0].ensure(pw, ph, target->isFloat);
             target->rt[1].ensure(pw, ph, target->isFloat);
-            if (!target->rt[0].fbo || !target->rt[1].fbo) {
-                // Cannot render this pass safely; leave the old output alone.
+            if (!target->rt[0].ready(pw, ph, target->isFloat) ||
+                !target->rt[1].ready(pw, ph, target->isFloat)) {
+                // A failed realloc may retain an old complete FBO. Never use
+                // it with the new pass dimensions/precision.
                 return;
             }
         }

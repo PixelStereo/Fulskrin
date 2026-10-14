@@ -496,6 +496,28 @@ void main(){ gl_FragColor = definitely_not_defined; }
         }
         e.newProject();
     }
+    { // Startup project: loaded as a template — same content, untitled, its file never written over
+        const int gen2 = e.addLayer("Startup layer");
+        CHECK(e.setLayerIsf(gen2, isf + "/generators/TestPattern.fs", &err));
+        const int count = e.layerCount();
+        const QString startup = tmp + "/startup.pinol";
+        CHECK(e.saveProject(startup, {}, &err));
+        QFile sf(startup);
+        CHECK(sf.open(QIODevice::ReadOnly));
+        const QByteArray before = sf.readAll();
+        sf.close();
+        e.newProject();
+        CHECK(e.layerCount() != count);
+        CHECK(e.loadProjectAsTemplate(startup, nullptr, &err));
+        CHECK(e.layerCount() == count);
+        CHECK(e.projectPath().isEmpty());
+        CHECK(e.saveProject(tmp + "/from_startup.pinol", {}, &err));
+        CHECK(sf.open(QIODevice::ReadOnly) && sf.readAll() == before);
+        sf.close();
+        QString missingErr;
+        CHECK(!e.loadProjectAsTemplate(tmp + "/no_such_startup.pinol", nullptr, &missingErr) && !missingErr.isEmpty());
+        e.newProject();
+    }
     } // project
 
     if (area("playback")) {
@@ -1746,12 +1768,20 @@ void main(){ gl_FragColor = definitely_not_defined; }
             CHECK(e.sequencer().add(copy) == 1 && e.sequencer().current() == 0);
             e.sequencer().setCurrent(1);
             CHECK(e.sequencer().position() == -1);
+            CHECK(e.sequencer().startupSequence() == -1); // opt-in per project
+            e.sequencer().setStartupSequence(1);
             CHECK(e.saveProject(tmp + "/sequences.pinol", {}, &err));
+            CHECK(readJson(tmp + "/sequences.pinol").value("startup_sequence").toInt(-1) == 1);
             CHECK(e.loadProject(tmp + "/sequences.pinol", nullptr, &err));
             CHECK(e.sequencer().count() == 2 && e.sequencer().current() == 1 && e.sequencer().sequence(0).loop &&
                   e.sequencer().sequence(0).steps.size() == 3 && e.sequencer().sequence(0).steps[0].text == "Act 1" &&
                   e.sequencer().sequence(0).steps[0].snapshot == e.snapshot(1).id);
+            CHECK(e.sequencer().startupSequence() == 1);
+            CHECK(e.sequencer().add(copy, 0) == 0 && e.sequencer().startupSequence() == 2);
+            e.sequencer().remove(0);
+            CHECK(e.sequencer().startupSequence() == 1);
             e.sequencer().remove(1);
+            CHECK(e.sequencer().startupSequence() == -1); // deleting selected sequence disables autoplay
             e.sequencer().remove(0);
             CHECK(e.sequencer().count() == 0 && e.sequencer().current() == -1 && !e.sequencer().go());
         }

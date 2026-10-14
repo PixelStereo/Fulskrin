@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QNetworkInterface>
 #include <QPushButton>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -33,6 +34,8 @@ static const char *kSamplesKey = "render/antialiasing";
 static const char *kMipmapsKey = "render/mipmaps";
 static const char *kDepthKey = "render/depth";
 static const char *kShareLateKey = "render/gpuShareOneFrameLate";
+static const char *kStartupUseKey = "startup/useProject"; // false: an empty project at launch
+static const char *kStartupPathKey = "startup/project";
 
 QList<double> renderChoice::frameRates() { return {0, 24, 25, 30, 50, 60, 120}; }
 QString renderChoice::frameRateName(double fps)
@@ -69,6 +72,11 @@ bool SettingsPanel::followFades()
     return s_followFades == 1;
 }
 int SettingsPanel::colorModels() { return QSettings().value(kColorKey, int(ColorEditor::Rgb)).toInt(); }
+QString SettingsPanel::startupProject()
+{
+    QSettings s;
+    return s.value(kStartupUseKey, false).toBool() ? s.value(kStartupPathKey).toString() : QString();
+}
 bool SettingsPanel::oscEnabled() { return QSettings().value(kOscKey, true).toBool(); }
 int SettingsPanel::oscPort() { return QSettings().value(kOscPortKey, kDefaultOscPort).toInt(); }
 int SettingsPanel::oscQueryPort() { return QSettings().value(kQueryPortKey, kDefaultQueryPort).toInt(); }
@@ -268,6 +276,69 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
         paintSwatch();
     });
     interfacePage->addWidget(look);
+
+    { // At launch: an empty project, or a project of one's own used as a template
+        auto *box = new QGroupBox(QStringLiteral("Startup"));
+        auto *sf = new QFormLayout(box);
+        auto *mode = new QComboBox;
+        mode->addItem(QStringLiteral("Empty project"), false);
+        mode->addItem(QStringLiteral("Startup project"), true);
+        auto *path = new QLabel;
+        path->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        path->setWordWrap(true);
+        auto *choose = new QPushButton(QStringLiteral("Choose…"));
+        auto *useCurrent = new QPushButton(QStringLiteral("Use Current Project"));
+        auto *buttons = new QHBoxLayout;
+        buttons->addWidget(choose);
+        buttons->addWidget(useCurrent);
+        buttons->addStretch(1);
+        const auto showPath = [path, mode, choose, useCurrent] {
+            const QString p = QSettings().value(kStartupPathKey).toString();
+            const bool on = mode->currentData().toBool();
+            path->setText(p.isEmpty() ? QStringLiteral("(none chosen)")
+                                      : QFileInfo::exists(p) ? p : p + QStringLiteral("  — not found"));
+            path->setEnabled(on);
+            choose->setEnabled(on);
+            useCurrent->setEnabled(on);
+        };
+        {
+            const QSignalBlocker b(mode);
+            mode->setCurrentIndex(QSettings().value(kStartupUseKey, false).toBool() ? 1 : 0);
+        }
+        sf->addRow(new ResetLabel(QStringLiteral("At launch"), [mode] { mode->setCurrentIndex(0); }), mode);
+        sf->addRow(QStringLiteral("Project"), path);
+        sf->addRow(QString(), buttons);
+        sf->addRow(note(QStringLiteral("Opened when Pinol starts, instead of an empty project. It is used as a "
+                                       "template: it opens untitled, \"Save\" asks where to save, and the startup "
+                                       "file itself is never written over. A project given to open (double-click, "
+                                       "command line) or a session to recover comes first.")));
+        connect(mode, &QComboBox::currentIndexChanged, this, [mode, showPath] {
+            QSettings().setValue(kStartupUseKey, mode->currentData().toBool());
+            showPath();
+        });
+        connect(choose, &QPushButton::clicked, this, [this, showPath] {
+            QSettings s;
+            const QString cur = s.value(kStartupPathKey).toString();
+            const QString f = QFileDialog::getOpenFileName(
+                this, QStringLiteral("Startup Project"),
+                cur.isEmpty() ? s.value("dirs/project").toString() : QFileInfo(cur).absolutePath(),
+                QStringLiteral("Pinol Projects (*.pinol *.json)"));
+            if (f.isEmpty()) return;
+            s.setValue(kStartupPathKey, QFileInfo(f).absoluteFilePath());
+            showPath();
+        });
+        connect(useCurrent, &QPushButton::clicked, this, [this, showPath, path] {
+            const QString p = m_engine->projectPath();
+            if (p.isEmpty()) { // untitled: nothing on disk to open at launch yet
+                path->setText(QStringLiteral("The current project is not saved yet: save it first."));
+                return;
+            }
+            QSettings().setValue(kStartupPathKey, QFileInfo(p).absoluteFilePath());
+            showPath();
+        });
+        showPath();
+        interfacePage->addWidget(box);
+    }
 
     auto *color = new QGroupBox(QStringLiteral("Color"));
     auto *cf = new QFormLayout(color);
