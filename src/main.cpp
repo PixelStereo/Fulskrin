@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "EnduranceLogger.h"
 #include "MainWindow.h"
 #include "Permissions.h"
 #include "Widgets.h"
@@ -48,11 +49,13 @@ int main(int argc, char *argv[])
     QCommandLineOption renderOpt("render", "Render the project headless and save the output as PNG.", "output.png");
     QCommandLineOption framesOpt("frames", "Number of frames to render before capture (with --render).", "n", "30");
     QCommandLineOption shotOpt("screenshot", "Capture the main window, then quit (tests).", "capture.png");
+    QCommandLineOption enduranceOpt("endurance-csv", "Write 1 Hz frame/resource metrics and deadline events to a CSV and JSONL pair.", "session.csv");
     QCommandLineOption strictOpt("strict", "With --render: a layer or effect in error fails the render (exit code 4).");
     cli.addOption(renderOpt);
     cli.addOption(strictOpt);
     cli.addOption(framesOpt);
     cli.addOption(shotOpt);
+    cli.addOption(enduranceOpt);
     cli.addPositionalArgument("project", ".pinol project to open");
     // --render exit codes: 0 rendered, 1 OpenGL unavailable, 2 output not written, 3 project not loaded,
     // 4 a layer or an effect in error (--strict)
@@ -152,7 +155,16 @@ int main(int argc, char *argv[])
                 QCoreApplication::exit(0); // no "Save?" dialog
             });
         }
+        EnduranceLogger endurance;
+        if (cli.isSet(enduranceOpt)) {
+            QString logError;
+            if (!endurance.start(engine, cli.value(enduranceOpt), &logError)) {
+                QMessageBox::warning(&w, "Pinol endurance recorder",
+                    QStringLiteral("Could not create endurance metrics CSV: ") + logError);
+            }
+        }
         rc = app.exec();
+        endurance.stop();
         // Quitting: the windows, the render thread and the decoders stop below. A last resort if that never ends
         // (a driver or a screen that does not answer): after 10 s the process ends anyway, instead of staying hung
         // with no window left. Its project is already saved (or was declined) by then.
