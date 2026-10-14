@@ -438,8 +438,7 @@ void Engine::releaseLayer(Layer &l)
     l.shapeMaskComp.destroy();
     l.shapeMaskTarget.destroy();
     l.shapeMaskSurfaceRev = l.shapeMaskCompRev = 0;
-    l.vpOut[0].destroy();
-    l.vpOut[1].destroy();
+    for (RenderTarget &out : l.vpOut) out.destroy();
     if (l.meshVbo) gl()->glDeleteBuffers(1, &l.meshVbo);
     l.meshVbo = 0;
     l.finalTex = l.rawTex = 0;
