@@ -310,7 +310,7 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
         sf->addRow(QString(), buttons);
         sf->addRow(note(QStringLiteral("Opened when Pinol starts, instead of an empty project. It is used as a "
                                        "template: it opens untitled, \"Save\" asks where to save, and the startup "
-                                       "file itself is never written over. A project given to open (double-click, "
+                                       "file itself is never written over. Its startup sequence (Composition), if it has one, plays. A project given to open (double-click, "
                                        "command line) or a session to recover comes first.")));
         connect(mode, &QComboBox::currentIndexChanged, this, [mode, showPath] {
             QSettings().setValue(kStartupUseKey, mode->currentData().toBool());

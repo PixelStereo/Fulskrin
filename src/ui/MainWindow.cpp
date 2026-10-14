@@ -1729,7 +1729,7 @@ void MainWindow::openProjectDialog()
     if (!f.isEmpty()) openProject(f);
 }
 
-bool MainWindow::openProject(const QString &path)
+bool MainWindow::openProject(const QString &path, bool autoplay)
 {
     QJsonObject ui;
     QString err;
@@ -1741,11 +1741,7 @@ bool MainWindow::openProject(const QString &path)
     afterProjectLoaded(ui);
     // Only an explicitly opened project autoplays. Never trigger this for
     // autosave recovery (which intentionally restores show outputs blacked out).
-    const int startup = m_engine->sequencer().startupSequence();
-    if (startup >= 0) {
-        m_engine->sequencer().setCurrent(startup);
-        m_engine->sequencer().goTo(0);
-    }
+    if (autoplay) playStartupSequence();
     QSettings s;
     s.setValue("dirs/project", QFileInfo(path).absolutePath());
     s.setValue("project/last", QFileInfo(path).absoluteFilePath());
@@ -1756,6 +1752,14 @@ bool MainWindow::openProject(const QString &path)
                                  + QStringLiteral("\n\nMissing files are shown in red in the Media Bin: "
                                                   "use \"Replace…\" to relink them."));
     return true;
+}
+
+void MainWindow::playStartupSequence()
+{
+    const int startup = m_engine->sequencer().startupSequence();
+    if (startup < 0) return;
+    m_engine->sequencer().setCurrent(startup);
+    m_engine->sequencer().goTo(0);
 }
 
 void MainWindow::openStartupProject()
@@ -1779,6 +1783,7 @@ void MainWindow::openStartupProject()
     }
     m_forceDirty = false;
     afterProjectLoaded(ui);
+    playStartupSequence(); // a show machine: the startup project starts as its own file would
     if (!err.isEmpty() && m_quiet) statusBar()->showMessage(err.section('\n', 0, 0), 15000);
     else if (!err.isEmpty())
         QMessageBox::warning(this, QStringLiteral("Startup Project"),
@@ -2060,7 +2065,7 @@ void MainWindow::collectFiles()
         return;
     }
     s.setValue("dirs/collect", where->text());
-    if (!openProject(plan.projectFile)) return;
+    if (!openProject(plan.projectFile, false)) return; // the same show, moved: it does not start again
     QString done = QStringLiteral("%1 files collected in %2.").arg(plan.files.size()).arg(plan.folder);
     if (move->isChecked()) {
         QStringList failed;
