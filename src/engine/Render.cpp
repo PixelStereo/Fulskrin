@@ -428,6 +428,8 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
         if (!l.prepTarget.ready(cw, ch)) {
             // Fail closed: never expose unprocessed media when ROI/color
             // preparation cannot allocate a compatible output texture.
+            // The pre-effects tap too: a layer or mask reading it must not get the previous frame.
+            l.preFxTex = 0;
             l.finalTex = 0;
             return;
         }

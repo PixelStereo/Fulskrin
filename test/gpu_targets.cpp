@@ -100,12 +100,17 @@ int runGpuTargetTests(Engine &e)
         const QImage rejected = e.grabOutput();
         check(!rejected.isNull() && rejected.pixelColor(rejected.width() / 2, rejected.height() / 2).green() < 5,
               "failed ROI/prep allocation never displays the unprocessed media");
+        {
+            Engine::Lock lk(&e.mutex());
+            check(e.layer(adjusted)->preFxTex == 0,
+                  "failed ROI/prep allocation leaves no stale pre-effects picture for layers that read it");
+        }
         e.renderFrame();
         const QImage restored = e.grabOutput();
         check(!restored.isNull() && restored.pixelColor(restored.width() / 2, restored.height() / 2).green() > 240,
               "ROI/prep allocation recovers on the next frame");
     } else {
-        std::printf("FAIL GPU target: could not set up ROI synthetic input: %s\\n", qPrintable(err));
+        std::printf("FAIL GPU target: could not set up ROI synthetic input: %s\n", qPrintable(err));
         ++failures;
     }
     e.newProject();
