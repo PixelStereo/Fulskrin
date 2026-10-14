@@ -44,6 +44,7 @@
 
 static int failures = 0;
 int runVideoTests(Engine &e, const QString &root, const QString &tmp); // video_test.cpp
+int runGpuTargetTests(Engine &e); // gpu_targets.cpp
 #define CHECK(cond)                                                                 \
     do {                                                                            \
         if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++failures; } \
@@ -146,6 +147,10 @@ int main(int argc, char **argv)
         e.shutdown();
         return ok == total ? 0 : 1;
     }
+
+    if (area("gpu_targets")) {
+        failures += runGpuTargetTests(e);
+    } // gpu_targets
 
     if (area("video")) {
     // 0. Video pipeline: pixel formats, HAP, upload buffers (video_test.cpp). Leaves a new project.
