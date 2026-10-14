@@ -82,7 +82,8 @@ private:
     void uploadPlane(int p, const VideoLayout::Plane &pl, const void *data, int rowPixels);
     void uploadFrom(const AVFrame *av, const VideoLayout &L); // planes read in place, rows repacked if need be
     bool bindSurface(const VideoFrame &fr, const VideoLayout &L); // false: refused by the GPU
-    void convert(const VideoLayout &L, const VideoConverter &conv, bool surface);
+    // False if allocation/format validation failed: keep the last complete GPU frame.
+    bool convert(const VideoLayout &L, const VideoConverter &conv, bool surface);
 
     GLuint m_planes[4] = {0, 0, 0, 0};
     GLuint m_rect[4] = {0, 0, 0, 0}; // planes of a hardware surface (rectangle textures)
