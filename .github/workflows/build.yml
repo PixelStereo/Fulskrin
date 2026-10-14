@@ -246,7 +246,7 @@ jobs:
       - name: Engine tests
         run: |
           ctest --test-dir build --output-on-failure -LE timing
-          python scripts/run_timing_tests.py ctest --test-dir build --output-on-failure -L timing
+          python3 scripts/run_timing_tests.py ctest --test-dir build --output-on-failure -L timing
       - name: Dependency versions
         run: |
           { echo "Built on macOS $(sw_vers -productVersion) $(uname -m), commit $GITHUB_SHA"; brew list --versions qt ffmpeg; } \
