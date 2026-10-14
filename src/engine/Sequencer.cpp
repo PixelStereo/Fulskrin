@@ -326,18 +326,21 @@ std::vector<Sequencer::Run> Sequencer::runs() const
 bool Sequencer::running() const
 {
     QMutexLocker lk(&m_mutex);
-    return running(m_current);
-}
-
-bool Sequencer::running(int index) const
-{
-    QMutexLocker lk(&m_mutex);
-    if (index < 0 || index >= int(m_sequenceIds.size())) return false;
-    const quint64 owner = m_sequenceIds[size_t(index)];
+    if (m_current < 0) return false;
+    const quint64 owner = m_sequenceIds[size_t(m_current)];
     for (const Run &r : m_runs)
         if (r.sequenceId == owner &&
             (!r.fired || (r.next != StepContinue::Wait && !r.continued))) return true;
     return false;
+}
+
+bool Sequencer::active(int index) const
+{
+    QMutexLocker lk(&m_mutex);
+    if (index < 0 || index >= int(m_sequenceIds.size())) return false;
+    const quint64 owner = m_sequenceIds[size_t(index)];
+    return std::any_of(m_runs.begin(), m_runs.end(),
+                       [owner](const Run &r) { return r.sequenceId == owner; });
 }
 
 void Sequencer::startTimer()
