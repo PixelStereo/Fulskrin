@@ -51,7 +51,7 @@ int compareImage(const QString &name, const QImage &image, const QJsonObject &re
     if (failures) {
         const QString path = tmp + "/golden-" + name + "-actual.png";
         if (image.save(path)) std::printf("Golden render diagnostic: %s\n", qPrintable(path));
-    } else std::printf("ok golden %s (%d samples)\n", qPrintable(name), checks.size());
+    } else std::printf("ok golden %s (%d samples)\n", qPrintable(name), int(checks.size()));
     return failures;
 }
 }
@@ -76,7 +76,7 @@ int runGoldenRenderTests(Engine &engine, const QString &root, const QString &tmp
     auto reset = [&] {
         engine.newProject();
         engine.setCompositionSize(QSize(kWidth, kHeight));
-        engine.setViewportSize(engine.mainViewportId(), QSize(kWidth, kHeight));
+        engine.setViewportSize(engine.indexOfId(engine.mainViewportId()), QSize(kWidth, kHeight));
         engine.fadeCompositionOpacity(1.0, 0.0);
     };
     auto capture = [&] {
