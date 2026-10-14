@@ -3293,7 +3293,16 @@ void main(){ gl_FragColor = definitely_not_defined; }
         // falling back to ordinary source-over for that frame only.
         Engine::failNextDifferenceCopyForTests();
         e.renderFrame();
-        CHECK(near(e.grabOutput().pixelColor(8, 8), 50, 200, 20));
+        // renderPass() prepares the viewport before composite() assembles the
+        // master output. The one-shot failure affects that FIRST Difference
+        // pass, so inspect the viewport (not the later master output).
+        const QImage viewportOnFailure = e.grabViewport(e.mainViewportId());
+        const QColor fallbackPixel = viewportOnFailure.isNull()
+                                         ? QColor() : viewportOnFailure.pixelColor(viewportOnFailure.width() / 2,
+                                                                                   viewportOnFailure.height() / 2);
+        std::printf("Difference copy unavailable -> viewport RGB %d,%d,%d\n",
+                    fallbackPixel.red(), fallbackPixel.green(), fallbackPixel.blue());
+        CHECK(!viewportOnFailure.isNull() && near(fallbackPixel, 50, 200, 20));
         CHECK(near(grab(BlendMode::Difference), 150, 80, 30)); // mode recovers next frame
         CHECK(near(grab(BlendMode::Normal), 50, 200, 20));
         {
