@@ -114,6 +114,10 @@ public:
 
     // Parses the .fs file (and optional .vs), then compiles. The GL context must be current.
     bool load(const QString &path);
+    // Compile and load into a temporary instance; the current program stays
+    // alive on failure. The IsfInstance pointer itself is never replaced.
+    // The OpenGL context must be current (same as load()).
+    bool reloadSafely();
     void releaseGl();
 
     // Renders into `out` (size outW x outH). inputTex may be 0 (generator).

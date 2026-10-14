@@ -2344,10 +2344,18 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
             items.append({e.name, e.categories.value(0), e.description, e.path});
         auto *picker = new SearchPicker(items, this);
         connect(picker, &SearchPicker::picked, this, [this](const QString &p) {
-            editEffects(QStringLiteral("Add FX %1").arg(QFileInfo(p).completeBaseName()), [this, p] {
-                QString err;
-                m_selectedEffect = m_engine->addEffect(m_layer, p, &err);
-            });
+            if (m_engine->isLocked(m_layer)) return;
+            const QJsonArray before = m_engine->effectsJson(m_layer);
+            QString err;
+            const int fx = m_engine->addEffect(m_layer, p, &err);
+            if (fx < 0) { // refused: the chain is unchanged, nothing to undo
+                QMessageBox::warning(this, QStringLiteral("Effect"),
+                                     QFileInfo(p).fileName() + QStringLiteral(": ") + err.section('\n', 0, 0));
+                return;
+            }
+            m_selectedEffect = fx;
+            m_undo->push(new cmd::SetEffects(m_engine, m_layer, before,
+                                             QStringLiteral("Add FX %1").arg(QFileInfo(p).completeBaseName())));
             QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
         });
         picker->popup(add->mapToGlobal(QPoint(0, add->height())));
