@@ -209,6 +209,26 @@ int main(int argc, char **argv)
         CHECK(!e.loadProject(write("future.pinol", R"({"app":"Pinol","format_version":99,"layers":[]})"), nullptr, &why) &&
               why.contains("format 99"));
         CHECK(e.layerCount() == before);
+
+        // Invalid *structure* must be refused before clearProject(): the live
+        // scene, viewport and current project path all remain untouched.
+        const QJsonObject working = e.layerJson(V);
+        const quint64 workingId = e.layerId(V);
+        const QString workingPath = e.projectPath();
+        const auto malformed = [&](const QString &name, const QByteArray &body) {
+            QString reason;
+            const bool loaded = e.loadProject(write(name, body), nullptr, &reason);
+            CHECK(!loaded && reason.startsWith("Invalid Pinol project at "));
+            CHECK(e.layerCount() == before && e.layerId(V) == workingId && e.layerJson(V) == working);
+            CHECK(e.projectPath() == workingPath);
+        };
+        malformed("bad-layer.pinol", R"({"app":"Pinol","format_version":1,"layers":[null]})");
+        malformed("bad-fx.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"source":{"type":"none"},"fx":[null]}]})");
+        malformed("bad-source.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"source":{"type":"unrecognized"}}]})");
+        malformed("bad-size.pinol", R"({"app":"Pinol","format_version":1,"composition":{"width":-5},"layers":[]})");
+        malformed("bad-sequence.pinol", R"({"app":"Pinol","format_version":1,"layers":[],"sequences":[false]})");
+        malformed("bad-params.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"params":[1,2]}]})");
+        malformed("bad-anims.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"anims":[null]}]})");
     }
     } // project
 
