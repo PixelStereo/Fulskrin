@@ -107,8 +107,16 @@ public:
         uint64_t decodesOverFrame = 0; // decodes longer than one frame of the file (1 / fps): a deadline missed
         double lastFrameLatenessMs = 0;
         double maxFrameLatenessMs = 0;
+        uint64_t demuxErrors = 0, codecErrors = 0, emptyLoopStops = 0, ioRetries = 0;
+        int lastAvError = 0; // last non-EOF FFmpeg error code, 0 if none
     };
     Metrics metrics() const;
+    static uint64_t ffmpegErrorsTotal(); // process-wide counters for endurance telemetry
+    static uint64_t emptyLoopStopsTotal();
+    // An FFmpeg codec error that makes the decoder unusable (EINVAL, ENOMEM); any other is one damaged packet
+    static bool isFatalCodecError(int avError);
+    static constexpr int kMaxConsecutiveCodecErrors = 64; // then the stream is taken as unplayable
+    static constexpr int kMaxIoRetries = 5;               // transient demux errors retried, with a growing pause
     void resetMetrics();
     void recordDecodeTime(uint64_t nanoseconds); // decode thread (and tests)
 
@@ -145,13 +153,19 @@ public:
 private:
     void run();
     void doSeek(double t);
-    int decodeNext(VideoFrame &f, double skipBefore = -1e9); // 1 = frame, 2 = skipped, 0 = end, -1 = error
+    int decodeNext(VideoFrame &f, double skipBefore = -1e9); // 1 = frame, 2 = skipped, 0 = end, -1 = error,
+                                                             // 3 = transient I/O error (retry after a pause)
     int readVideoPacket(); // demux next packet from the selected video stream
     int decodeHap(VideoFrame &f, double skipBefore);
     bool deliver(AVFrame *src, VideoFrame &f, bool mapped); // decoded picture -> f (upload buffer, or kept)
     void produceBackwardWindow(); // decode thread, backward leg
     void startLeg(const Timeline::Leg &leg, double position); // decode thread
     void finishLeg();                                          // decode thread: next leg, or end
+    void markDecodeError(int code, bool demux, bool fatal); // never treats I/O failure as EOF
+    bool codecFailure(int code); // counts a codec error; true: playback stops
+    int ioFailure(int code);     // counts a demux error; 3 (retry after a pause) or -1 (retries spent)
+    void clearIoError();         // the demuxer's sticky read error, cleared before a retry
+    void resumeAfterIoError();   // forward leg: demuxer error cleared, seek back to after the last frame queued
     void recycle(VideoFrame &&f);       // takes the lock
     void recycleLocked(VideoFrame &&f); // lock held
     void takePooledBytes(VideoFrame &f); // takes the lock
@@ -221,6 +235,8 @@ private:
         50000000, 100000000, 250000000, 500000000, 1000000000, 2000000000};
     std::array<std::atomic<uint64_t>, kDecodeBuckets> m_metricDecodeBuckets{};
     std::atomic<uint64_t> m_metricOverFrame{0};
+    std::atomic<uint64_t> m_metricDemuxErrors{0}, m_metricCodecErrors{0}, m_metricEmptyLoopStops{0}, m_metricIoRetries{0};
+    std::atomic<int> m_lastAvError{0};
     void recordQueueDepth(size_t depth);
     void accountFrame(VideoFrame &frame); // counted in the process-wide budget of decoded frames
 
@@ -236,4 +252,9 @@ private:
     std::vector<VideoFrame> m_backStack; // backward leg: frames still to deliver (reverse order)
     double m_backEnd = 0;               // backward leg: end (position) of the next window
     bool m_legDone = false;
+    uint64_t m_legFrames = 0; // a Loop/PingPong leg with no frames must never spin forever
+    int m_emptyLegs = 0;      // empty legs in a row
+    bool m_resendPacket = false; // send_packet said EAGAIN: m_packet kept, sent again after the output is read
+    int m_consecutiveCodecErrors = 0, m_ioRetries = 0;
+    double m_resumeSeek = 0, m_resumeDiscard = -1e9; // where a transient I/O error resumes the forward leg
 };

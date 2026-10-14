@@ -706,6 +706,7 @@ int VideoDecoder::decodeNext(VideoFrame &f, double skipBefore)
     for (;;) {
         int r = avcodec_receive_frame(m_codec, m_frame);
         if (r == 0) {
+            m_consecutiveCodecErrors = 0;
             int64_t ts = m_frame->best_effort_timestamp;
             if (ts == AV_NOPTS_VALUE) ts = m_frame->pts;
             double local = ts != AV_NOPTS_VALUE ? ts * m_timeBase - m_startTime : m_lastPts + 1.0 / m_fps;
@@ -756,18 +757,112 @@ int VideoDecoder::decodeNext(VideoFrame &f, double skipBefore)
             return 1;
         }
         if (r == AVERROR_EOF) return 0;
-        if (r != AVERROR(EAGAIN)) return -1;
-        if (m_draining) return 0;
-
-        r = readVideoPacket();
-        if (r < 0) {
-            avcodec_send_packet(m_codec, nullptr); // flush
-            m_draining = true;
+        if (r != AVERROR(EAGAIN)) {
+            // A damaged picture: counted and skipped, the stream goes on (as the ffmpeg program does without
+            // -xerror). Only an unusable decoder, or an unbroken run of failures, stops playback.
+            if (codecFailure(r)) return -1;
             continue;
         }
-        avcodec_send_packet(m_codec, m_packet);
+        if (m_draining) return 0;
+
+        if (!m_resendPacket) {
+            r = readVideoPacket();
+            if (r < 0) {
+                // A disk/NAS error is not a clean end-of-media: retried, then reported, never looped silently
+                if (r != AVERROR_EOF) return ioFailure(r);
+                const int sent = avcodec_send_packet(m_codec, nullptr); // drain delayed pictures
+                if (sent < 0 && sent != AVERROR_EOF) {
+                    markDecodeError(sent, false, true);
+                    return -1;
+                }
+                m_draining = true;
+                continue;
+            }
+        }
+        const int sent = avcodec_send_packet(m_codec, m_packet);
+        if (sent == AVERROR(EAGAIN)) {
+            // Not expected (the output is read first), but allowed by the API: the packet is kept and sent again
+            // once the decoder's output has been read, never dropped
+            m_resendPacket = true;
+            continue;
+        }
+        m_resendPacket = false;
         av_packet_unref(m_packet);
+        if (sent == AVERROR_EOF) return 0; // already flushed: nothing more comes from it
+        if (sent < 0 && codecFailure(sent)) return -1;
     }
+}
+
+bool VideoDecoder::isFatalCodecError(int code)
+{
+    // The decoder itself is unusable: not opened, needs a flush, or out of memory. Anything else (AVERROR_INVALIDDATA,
+    // a damaged slice, a missing reference) concerns one packet or one picture.
+    return code == AVERROR(EINVAL) || code == AVERROR(ENOMEM);
+}
+
+// A codec error: true when playback has to stop (until the next seek)
+bool VideoDecoder::codecFailure(int code)
+{
+    const bool fatal = isFatalCodecError(code) || ++m_consecutiveCodecErrors > kMaxConsecutiveCodecErrors;
+    markDecodeError(code, false, fatal);
+    return fatal;
+}
+
+// A demux error other than the end of the file: 3 (retry from where playback was, after a pause), or -1 once the
+// retries are spent
+int VideoDecoder::ioFailure(int code)
+{
+    const bool fatal = m_ioRetries >= kMaxIoRetries;
+    markDecodeError(code, true, fatal);
+    if (fatal) return -1;
+    const auto delay = std::chrono::milliseconds(std::min(1000, 50 << m_ioRetries)); // 50, 100, 200, 400, 800 ms
+    ++m_ioRetries;
+    ++m_metricIoRetries;
+    std::unique_lock<std::mutex> lk(m_mutex);
+    m_cv.wait_for(lk, delay, [this] { return m_quit || m_seekPending; });
+    return 3;
+}
+
+// The demuxer's I/O context keeps a read error (and an end flag) once one happened: cleared before a retry, so that
+// the read after the seek reaches the file again
+void VideoDecoder::clearIoError()
+{
+    if (m_fmt && m_fmt->pb) {
+        m_fmt->pb->error = 0;
+        m_fmt->pb->eof_reached = 0;
+    }
+}
+
+// After a transient I/O error: the demuxer's error state cleared, playback resumed after the last frame queued
+void VideoDecoder::resumeAfterIoError()
+{
+    clearIoError();
+    doSeek(m_resumeSeek);
+    m_discardBefore = m_resumeDiscard;
+}
+
+namespace {
+std::atomic<uint64_t> s_ffmpegErrorsTotal{0};
+std::atomic<uint64_t> s_emptyLoopStopsTotal{0};
+}
+
+uint64_t VideoDecoder::ffmpegErrorsTotal() { return s_ffmpegErrorsTotal.load(std::memory_order_relaxed); }
+uint64_t VideoDecoder::emptyLoopStopsTotal() { return s_emptyLoopStopsTotal.load(std::memory_order_relaxed); }
+
+void VideoDecoder::markDecodeError(int code, bool demux, bool fatal)
+{
+    ++s_ffmpegErrorsTotal;
+    m_lastAvError.store(code, std::memory_order_relaxed);
+    if (demux) ++m_metricDemuxErrors;
+    else ++m_metricCodecErrors;
+    char text[AV_ERROR_MAX_STRING_SIZE] = {0};
+    av_strerror(code, text, sizeof text);
+    if (fatal)
+        qWarning("Pinol decoder %s error (%s): playback stops until the next seek", demux ? "I/O" : "codec", text);
+    else if (demux)
+        qWarning("Pinol decoder I/O error (%s): retrying", text);
+    else if (m_consecutiveCodecErrors <= 1)
+        qWarning("Pinol decoder: damaged picture skipped (%s)", text); // one line per damaged run, not per packet
 }
 
 // Starts producing a leg at a position within it.
@@ -777,9 +872,12 @@ void VideoDecoder::startLeg(const Timeline::Leg &leg, double position)
     m_backStack.clear();
     m_leg = leg;
     m_legDone = false;
+    m_legFrames = 0;
     if (leg.forward) {
         doSeek(position);
         m_discardBefore = position - 0.5 / m_fps;
+        m_resumeSeek = position;
+        m_resumeDiscard = m_discardBefore;
     } else {
         m_backEnd = position;
     }
@@ -791,6 +889,17 @@ void VideoDecoder::finishLeg()
     if (m_timeline.mode == Timeline::Once || m_duration <= 0) {
         std::lock_guard<std::mutex> lk(m_mutex);
         m_eof = true;
+        return;
+    }
+    // Entirely damaged files (or empty in/out segments) must not seek/decode in
+    // an unbounded, CPU-consuming Loop/PingPong with no picture ever delivered.
+    // Two empty legs in a row: one alone may be a transient failure, or a segment shorter than a frame
+    m_emptyLegs = m_legFrames == 0 ? m_emptyLegs + 1 : 0;
+    if (m_emptyLegs >= 2) {
+        ++m_metricEmptyLoopStops;
+        ++s_emptyLoopStopsTotal;
+        std::lock_guard<std::mutex> lk(m_mutex);
+        m_eof = true; // an explicit seek clears this and permits a user retry
         return;
     }
     const Timeline::Leg next = m_timeline.nextLeg(m_leg);
@@ -818,6 +927,15 @@ void VideoDecoder::produceBackwardWindow()
         }
         if (r == 1) recordDecodeTime(decodeNs);
         if (r == 2) continue;
+        if (r == 3) { // transient I/O error: the same window again, from its start
+            for (VideoFrame &g : got) recycle(std::move(g));
+            clearIoError();
+            return; // m_backEnd unchanged: produced again at the next turn
+        }
+        if (r < 0) {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            m_eof = true; // fatal decode/demux errors must not spin in reverse playback
+        }
         if (r != 1) break;
         ++m_metricDecoded;
         accountFrame(f);
@@ -829,6 +947,7 @@ void VideoDecoder::produceBackwardWindow()
         f.pts = m_leg.clockStart + m_leg.from - local - dt;
         got.push_back(std::move(f));
     }
+    if (!got.empty()) m_ioRetries = 0; // progress since the last I/O error
     m_backStack = std::move(got); // delivered from its end: the latest position first
     m_backEnd = a;
     if (a <= m_leg.to + 1e-9) m_legDone = true; // finished once the stack is delivered
@@ -864,6 +983,9 @@ void VideoDecoder::run()
                 m_timeline = m_pendingTimeline;
                 gen = m_generation;
                 lk.unlock();
+                m_emptyLegs = 0;
+                m_ioRetries = 0;
+                m_consecutiveCodecErrors = 0;
                 startLeg(m_timeline.legAt(c), m_timeline.position(c));
                 continue;
             }
@@ -876,6 +998,7 @@ void VideoDecoder::run()
                 std::lock_guard<std::mutex> lk(m_mutex);
                 if (gen != m_generation) recycleLocked(std::move(f));
                 else {
+                    ++m_legFrames;
                     m_queue.push_back(std::move(f));
                     recordQueueDepth(m_queue.size());
                 }
@@ -910,6 +1033,10 @@ void VideoDecoder::run()
                 continue;
             }
             f.pts = m_leg.clockStart + local - m_leg.from;
+            ++m_legFrames;
+            m_resumeSeek = local; // a transient I/O error resumes after this frame
+            m_resumeDiscard = local + 0.5 / m_fps;
+            m_ioRetries = 0; // progress since the last I/O error: a later one gets its retries afresh
             std::lock_guard<std::mutex> lk(m_mutex);
             if (gen != m_generation) recycleLocked(std::move(f));
             else {
@@ -919,7 +1046,16 @@ void VideoDecoder::run()
             continue;
         }
         if (r == 2) continue;
-        finishLeg(); // end of file (or error)
+        if (r == 3) { // transient I/O error, after its pause: from where playback was
+            resumeAfterIoError();
+            continue;
+        }
+        if (r < 0) {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            m_eof = true; // fatal error; wait for a user seek instead of looping forever
+            continue;
+        }
+        finishLeg(); // clean end of file
     }
 }
 

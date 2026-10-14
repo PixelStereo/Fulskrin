@@ -941,6 +941,8 @@ QJsonObject Engine::resourcesJson() const
     o["software_decode_threads"] = VideoDecoder::softwareThreadsInUse();
     o["software_decode_thread_budget"] = VideoDecoder::softwareThreadBudgetNow();
     o["hap_workers"] = workers::threadCount();
+    o["ffmpeg_errors_total"] = double(VideoDecoder::ffmpegErrorsTotal());
+    o["empty_video_loops_stopped_total"] = double(VideoDecoder::emptyLoopStopsTotal());
     if (m_vramFreeKb.load() >= 0) o["graphics_memory_free_mb"] = double(m_vramFreeKb.load()) / 1024.0;
     if (m_vramTotalKb.load() > 0) o["graphics_memory_total_mb"] = double(m_vramTotalKb.load()) / 1024.0;
     QJsonArray warnings;

@@ -16,6 +16,7 @@ extern "C" {
 }
 
 #include <QElapsedTimer>
+#include <QtEndian>
 #include <QJsonObject>
 #include <QFile>
 #include <QImage>
@@ -827,6 +828,105 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         decs.clear();
         VCHECK(decodedBudget::used() == 0);
         decodedBudget::setLimit(size_t(512) << 20);
+    }
+    // Corrupt every HAP frame payload while keeping a valid MOV container. In
+    // Loop mode, legs without any valid frame (two in a row) must end playback instead of spinning forever.
+    {
+        QFile src(root + "/media/hap1.mov");
+        VCHECK(src.open(QIODevice::ReadOnly));
+        QByteArray bytes = src.readAll();
+        const qsizetype tag = bytes.indexOf("mdat");
+        VCHECK(tag >= 4);
+        if (tag >= 4) {
+            const quint32 atomSize = qFromBigEndian<quint32>(
+                reinterpret_cast<const uchar *>(bytes.constData() + tag - 4));
+            const qsizetype payloadStart = tag + 4;
+            const qsizetype payloadEnd = std::min<qsizetype>(bytes.size(), tag - 4 + qsizetype(atomSize));
+            VCHECK(atomSize > 8 && payloadEnd > payloadStart);
+            if (atomSize > 8 && payloadEnd > payloadStart) {
+                std::memset(bytes.data() + payloadStart, 0, size_t(payloadEnd - payloadStart));
+                const QString bad = tmp + "/fully_corrupt_hap.mov";
+                QFile out(bad);
+                VCHECK(out.open(QIODevice::WriteOnly | QIODevice::Truncate));
+                VCHECK(out.write(bytes) == bytes.size());
+                out.close();
+                VideoDecoder d;
+                QString err;
+                VCHECK(d.open(bad, &err));
+                if (d.width() > 0) {
+                    Timeline loop;
+                    loop.mode = Timeline::Loop;
+                    d.setTimeline(loop);
+                    d.seek(0);
+                    QElapsedTimer timeout;
+                    timeout.start();
+                    while (!d.finished() && timeout.elapsed() < 2000) QThread::msleep(10);
+                    VCHECK(d.finished());
+                    VCHECK(d.metrics().emptyLoopStops >= 1);
+                }
+            }
+        }
+    }
+    // Codec errors: only an unusable decoder is fatal. A damaged packet (AVERROR_INVALIDDATA and the like) is
+    // counted and skipped, as the ffmpeg program does unless -xerror is given.
+    {
+        VCHECK(VideoDecoder::isFatalCodecError(AVERROR(EINVAL)));
+        VCHECK(VideoDecoder::isFatalCodecError(AVERROR(ENOMEM)));
+        VCHECK(!VideoDecoder::isFatalCodecError(AVERROR_INVALIDDATA));
+        VCHECK(!VideoDecoder::isFatalCodecError(AVERROR_BUG));
+        VCHECK(!VideoDecoder::isFatalCodecError(AVERROR(EAGAIN)));
+    }
+    // One damaged region in the middle of an H.264 stream: the pictures around it may be lost or concealed, but
+    // playback must go on to the end of the file (a glitch must never freeze the video for the rest of the show)
+    {
+        QFile src(root + "/media/h264.mp4");
+        VCHECK(src.open(QIODevice::ReadOnly));
+        QByteArray bytes = src.readAll();
+        const qsizetype tag = bytes.indexOf("mdat");
+        VCHECK(tag >= 4);
+        if (tag >= 4) {
+            const quint32 atomSize = qFromBigEndian<quint32>(
+                reinterpret_cast<const uchar *>(bytes.constData() + tag - 4));
+            const qsizetype payloadStart = tag + 4;
+            const qsizetype payloadEnd = std::min<qsizetype>(bytes.size(), tag - 4 + qsizetype(atomSize));
+            VCHECK(atomSize > 8 && payloadEnd - payloadStart > 8192);
+            if (atomSize > 8 && payloadEnd - payloadStart > 8192) {
+                const qsizetype mid = payloadStart + (payloadEnd - payloadStart) / 2;
+                for (qsizetype k = 0; k < 512; ++k) bytes[mid + k] = char(0xA5 ^ int((k * 37) & 0xff));
+                const QString bad = tmp + "/damaged_h264.mp4";
+                QFile out(bad);
+                VCHECK(out.open(QIODevice::WriteOnly | QIODevice::Truncate));
+                VCHECK(out.write(bytes) == bytes.size());
+                out.close();
+                const bool hardware = VideoDecoder::hardwareDecoding();
+                VideoDecoder::setHardwareDecoding(false); // the software decoder on every platform
+                {
+                    VideoDecoder d;
+                    QString err;
+                    VCHECK(d.open(bad, &err));
+                    const double duration = d.duration();
+                    Timeline once;
+                    once.mode = Timeline::Once;
+                    d.setTimeline(once);
+                    d.seek(0);
+                    VideoFrame f;
+                    double t = 0, lastPts = -1;
+                    QElapsedTimer timeout;
+                    timeout.start();
+                    while (!d.finished() && timeout.elapsed() < 15000) {
+                        if (d.fetch(t, f)) lastPts = std::max(lastPts, f.pts);
+                        t += 1.0 / 60.0; // the clock moves on even when pictures were lost
+                        QThread::msleep(1);
+                    }
+                    VCHECK(d.finished());
+                    VCHECK(duration > 3.0 && lastPts > duration - 0.5); // past the damage, up to the end
+                    VCHECK(d.metrics().demuxErrors == 0);
+                    std::printf("      damaged H.264: last picture at %.2f s of %.2f, %llu codec error(s)\n", lastPts,
+                                duration, (unsigned long long)d.metrics().codecErrors);
+                }
+                VideoDecoder::setHardwareDecoding(hardware);
+            }
+        }
     }
     // Decode-time percentiles: bucket bounds, never above the longest measured; the long tail beyond 2 s is given
     // as the longest, and decodes longer than one frame are counted
