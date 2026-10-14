@@ -39,8 +39,8 @@ QString renderChoice::frameRateName(double fps)
 {
     return fps <= 0 ? QStringLiteral("Screen refresh") : QStringLiteral("%1 fps").arg(fps);
 }
-QList<int> renderChoice::depths() { return {8, 10}; }
-QString renderChoice::depthName(int bits) { return bits >= 10 ? QStringLiteral("10 bits") : QStringLiteral("8 bits"); }
+QList<int> renderChoice::depths() { return {10}; }
+QString renderChoice::depthName(int) { return QStringLiteral("16 bits/channel (RGBA16)"); }
 QList<int> renderChoice::samples() { return {0, 2, 4, 8}; }
 QString renderChoice::samplesName(int n) { return n <= 1 ? QStringLiteral("Off") : QStringLiteral("%1× MSAA").arg(n); }
 
@@ -51,7 +51,7 @@ Engine::RenderSettings SettingsPanel::renderDefaults()
     r.frameRate = std::max(0.0, s.value(kRateKey, 0.0).toDouble());
     r.samples = std::max(0, s.value(kSamplesKey, 4).toInt());
     r.mipmaps = s.value(kMipmapsKey, true).toBool() ? 1 : 0;
-    r.depth = s.value(kDepthKey, 8).toInt() >= 10 ? 10 : 8;
+    r.depth = 10; // internally stored as RGBA16 UNORM, for >10 bits of gradient precision
     return r;
 }
 static constexpr int kDefaultOscPort = 1234, kDefaultQueryPort = 5678;
@@ -186,7 +186,11 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
         m_mipmaps->setChecked(d.mipmaps > 0);
         rf->addRow(new ResetLabel(QStringLiteral("Frame rate"), [this] { m_rate->setCurrentIndex(0); }), m_rate);
         rf->addRow(new ResetLabel(QStringLiteral("Antialiasing"), [this] { m_samples->setCurrentIndex(2); }), m_samples);
-        rf->addRow(new ResetLabel(QStringLiteral("Color depth"), [this] { m_depth->setCurrentIndex(0); }), m_depth);
+        rf->addRow(QStringLiteral("Internal precision"), m_depth);
+        rf->addRow(note(QStringLiteral("All composition, ISF and effect render targets use RGBA16 "
+                                       "(16 bits per channel). This prevents 8-bit quantization of generated gradients "
+                                       "inside PINOL. Actual display, media decoding and network outputs can still "
+                                       "be 8-bit; an HDR or 10-bit output signal is not implied.")));
         rf->addRow(m_mipmaps);
         auto *shareLate = new FlagBox(QStringLiteral("Syphon / Spout one frame later, without waiting for the GPU"));
         shareLate->setChecked(gpuShareOneFrameLate());
