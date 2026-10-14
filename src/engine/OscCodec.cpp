@@ -1,8 +1,10 @@
 #include "OscCodec.h"
 
 #include <QtEndian>
+#include <QHash>
 #include <algorithm>
 #include <cstring>
+#include <functional>
 
 // ---------------------------------------------------------------------------
 // OSC encoding / decoding
@@ -119,6 +121,7 @@ struct Reader {
 static constexpr qsizetype kMaxPacket = 1 << 20; // OSC over UDP stays far below; TCP and WebSocket frames too
 static constexpr int kMaxArgs = 1024;
 static constexpr int kMaxDepth = 8;          // nested bundles
+static constexpr size_t kMaxMessages = 1024; // cap per-packet work across all nested bundles
 
 static bool decodeInto(const QByteArray &packet, std::vector<Message> &out, int depth)
 {
@@ -183,69 +186,95 @@ static bool decodeInto(const QByteArray &packet, std::vector<Message> &out, int 
             if (!r.ok) return false;
         }
     }
-    out.push_back(m);
+    if (out.size() >= kMaxMessages) return false; // reject oversized bundle before consuming extra CPU/memory
+    out.push_back(std::move(m));
     return true;
 }
 
 bool decode(const QByteArray &packet, std::vector<Message> &out) { return decodeInto(packet, out, 0); }
 
-// One segment: * ? [set] {alt,alt}
-static bool matchSeg(const QString &p, int pi, const QString &s, int si)
+// One segment: * ? [set] {alt,alt}. This matcher also receives patterns
+// from the network: naive recursion across repeated '*' has exponential
+// complexity (e.g. 40 '*' followed by an unmatched 'z'). Memoize each
+// (pattern position, address position) pair, and share an explicit operation
+// budget across nested {alternatives} and all path segments.
+static constexpr int kMaxMatchChars = 8192;
+static constexpr int kMaxMatchSegment = 4096;
+static constexpr int kMaxMatchSteps = 150000;
+
+static bool matchSeg(const QString &p, int startPi, const QString &s, int startSi, int &remaining)
 {
-    while (pi < p.size()) {
-        const QChar c = p[pi];
-        if (c == '*') {
-            for (int k = si; k <= s.size(); ++k)
-                if (matchSeg(p, pi + 1, s, k)) return true;
-            return false;
-        }
-        if (c == '?') {
-            if (si >= s.size()) return false;
-            ++pi;
-            ++si;
-            continue;
-        }
-        if (c == '[') {
-            const int end = p.indexOf(']', pi);
-            if (end < 0 || si >= s.size()) return false;
-            QString set = p.mid(pi + 1, end - pi - 1);
-            bool negate = set.startsWith('!');
-            if (negate) set.remove(0, 1);
-            bool in = false;
-            for (int k = 0; k < set.size(); ++k) {
-                if (k + 2 < set.size() && set[k + 1] == '-') {
-                    in |= s[si] >= set[k] && s[si] <= set[k + 2];
-                    k += 2;
-                } else {
-                    in |= s[si] == set[k];
+    if (p.size() > kMaxMatchSegment || s.size() > kMaxMatchSegment || remaining <= 0) return false;
+    QHash<quint64, quint8> memo;
+    std::function<bool(int, int)> visit = [&](int pi, int si) -> bool {
+        if (--remaining < 0) return false;
+        const quint64 key = (quint64(quint32(pi)) << 32) | quint32(si);
+        const auto found = memo.constFind(key);
+        if (found != memo.cend()) return found.value() != 0;
+
+        bool result = false;
+        if (pi >= p.size()) {
+            result = si == s.size();
+        } else {
+            const QChar c = p[pi];
+            if (c == '*') {
+                for (int k = si; k <= s.size(); ++k)
+                    if (visit(pi + 1, k)) {
+                        result = true;
+                        break;
+                    }
+            } else if (c == '?') {
+                result = si < s.size() && visit(pi + 1, si + 1);
+            } else if (c == '[') {
+                const int end = p.indexOf(']', pi);
+                if (end >= 0 && si < s.size()) {
+                    QString set = p.mid(pi + 1, end - pi - 1);
+                    const bool negate = set.startsWith('!');
+                    if (negate) set.remove(0, 1);
+                    bool inside = false;
+                    for (int k = 0; k < set.size(); ++k) {
+                        if (k + 2 < set.size() && set[k + 1] == '-') {
+                            inside |= s[si] >= set[k] && s[si] <= set[k + 2];
+                            k += 2;
+                        } else {
+                            inside |= s[si] == set[k];
+                        }
+                    }
+                    if (inside != negate) result = visit(end + 1, si + 1);
                 }
+            } else if (c == '{') {
+                const int end = p.indexOf('}', pi);
+                if (end >= 0) {
+                    const QString rest = p.mid(end + 1);
+                    for (const QString &alt : p.mid(pi + 1, end - pi - 1).split(',')) {
+                        if (remaining <= 0) break;
+                        if (matchSeg(alt + rest, 0, s, si, remaining)) {
+                            result = true;
+                            break;
+                        }
+                    }
+                }
+            } else {
+                result = si < s.size() && s[si] == c && visit(pi + 1, si + 1);
             }
-            if (in == negate) return false;
-            pi = end + 1;
-            ++si;
-            continue;
         }
-        if (c == '{') {
-            const int end = p.indexOf('}', pi);
-            if (end < 0) return false;
-            const QString rest = p.mid(end + 1);
-            for (const QString &alt : p.mid(pi + 1, end - pi - 1).split(','))
-                if (matchSeg(alt + rest, 0, s, si)) return true;
-            return false;
-        }
-        if (si >= s.size() || s[si] != c) return false;
-        ++pi;
-        ++si;
-    }
-    return si == s.size();
+        memo.insert(key, result ? 1 : 0);
+        return result;
+    };
+    return visit(startPi, startSi);
 }
 
 bool match(const QString &pattern, const QString &address)
 {
+    // A malformed OSC request must never create unbounded split lists or
+    // exhaust a control thread's CPU on hostile wildcard combinations.
+    if (pattern.size() > kMaxMatchChars || address.size() > kMaxMatchChars) return false;
+    if (pattern == address) return true; // the common literal path costs almost nothing
     const QStringList p = pattern.split('/'), a = address.split('/');
     if (p.size() != a.size()) return false;
+    int remaining = kMaxMatchSteps;
     for (int k = 0; k < p.size(); ++k)
-        if (!matchSeg(p[k], 0, a[k], 0)) return false;
+        if (!matchSeg(p[k], 0, a[k], 0, remaining)) return false;
     return true;
 }
 
