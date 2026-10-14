@@ -51,7 +51,7 @@ jobs:
           cmake --build build --target pinol_tests -j4
       - name: Engine tests
         run: |
-          # Deterministic areas once; the real-time ones (label timing) up to 3 times (CMakeLists.txt)
+          # Deterministic areas once; timing failures gate on their first attempt, with diagnostic rerun only
           xvfb-run -a ctest --test-dir build --output-on-failure -LE timing
           python3 scripts/run_timing_tests.py xvfb-run -a ctest --test-dir build --output-on-failure -L timing
       - name: Dependency versions
@@ -397,7 +397,7 @@ jobs:
           LP_NUM_THREADS: '1' # the software GPU on one core: the sound's threads keep their time
         run: |
           $env:PATH = "C:\ffmpeg\$env:FFMPEG_ZIP\bin;$env:PATH"
-          # Deterministic areas once; the real-time ones (label timing) up to 3 times (CMakeLists.txt)
+          # Deterministic areas once; timing failures gate on their first attempt, with diagnostic rerun only
           ctest --test-dir build --output-on-failure -LE timing
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/run_timing_tests.py ctest --test-dir build --output-on-failure -L timing
