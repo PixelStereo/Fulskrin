@@ -16,6 +16,8 @@ void VideoDecoder::doSeek(double t)
         av_seek_frame(m_fmt, -1, int64_t(t * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD);
     if (m_codec) avcodec_flush_buffers(m_codec);
     m_draining = false;
+    m_resendPacket = false; // a packet kept for resending belongs to the position left
+    if (m_packet) av_packet_unref(m_packet);
 }
 
 

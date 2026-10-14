@@ -42,6 +42,7 @@ VideoDecoder::Metrics VideoDecoder::metrics() const
     m.demuxErrors = m_metricDemuxErrors.load(std::memory_order_relaxed);
     m.codecErrors = m_metricCodecErrors.load(std::memory_order_relaxed);
     m.emptyLoopStops = m_metricEmptyLoopStops.load(std::memory_order_relaxed);
+    m.ioRetries = m_metricIoRetries.load(std::memory_order_relaxed);
     m.lastAvError = m_lastAvError.load(std::memory_order_relaxed);
     return m;
 }
@@ -64,6 +65,7 @@ void VideoDecoder::resetMetrics()
     m_metricDemuxErrors = 0;
     m_metricCodecErrors = 0;
     m_metricEmptyLoopStops = 0;
+    m_metricIoRetries = 0;
     m_lastAvError = 0;
 }
 
