@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QImage>
+#include <QColorSpace>
 #include <QJsonArray>
 #include <cmath>
 
@@ -998,6 +999,15 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
         if (err) *err = QStringLiteral("Unreadable image: ") + path;
         return false;
     }
+    const QImage::Format originalFormat = img.format();
+    const bool high = originalFormat == QImage::Format_RGBA64 || originalFormat == QImage::Format_RGBX64 ||
+                      originalFormat == QImage::Format_RGBA64_Premultiplied || originalFormat == QImage::Format_Grayscale16;
+    const QColorSpace profile = img.colorSpace();
+    const QString colorInfo = QStringLiteral("%1 · %2").arg(
+        high ? QStringLiteral("16-bit source") : QStringLiteral("8-bit or less"),
+        profile.isValid() ? QStringLiteral("ICC: ") +
+            (profile.description().isEmpty() ? QStringLiteral("embedded profile") : profile.description())
+                          : QStringLiteral("color profile: untagged/unknown"));
     img = flippedVertically(img.convertToFormat(QImage::Format_RGBA8888));
     std::shared_ptr<Garbage> g;
     {
@@ -1006,6 +1016,7 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
         if (!l) return false;
         g = detachSource(*l);
         l->pendingImage = img; // uploaded to the GPU by the render thread
+        l->imageColorInfo = colorInfo;
         l->srcWidth = img.width();
         l->srcHeight = img.height();
         l->type = SourceType::Image;
