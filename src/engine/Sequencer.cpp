@@ -440,13 +440,12 @@ void Sequencer::advance(double dt)
         std::vector<Run> started;
         {
             QMutexLocker lk(&m_mutex);
-            if (m_current < 0) {
-                m_runs.clear();
-                break;
-            }
-            const Sequence &s = m_sequences[size_t(m_current)];
-            const int n = int(s.steps.size());
             for (Run &r : m_runs) {
+                // Active runs refer to stable identities rather than the UI selection.
+                const int index = sequenceIndexLocked(r.sequenceId);
+                if (index < 0) continue; // deleted during an earlier recall
+                const Sequence &s = m_sequences[size_t(index)];
+                const int n = int(s.steps.size());
                 r.elapsed += dt;
                 if (!r.fired && r.elapsed >= r.preWait) {
                     r.fired = true;
@@ -464,7 +463,7 @@ void Sequencer::advance(double dt)
                 const int k = r.step + 1 < n ? r.step + 1 : s.loop ? 0 : -1;
                 if (k < 0) continue;
                 const Step &st = s.steps[size_t(k)];
-                Run x = runOf(st, k, true);
+                Run x = runOf(st, k, true, r.sequenceId);
                 x.elapsed = r.elapsed - at;
                 x.duration = stepDuration(st);
                 started.push_back(x);
@@ -497,11 +496,14 @@ void Sequencer::advance(double dt)
         {
             QMutexLocker lk(&m_mutex);
             for (Run &x : started) {
+                const int index = sequenceIndexLocked(x.sequenceId);
+                if (index < 0) continue; // sequence removed while an action fired
+                if (x.step >= int(m_sequences[size_t(index)].steps.size())) continue;
                 m_runs.push_back(x);
-                m_position = x.step;
+                m_positions[size_t(index)] = x.step;
+                moved = true;
             }
         }
-        moved = true;
         dt = 0; // the next round: only what the new steps carry over
     }
     if (moved) emit positionChanged();
