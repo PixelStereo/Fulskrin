@@ -3288,6 +3288,13 @@ void main(){ gl_FragColor = definitely_not_defined; }
         };
         CHECK(near(grab(BlendMode::Subtract), 150, 0, 30));   // below minus above, never under zero
         CHECK(near(grab(BlendMode::Difference), 150, 80, 30)); // |below - above|
+        // Allocation/validation failure of Difference's destination-copy
+        // target must never blit into framebuffer 0. Preserve the picture by
+        // falling back to ordinary source-over for that frame only.
+        Engine::failNextDifferenceCopyForTests();
+        e.renderFrame();
+        CHECK(near(e.grabOutput().pixelColor(8, 8), 50, 200, 20));
+        CHECK(near(grab(BlendMode::Difference), 150, 80, 30)); // mode recovers next frame
         CHECK(near(grab(BlendMode::Normal), 50, 200, 20));
         {
             Engine::Lock lk(&e.mutex());
