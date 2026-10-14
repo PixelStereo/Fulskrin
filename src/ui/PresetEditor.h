@@ -36,6 +36,11 @@ public:
     void track(QWidget *w, quint64 layer, const QStringList &paths);
     // The preset actions for those values, at the end of a right-click menu
     void fillMenu(QMenu *menu, quint64 layer, const QStringList &paths);
+    // Every stored value of `layer`, by category, in an "Add to Preset" sub-menu (the selected preset, else a new
+    // one): whatever the inspector shows or not, any value can go in a preset
+    void fillLayerMenu(QMenu *menu, quint64 layer);
+    // The stored values of `layer` grouped by category ("Source", "Spatial"…), in the layer's order (tests)
+    static std::vector<std::pair<QString, QStringList>> layerValues(Engine *engine, quint64 layer);
     void capturePresetDrivers(Engine::Preset &preset, quint64 layer, const QStringList &paths) const;
     void addToNew(quint64 layer, const QStringList &paths);
     void addToSelected(quint64 layer, const QStringList &paths);
