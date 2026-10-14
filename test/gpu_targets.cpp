@@ -48,6 +48,59 @@ int runGpuTargetTests(Engine &e)
             ms.destroy();
         } else std::printf("skip GPU target: driver has no multisample support\n");
         gl()->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // Real 16-bit gradient regression: draw 1024 distinct shades to a
+        // normalized FBO and read them back as uint16. An RGBA8 FBO would
+        // yield no more than 256 distinct levels even when read as uint16.
+        const int oldBits = renderBits();
+        setRenderBits(16);
+        RenderTarget gradient;
+        check(gradient.ensure(1024, 1) && gradient.bits == 16, "16-bit gradient target allocated");
+        if (gradient.fbo) {
+            auto *f = gl();
+            gradient.bind();
+            const QString vs = QStringLiteral(R"(#version 330 core
+void main() {
+    const vec2 p[3] = vec2[3](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));
+    gl_Position = vec4(p[gl_VertexID], 0.0, 1.0);
+})");
+            const QString fs = QStringLiteral(R"(#version 330 core
+out vec4 outColor;
+void main() {
+    float c = (gl_FragCoord.x - 0.5) / 1023.0;
+    outColor = vec4(c, c, c, 1.0);
+})");
+            QString log;
+            const GLuint shader = compileProgram(vs, fs, &log);
+            check(shader != 0, "GPU gradient shader compiled");
+            if (shader) {
+                GLuint vao = 0;
+                f->glGenVertexArrays(1, &vao);
+                f->glBindVertexArray(vao);
+                f->glDisable(GL_BLEND);
+                f->glUseProgram(shader);
+                f->glDrawArrays(GL_TRIANGLES, 0, 3);
+                std::vector<quint16> pixels(1024 * 4);
+                f->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                f->glReadPixels(0, 0, 1024, 1, GL_RGBA, GL_UNSIGNED_SHORT, pixels.data());
+                int unique = 1;
+                bool monotonic = true;
+                for (int i = 1; i < 1024; ++i) {
+                    const quint16 prev = pixels[size_t((i - 1) * 4)];
+                    const quint16 cur = pixels[size_t(i * 4)];
+                    if (cur != prev) ++unique;
+                    if (cur <= prev) monotonic = false;
+                }
+                std::printf("16-bit GPU gradient: %d unique red levels out of 1024\\n", unique);
+                check(unique >= 1000 && monotonic, "1024 monotonic shades survive RGBA16 FBO");
+                f->glBindVertexArray(0);
+                f->glDeleteVertexArrays(1, &vao);
+                f->glDeleteProgram(shader);
+            }
+        }
+        gradient.destroy();
+        setRenderBits(oldBits);
+        gl()->glBindFramebuffer(GL_FRAMEBUFFER, 0);
     });
 
     // Source-grab is a one-off GPU readback. The target is allocated inside
