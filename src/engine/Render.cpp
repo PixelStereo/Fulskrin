@@ -650,11 +650,21 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
         Layer &l = *layers[size_t(i)];
         const float opacity = viewport ? l.opacity * l.opacityIn(viewport) : l.opacity;
         if (!l.enabled || l.soloHidden || !l.finalTex || opacity <= 0.0f) continue;
-        const bool diff = l.blend == BlendMode::Difference;
+        bool diff = l.blend == BlendMode::Difference;
+        if (diff) {
+            // Difference samples the picture already on the destination. It
+            // must never copy into FBO 0 (the app window), or sample a stale
+            // buffer whose size/precision belongs to an earlier frame.
+            const bool forcedUnavailable = s_failDifferenceCopyForTests.exchange(false);
+            if (!forcedUnavailable) m_dstCopy.ensure(target.w, target.h, target.isFloat);
+            const bool copyReady = !forcedUnavailable && m_dstCopy.fbo && m_dstCopy.tex &&
+                                   m_dstCopy.w == target.w && m_dstCopy.h == target.h &&
+                                   m_dstCopy.bits == target.bits && m_dstCopy.isFloat == target.isFloat;
+            if (!copyReady) diff = false; // degraded but safe: ordinary source-over blending
+        }
         if (diff) {
             // Copy what is drawn so far (resolved if antialiased), then draw the layer against the copy
             const GLuint drawFbo = ms ? ms->fbo : target.fbo;
-            m_dstCopy.ensure(target.w, target.h, target.isFloat);
             f->glBindFramebuffer(GL_READ_FRAMEBUFFER, drawFbo);
             f->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_dstCopy.fbo);
             f->glBlitFramebuffer(0, 0, target.w, target.h, 0, 0, target.w, target.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);

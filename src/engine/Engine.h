@@ -79,6 +79,9 @@ public:
         return m_renderFailed;
     }
     static void failNextRenderStartForTests() { s_failRenderStart = true; }
+    // One-shot simulation of a missing Difference-blend copy target; only
+    // used by the rendering regression tests, no GPU resources destroyed.
+    static void failNextDifferenceCopyForTests() { s_failDifferenceCopyForTests = true; }
     void shutdown();
 
     // Runs fn on the render thread with the OpenGL context current (or immediately in manual mode).
@@ -768,6 +771,7 @@ private:
     GLint m_compRotLoc = -1, m_compAspLoc = -1, m_diffRotLoc = -1, m_diffAspLoc = -1;
     GLint m_diffTexLoc = -1, m_diffDstLoc = -1, m_diffOpacityLoc = -1, m_diffViewLoc = -1;
     RenderTarget m_dstCopy; // what is drawn so far, for Difference
+    static inline std::atomic<bool> s_failDifferenceCopyForTests{false};
     GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_compViewLoc = -1, m_presentTexLoc = -1;
     GLint m_prepTexLoc = -1, m_prepRoiLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1, m_prepBalanceLoc = -1;
     GLint m_prepMaskLoc = -1, m_prepMaskModeLoc = -1;
