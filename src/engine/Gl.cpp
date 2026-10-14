@@ -87,7 +87,7 @@ bool RenderTarget::ensure(int nw, int nh, bool flt)
     f->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, nextTex, 0);
     const GLenum st = f->glCheckFramebufferStatus(GL_FRAMEBUFFER);
     const bool forced = g_failTarget.exchange(false);
-    if (st != GL_FRAMEBUFFER_COMPLETE || forced) {
+    if (!nextTex || !nextFbo || st != GL_FRAMEBUFFER_COMPLETE || forced) {
         qWarning() << "RenderTarget allocation rejected; keeping previous picture:" << Qt::hex << st << nw << nh << flt;
         f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
         if (nextFbo) f->glDeleteFramebuffers(1, &nextFbo);
@@ -145,7 +145,7 @@ void MsaaBuffer::ensure(int nw, int nh, int s)
     f->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, nextRbo);
     const GLenum st = f->glCheckFramebufferStatus(GL_FRAMEBUFFER);
     const bool forced = g_failMsaa.exchange(false);
-    if (st != GL_FRAMEBUFFER_COMPLETE || forced) {
+    if (!nextRbo || !nextFbo || st != GL_FRAMEBUFFER_COMPLETE || forced) {
         qWarning() << "MSAA allocation rejected; keeping previous buffer:" << Qt::hex << st << nw << nh << s;
         f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
         if (nextFbo) f->glDeleteFramebuffers(1, &nextFbo);
