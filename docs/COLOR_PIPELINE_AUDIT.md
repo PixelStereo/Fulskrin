@@ -3,8 +3,9 @@
 ## Objective
 
 Retain at least 10-bit precision **inside the render engine** when a GLSL/ISF
-shader generates a gradient. This PR switches all standard render targets to
-**GL_RGBA16 normalized** (16 bits *per channel*, i.e. four unsigned normalized
+shader generates a gradient. Standard render targets now default to
+**GL_RGBA16 normalized** (Settings ▸ Rendering ▸ Internal precision; 8 bits stay
+available as a lighter choice for heavy shows) (16 bits *per channel*, i.e. four unsigned normalized
 channels). The fractional output of the shader is now quantized to 65,536
 nominal levels rather than the 256 levels of GL_RGBA8. Shader calculations
 remain floating-point. ISF persistent FLOAT targets remain RGBA32F.
@@ -20,7 +21,7 @@ This is **not** a claim of end-to-end 10-bit output.
 | Stage | Precision / limitation |
 |---|---|
 | ISF shader math | GLSL floating-point; output formerly RGBA8 by default |
-| Composition, groups, viewports, transitions, effects | RGBA16 UNORM with this PR; HDR values outside 0..1 cannot be represented |
+| Composition, groups, viewports, transitions, effects | RGBA16 UNORM by default (8-bit on request); HDR values outside 0..1 cannot be represented |
 | Ordinary FFmpeg YUV 10/12/16-bit input | Plane textures can be GL_R16/RG16 etc.; shader YUV→RGB conversion, then RGBA16 UNORM |
 | Some FFmpeg formats | CPU fallback via swscale can become RGBA8; not an unconditional >8-bit guarantee |
 | HAP video | DXT/BC compressed GPU textures, not a uniformly 10-bit source; compressed texture precision depends on format |

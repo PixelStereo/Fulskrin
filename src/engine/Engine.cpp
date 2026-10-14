@@ -840,10 +840,9 @@ Engine::RenderSettings Engine::effectiveRender() const
     e.frameRate = m_render.frameRate >= 0 ? m_render.frameRate : std::max(0.0, m_renderDefaults.frameRate);
     e.samples = m_render.samples >= 0 ? m_render.samples : std::max(0, m_renderDefaults.samples);
     e.mipmaps = m_render.mipmaps >= 0 ? m_render.mipmaps : std::max(0, m_renderDefaults.mipmaps);
-    // PINOL composes in RGBA16 UNORM on every machine, regardless of an
-    // obsolete 8-bit UI setting or a transient input value. Shader math is
-    // floating-point; intermediate FBOs preserve 16-bit normalized samples.
-    e.depth = 10;
+    // RGBA16 UNORM ("10") unless 8 bits are chosen: smooth generated gradients by default, half the GPU memory and
+    // bandwidth on request (heavy 4K / 8K shows)
+    e.depth = m_render.depth > 0 ? m_render.depth : (m_renderDefaults.depth > 0 ? m_renderDefaults.depth : 10);
     return e;
 }
 
