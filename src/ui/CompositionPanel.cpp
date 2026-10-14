@@ -300,13 +300,13 @@ QWidget *CompositionPanel::buildComposition()
     form->addRow(note(QStringLiteral("Saved with the project. A manual New Project or an autosave recovery never starts a sequence.")));
     connect(m_startupEnabled, &QCheckBox::toggled, this, [this](bool on) {
         if (m_syncing) return;
-        m_engine->sequencer().setStartupSequence(on ? m_startupSequence->currentData().toInt(-1) : -1);
+        m_engine->sequencer().setStartupSequence(on ? (m_startupSequence->count() > 0 ? m_startupSequence->currentData().toInt() : -1) : -1);
         m_startupSequence->setEnabled(on && m_startupSequence->count() > 0);
         emit compositionEdited();
     });
     connect(m_startupSequence, qOverload<int>(&QComboBox::activated), this, [this](int i) {
         if (m_syncing || !m_startupEnabled->isChecked()) return;
-        m_engine->sequencer().setStartupSequence(m_startupSequence->itemData(i).toInt(-1));
+        m_engine->sequencer().setStartupSequence(m_startupSequence->itemData(i).toInt());
         emit compositionEdited();
     });
     connect(&m_engine->sequencer(), &Sequencer::changed, this, &CompositionPanel::syncStartupSequence);
