@@ -40,7 +40,7 @@ same() { # number of differing pixels between two screenshots, within an area
 }
 PREVIEW=""
 
-../build/Pinol projects/demo.pinol >"$OUT/log1.txt" 2>&1 & APP=$!
+../build/Pinol --endurance-csv "$OUT/endurance.csv" projects/demo.pinol >"$OUT/log1.txt" 2>&1 & APP=$!
 sleep 5
 xdotool key Return; sleep 1                      # "file not found" warning
 origin; PREVIEW=$(roi 400 180 700 380)
@@ -85,6 +85,11 @@ xdotool key ctrl+shift+f; sleep 12
 ls "$AUTOSAVE" >/dev/null 2>&1 && echo "autosave: yes" || fail "no autosave after 12 s"
 kill -0 $APP 2>/dev/null || fail "the application exited during the scenario (log: $OUT/log1.txt)"
 kill -9 $APP; sleep 1
+# Telemetry must survive an unclean process exit (rows flushed each second).
+test -s "$OUT/endurance.csv" || fail "endurance CSV not written"
+test -s "$OUT/endurance.csv.events.jsonl" || fail "endurance events log not written"
+grep -q '^# PINOL endurance metrics v1' "$OUT/endurance.csv" || fail "endurance CSV metadata missing"
+test "$(wc -l < "$OUT/endurance.csv")" -ge 6 || fail "endurance CSV has no periodic samples"
 ../build/Pinol >"$OUT/log2.txt" 2>&1 & APP=$!
 sleep 4; shot 12_recovery
 xdotool key Return; sleep 4; shot 13_restored
