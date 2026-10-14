@@ -541,6 +541,8 @@ public:
     PublishState publishState(quint64 viewport, PublishKind k) const;
     // Tests: receives the read-back frames (send thread)
     void setTestTap(std::function<void(const CpuFrame &)> fn);
+    // Tests: Syphon / Spout publishers made by `f` on any platform (Publishing::setGpuPublisherFactoryForTests)
+    void setGpuPublisherFactoryForTests(std::function<std::unique_ptr<GpuPublisher>(PublishKind)> f);
 
     // --- Composition opacity: 0..1 reached in `seconds` seconds (picture only)
     void fadeCompositionOpacity(double target, double seconds);

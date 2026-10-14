@@ -2,11 +2,17 @@
 
 This change makes one-frame-delayed GPU sharing the default. Viewports allocate up to three render targets while the delayed path is actively sharing. On a fresh viewport the third target is allocated on demand by the delayed path. Once allocated, it may remain cached after switching back to immediate sharing; the viewport teardown releases all three targets.
 
-## What the unit test proves
+## What each SDK does with the texture (read in the submodules)
 
-The buffer-index test in the `rendering` area verifies that the next destination differs from both the frame just rendered and the previous frame handed to the GPU publisher. It checks repeated rotations and transitions back to immediate sharing.
+- **Syphon** (`third_party/syphon`, built with `SYPHON_CORE_SHARE`): `publishFrameTexture` makes a context *shared with* Pinol's render context current, draws the texture into the IOSurface there, calls `glFlushRenderAPPLE()` (a flush, not a finish) and restores Pinol's context. The copy therefore runs on another context whose commands are not ordered with Pinol's. Nothing in the render context can wait for it. This is the case the third buffer exists for: the shared picture is not drawn into by the next frame, only by the one after, which leaves the flushed copy one whole frame (16.7 ms at 60 Hz) to run. It is a margin, not a proof: the physical test below remains the merge gate on macOS.
+- **Spout** (`third_party/spout2`, `spoutGL::WriteGLDXtexture`): the copy is made in the *calling* context (Pinol's render context), between `wglDXLockObjectsNV` and `wglDXUnlockObjectsNV`. Commands of one context run in order, and the unlock completes the GL work before DirectX touches the shared texture: Spout is safe by construction, with two buffers as with three. The physical test on Windows checks the driver, not the ordering.
 
-It does **not** prove that a vendor publisher has completed its internal copy. `SyphonOpenGLServer.publishFrameTexture` is a publication API; `SpoutSender.SendTexture` sends/copies an OpenGL texture. If a specific SDK backend retains source data beyond method return, **neither a third buffer nor a fence solely in the render context is sufficient**. Use SDK-specific completion or copy into a lifetime-owned intermediate target in that case.
+## What the tests prove
+
+- `pinol_tests --area rendering`: the buffer-index arithmetic (the next destination differs from the frame just rendered and from the previous one handed to the publisher), repeated rotations, and the return to immediate sharing.
+- The publishing test with a stand-in GPU publisher (`Engine::setGpuPublisherFactoryForTests`, every platform, no SDK): the texture shared at the end of frame *f* is never the one shared at frame *f + 2*, i.e. the picture drawn at *f + 1*. With two buffers it would be.
+
+Neither proves that Syphon's shared context has finished its copy within one frame on a given GPU and driver; only the receiver-side test does.
 
 ## Physical acceptance test required before merge
 

@@ -76,6 +76,12 @@ void Publishing::setState(Publication &pub, PublishKind k, PublishState st)
     pub.states[int(k)] = std::move(st);
 }
 
+void Publishing::setGpuPublisherFactoryForTests(GpuPublisherFactory f)
+{
+    std::lock_guard<std::mutex> lk(m_gpuFactoryMutex);
+    m_gpuFactory = std::move(f);
+}
+
 static bool isGpuKind(PublishKind k) { return k == PublishKind::Syphon || k == PublishKind::Spout; }
 
 void Publishing::follow(const std::vector<std::pair<quint64, PublishSettings>> &viewports)
@@ -148,7 +154,12 @@ void Publishing::apply(Publication &pub, const PublishSettings &s)
             setState(pub, k, {PublishState::Off, QStringLiteral("Disabled"), -1});
             continue;
         }
-        if (!publishCompiledIn(k)) {
+        GpuPublisherFactory testFactory;
+        if (isGpuKind(k)) {
+            std::lock_guard<std::mutex> lk(m_gpuFactoryMutex);
+            testFactory = m_gpuFactory;
+        }
+        if (!publishCompiledIn(k) && !testFactory) {
             setState(pub, k,
                      {PublishState::Unavailable,
                       k == PublishKind::Syphon   ? QStringLiteral("Syphon is only available on macOS")
@@ -159,7 +170,7 @@ void Publishing::apply(Publication &pub, const PublishSettings &s)
         }
         QString err;
         if (isGpuKind(k)) {
-            auto p = k == PublishKind::Syphon ? createSyphonPublisher() : createSpoutPublisher();
+            auto p = testFactory ? testFactory(k) : k == PublishKind::Syphon ? createSyphonPublisher() : createSpoutPublisher();
             if (p && p->start(want.name, &err)) {
                 pub.gpu[ki] = std::move(p);
                 setState(pub, k, {PublishState::Ok, QStringLiteral("Active: \"%1\"").arg(want.name), -1});

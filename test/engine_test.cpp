@@ -19,6 +19,7 @@
 #include <QColor>
 #include <QElapsedTimer>
 #include <QLineF>
+#include <map>
 #include <mutex>
 #include <QRegularExpression>
 #include <QUndoStack>
@@ -4031,6 +4032,72 @@ void main(){ gl_FragColor = definitely_not_defined; }
         e.setPublishSettings(vp, PublishSettings());
         CHECK(waitFrames(3));
         CHECK(e.publishState(vp, PublishKind::Ndi).level == PublishState::Off);
+    }
+    {
+        // Syphon / Spout one frame later (the default): the picture shared at the end of frame f is the previous
+        // frame's, and Syphon copies it in a context of its own that the render thread cannot wait for. So the frame
+        // after must not draw into it: the texture shared at frame f is never the one shared at frame f + 2 (the
+        // picture drawn at f + 1). With two buffers it would be. Recorded by a stand-in publisher, on every platform.
+        struct Shares {
+            std::mutex m;
+            std::map<quint64, unsigned> byFrame; // frame -> texture shared at its end
+        };
+        class RecordingPublisher : public GpuPublisher
+        {
+        public:
+            RecordingPublisher(Engine *e, std::shared_ptr<Shares> s) : m_e(e), m_s(std::move(s)) {}
+            bool start(const QString &, QString *) override { return true; }
+            void publish(unsigned int texture, int, int) override
+            {
+                std::lock_guard<std::mutex> lk(m_s->m);
+                m_s->byFrame[m_e->frameCount()] = texture; // render thread: the frame being finished
+            }
+
+        private:
+            Engine *m_e;
+            std::shared_ptr<Shares> m_s;
+        };
+        auto shares = std::make_shared<Shares>();
+        Engine *engine = &e;
+        e.setGpuPublisherFactoryForTests([engine, shares](PublishKind) -> std::unique_ptr<GpuPublisher> {
+            return std::make_unique<RecordingPublisher>(engine, shares);
+        });
+        const bool wasLate = e.gpuShareOneFrameLate();
+        const quint64 vp = e.mainViewportId();
+        for (const bool delayed : {true, false}) {
+            e.setGpuShareOneFrameLate(delayed);
+            {
+                std::lock_guard<std::mutex> lk(shares->m);
+                shares->byFrame.clear();
+            }
+            PublishSettings ps;
+            ps[PublishKind::Syphon].enabled = true;
+            ps[PublishKind::Syphon].name = "Share order test";
+            e.setPublishSettings(vp, ps);
+            CHECK(waitFrames(16));
+            CHECK(e.publishState(vp, PublishKind::Syphon).level == PublishState::Ok);
+            e.setPublishSettings(vp, PublishSettings());
+            CHECK(waitFrames(2));
+            std::map<quint64, unsigned> got;
+            {
+                std::lock_guard<std::mutex> lk(shares->m);
+                got = shares->byFrame;
+            }
+            int pairs = 0, overwritten = 0;
+            for (const auto &[frame, tex] : got) {
+                const auto later = got.find(frame + 2);
+                if (later == got.end()) continue;
+                ++pairs;
+                if (later->second == tex) ++overwritten;
+            }
+            std::printf("       GPU share %s: %d frames shared, %d pairs checked, %d overwritten\n",
+                        delayed ? "one frame later" : "at once", int(got.size()), pairs, overwritten);
+            CHECK(got.size() >= 8);
+            if (delayed) CHECK(pairs >= 4 && overwritten == 0);
+            for (const auto &[frame, tex] : got) CHECK(tex != 0);
+        }
+        e.setGpuShareOneFrameLate(wasLate);
+        e.setGpuPublisherFactoryForTests(nullptr);
     }
     {
         // DeckLink: its settings (the first port by default), the modes, the picture in 4:2:2, a port that is not there

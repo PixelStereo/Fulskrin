@@ -40,6 +40,10 @@ public:
     // --- Any thread
     PublishState state(quint64 viewport, PublishKind k) const;
     void setTap(std::function<void(const CpuFrame &)> fn); // tests: frames of the first viewport
+    // Tests: Syphon / Spout publishers made by this (any platform, without the SDKs) instead of the real ones; set
+    // before the publish settings that use them. nullptr: the real ones again
+    using GpuPublisherFactory = std::function<std::unique_ptr<GpuPublisher>(PublishKind)>;
+    void setGpuPublisherFactoryForTests(GpuPublisherFactory f);
 
 private:
     struct Publication;
@@ -55,6 +59,8 @@ private:
     std::mutex m_tapMutex;
     std::function<void(const CpuFrame &)> m_tap;
     bool m_tapDirty = false;
+    std::mutex m_gpuFactoryMutex;
+    GpuPublisherFactory m_gpuFactory; // tests (under m_gpuFactoryMutex)
     QElapsedTimer m_clock;
     std::atomic<quint64> m_readbacksSkipped{0};
 };

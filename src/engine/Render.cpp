@@ -1230,5 +1230,9 @@ PublishSettings Engine::publishSettings(quint64 viewport) const
 }
 
 void Engine::setTestTap(std::function<void(const CpuFrame &)> fn) { m_publishing.setTap(std::move(fn)); }
+void Engine::setGpuPublisherFactoryForTests(std::function<std::unique_ptr<GpuPublisher>(PublishKind)> f)
+{
+    m_publishing.setGpuPublisherFactoryForTests(std::move(f));
+}
 
 PublishState Engine::publishState(quint64 viewport, PublishKind k) const { return m_publishing.state(viewport, k); }
