@@ -1875,6 +1875,30 @@ void main(){ gl_FragColor = definitely_not_defined; }
             e.sequencer().remove(0);
             e.sequencer().advance(1.0);
             CHECK(fired.size() == beforeRemove + 1 && fired.back() == 0);
+            // AutoFollow also belongs to its originating sequence, not the UI
+            // selection. Changing the selection during its action must preserve
+            // the delayed second GO and update that sequence's own playhead.
+            e.sequencer().setCurrent(0);
+            e.sequencer().stop();
+            Sequencer::Sequence autoSequence;
+            autoSequence.name = "Auto background";
+            Sequencer::Step autoFirst, autoSecond;
+            autoFirst.snapshot = e.snapshot(0).id;
+            autoFirst.preWait = 0.1;
+            autoFirst.postWait = 0.1;
+            autoFirst.next = Sequencer::StepContinue::AutoFollow;
+            autoSecond.snapshot = e.snapshot(1).id;
+            autoSequence.steps = {autoFirst, autoSecond};
+            const int autoIndex = e.sequencer().add(autoSequence);
+            e.sequencer().setCurrent(autoIndex);
+            const size_t beforeAuto = fired.size();
+            CHECK(e.sequencer().go());
+            e.sequencer().setCurrent(1); // edit another sequence meanwhile
+            e.sequencer().advance(0.1 + e.sequencer().stepDuration(autoFirst) + 0.1 + 0.05);
+            CHECK(fired.size() == beforeAuto + 2 && fired[beforeAuto] == 0 && fired[beforeAuto + 1] == 1);
+            e.sequencer().setCurrent(autoIndex);
+            CHECK(e.sequencer().position() == 1);
+            e.sequencer().stop();
             e.sequencer().setRecaller(nullptr);
             e.sequencer().clear();
             e.setFadesManual(false);
