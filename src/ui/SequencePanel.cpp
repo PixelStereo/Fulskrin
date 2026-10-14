@@ -472,7 +472,7 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     auto *left = new QVBoxLayout;
     left->addWidget(new QLabel(QStringLiteral("<b>Sequences</b>")));
     m_sequences = new QListWidget;
-    m_sequences->setToolTip(QStringLiteral("The selected sequence is the one GO plays · double-click to rename"));
+    m_sequences->setToolTip(QStringLiteral("Select which sequence GO / Stop controls. Other sequences keep playing in the background. Double-click to rename."));
     left->addWidget(m_sequences, 1);
     auto *sb = new QHBoxLayout;
     m_add = new QPushButton(QStringLiteral("+"));
@@ -727,6 +727,21 @@ void SequenceWindow::fillActionMenu(QMenu *menu, int row)
 // The steps on their way: their time columns are redrawn while they move (and once more when they are done)
 void SequenceWindow::pollRuns()
 {
+    // A sequence can continue in the background while another is edited.
+    // Show its activity on the list item without changing the editable name.
+    for (int i = 0; i < m_sequences->count(); ++i) {
+        QListWidgetItem *item = m_sequences->item(i);
+        const bool active = m_engine->sequencer().running(i);
+        if (item->data(Qt::UserRole).toBool() == active) continue;
+        QSignalBlocker blocker(m_sequences); // styling must not trigger a rename
+        item->setData(Qt::UserRole, active);
+        QFont font = item->font();
+        font.setBold(active);
+        item->setFont(font);
+        item->setForeground(active ? QColor(90, 215, 155) : palette().color(QPalette::Text));
+        item->setToolTip(active ? QStringLiteral("Cues running (including in the background). Select to control this sequence.")
+                                : QStringLiteral("Select to edit or GO this sequence. Other sequences keep playing."));
+    }
     std::vector<Sequencer::Run> runs = m_engine->sequencer().runs();
     if (runs.empty() && m_runs.empty()) return;
     m_runs = std::move(runs);
