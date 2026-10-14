@@ -53,7 +53,7 @@ jobs:
         run: |
           # Deterministic areas once; the real-time ones (label timing) up to 3 times (CMakeLists.txt)
           xvfb-run -a ctest --test-dir build --output-on-failure -LE timing
-          xvfb-run -a ctest --test-dir build --output-on-failure -L timing --repeat until-pass:3
+          python3 scripts/run_timing_tests.py xvfb-run -a ctest --test-dir build --output-on-failure -L timing
       - name: Dependency versions
         run: |
           {
@@ -246,7 +246,7 @@ jobs:
       - name: Engine tests
         run: |
           ctest --test-dir build --output-on-failure -LE timing
-          ctest --test-dir build --output-on-failure -L timing --repeat until-pass:3
+          python scripts/run_timing_tests.py ctest --test-dir build --output-on-failure -L timing
       - name: Dependency versions
         run: |
           { echo "Built on macOS $(sw_vers -productVersion) $(uname -m), commit $GITHUB_SHA"; brew list --versions qt ffmpeg; } \
@@ -400,7 +400,7 @@ jobs:
           # Deterministic areas once; the real-time ones (label timing) up to 3 times (CMakeLists.txt)
           ctest --test-dir build --output-on-failure -LE timing
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build --output-on-failure -L timing --repeat until-pass:3
+          python scripts/run_timing_tests.py ctest --test-dir build --output-on-failure -L timing
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package with runtime dependencies
         shell: pwsh
