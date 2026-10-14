@@ -269,7 +269,12 @@ bool match(const QString &pattern, const QString &address)
     // A malformed OSC request must never create unbounded split lists or
     // exhaust a control thread's CPU on hostile wildcard combinations.
     if (pattern.size() > kMaxMatchChars || address.size() > kMaxMatchChars) return false;
-    if (pattern == address) return true; // the common literal path costs almost nothing
+    // Fast common path, but only when it has NO wildcard grammar. An invalid
+    // pattern such as "/[" must not be accepted just because it equals the
+    // address literally.
+    if (!pattern.contains('*') && !pattern.contains('?') &&
+        !pattern.contains('[') && !pattern.contains('{'))
+        return pattern == address;
     const QStringList p = pattern.split('/'), a = address.split('/');
     if (p.size() != a.size()) return false;
     int remaining = kMaxMatchSteps;
