@@ -2,6 +2,7 @@
 #include "EngineInternal.h"
 
 #include <set>
+#include <functional>
 
 #include <QDir>
 #include <QFile>
