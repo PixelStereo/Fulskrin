@@ -292,11 +292,17 @@ struct Layer {
     RenderTarget fxTarget[2];
 
     RenderTarget groupTarget; // group: composite of its members; viewport: what it sees, at its own size
-    // Viewport: the picture its window shows (composition opacity and blackout applied), double buffered so the
-    // interface and the publishers read the last finished frame
-    RenderTarget vpOut[2];
+    // The published frame must remain intact while a delayed Syphon/Spout share copies
+    // the previous frame: use a third render target only for delayed sharing.
+    RenderTarget vpOut[3];
     int vpBack = 1;
     std::atomic<int> vpPublished{0};
+    static int nextViewportBack(int oldFront, int newFront, bool delayed)
+    {
+        // In deferred mode all three indices must differ: the previous frame is
+        // published at the same tick, so it cannot be the next render target.
+        return delayed ? 3 - oldFront - newFront : oldFront;
+    }
     RenderTarget prepTarget;  // roi + color
     // Its masks (Masks.h): edited by the interface, drawn by the render thread when their revision changes
     std::vector<Mask> masks;

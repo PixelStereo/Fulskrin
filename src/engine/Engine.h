@@ -541,6 +541,8 @@ public:
     PublishState publishState(quint64 viewport, PublishKind k) const;
     // Tests: receives the read-back frames (send thread)
     void setTestTap(std::function<void(const CpuFrame &)> fn);
+    // Tests: Syphon / Spout publishers made by `f` on any platform (Publishing::setGpuPublisherFactoryForTests)
+    void setGpuPublisherFactoryForTests(std::function<std::unique_ptr<GpuPublisher>(PublishKind)> f);
 
     // --- Composition opacity: 0..1 reached in `seconds` seconds (picture only)
     void fadeCompositionOpacity(double target, double seconds);
@@ -599,8 +601,8 @@ public:
     // graphics memory free (when the driver says: NVIDIA, AMD), and which budget is exceeded now ("warnings").
     // OSC /composition/budget. Sampled by the render thread once a second; a budget newly exceeded is logged.
     QJsonObject resourcesJson() const;
-    // Syphon and Spout: false (default) the frame is finished before it is shared (the render thread waits for the
-    // GPU); true the previous frame is shared, no wait on the render path, one frame later for the receivers
+    // Syphon/Spout: true (default) publishes the prior complete viewport picture using
+    // a protected third buffer; false waits for GPU completion with glFinish (legacy mode).
     void setGpuShareOneFrameLate(bool on) { m_shareOneFrameLate = on; }
     bool gpuShareOneFrameLate() const { return m_shareOneFrameLate.load(); }
     quint64 mipmapsMade() const { return m_mipmapsMade.load(); } // layers' mipmaps generated since the start
@@ -890,7 +892,7 @@ private:
     FrameTiming m_frameTiming;
     std::atomic<quint64> m_outputsDropped{0}; // frames an output window could not show (Metal: surfaces in use)
     std::atomic<quint64> m_sharesSkipped{0};  // Syphon / Spout one frame later: the previous frame not finished
-    std::atomic<bool> m_shareOneFrameLate{false};
+    std::atomic<bool> m_shareOneFrameLate{true};
     std::atomic<quint64> m_mipmapsMade{0}; // glGenerateMipmap calls (tests: once per layer and frame at most)
     void sampleResources(); // render thread, context current: once a second
     qint64 m_resourcesSampledNs = 0;

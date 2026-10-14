@@ -66,7 +66,7 @@ PlayMode SettingsPanel::defaultPlayMode()
 {
     return playModeFromKey(QSettings().value(kPlayModeKey).toString(), PlayMode::Loop);
 }
-bool SettingsPanel::gpuShareOneFrameLate() { return QSettings().value(kShareLateKey, false).toBool(); }
+bool SettingsPanel::gpuShareOneFrameLate() { return QSettings().value(kShareLateKey, true).toBool(); }
 bool SettingsPanel::hardwareDecoding() { return QSettings().value(kHardwareKey, true).toBool(); }
 static int s_followFades = -1; // read once, then kept up to date by the check box (asked 10 times a second)
 bool SettingsPanel::followFades()
@@ -205,9 +205,9 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
         rf->addRow(m_mipmaps);
         auto *shareLate = new FlagBox(QStringLiteral("Syphon / Spout one frame later, without waiting for the GPU"));
         shareLate->setChecked(gpuShareOneFrameLate());
-        shareLate->setToolTip(QStringLiteral("Off: each frame is finished before it is shared (the render waits for the "
-                                             "graphics card). On: the frame before is shared, the render never waits for "
-                                             "it; the applications receiving it get it one frame later."));
+        shareLate->setToolTip(QStringLiteral("On (default): publish the prior completed picture without glFinish "
+                                             "using a third viewport target. Off: wait for the current frame to "
+                                             "finish on the GPU before sharing it."));
         rf->addRow(shareLate);
         connect(shareLate, &QCheckBox::toggled, this, [this](bool on) {
             QSettings().setValue(kShareLateKey, on);
