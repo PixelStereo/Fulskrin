@@ -587,6 +587,7 @@ public:
     double fps() const { return m_fps.load(); }
     // Frame timing (FrameTiming.h): intervals, missed deadlines, compute and present times, OSC / cue to frame
     FrameTiming::Stats frameTiming() const { return m_frameTiming.stats(); }
+    FrameTiming::Window takeFrameTimingWindow() { return m_frameTiming.takeWindow(); }
     QJsonObject frameTimingJson() const; // the same, with the outputs' dropped frames (OSC /composition/timing)
     void resetFrameTiming();
     void noteInput(FrameTiming::Input kind) { m_frameTiming.noteInput(kind); } // any thread
