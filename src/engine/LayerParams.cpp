@@ -227,6 +227,31 @@ const std::vector<Parameter *> &Layer::parameters()
             .step(0.01)
             .ramp(Parameter::Ramp::Cut)
             .animatable(false);
+        // Played or paused: held by the snapshots and the presets like any value (set at once). After the in / out
+        // points: a recall that also changes them plays (or pauses) in the new range
+        add("play", "Source › Play", T::Bool)
+            .ramp(Parameter::Ramp::Cut)
+            .byDefault(true)
+            .bind([self] { return QVariant(self->playing); },
+                  [self](const QVariant &v) {
+                      const bool on = v.toBool();
+                      if (on && !self->playing && self->atEnd()) startMedia(*self); // played to the end: from the start
+                      self->playing = on;
+                      if (on) self->ended = false;
+                  });
+        // From the beginning: a snapshot or a preset that holds it on starts the media again at its in point (its out
+        // point backwards) and plays it. Read back as off: it is an action the recall makes, not a state. Last of the
+        // transport: after the play state, the in / out points and the play mode it may set as well
+        add("restart", "Source › Restart on Recall", T::Bool)
+            .ramp(Parameter::Ramp::Cut)
+            .byDefault(false)
+            .bind([] { return QVariant(false); },
+                  [self](const QVariant &v) {
+                      if (!v.toBool()) return;
+                      self->playing = true;
+                      self->ended = false;
+                      startMedia(*self);
+                  });
     }
 
     // A Timecode generator's transport (its free run): played, paused, sought, its in / out points and play mode.

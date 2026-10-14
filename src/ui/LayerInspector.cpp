@@ -594,11 +594,12 @@ void LayerInspector::rebuild()
     }
     lockInputs(tabs, m_locked);
     name->setEnabled(!m_locked);
-    if (s.type == SourceType::Audio) { // a sound has no picture: no ROI, color, mapping, effects or routing
+    if (s.type == SourceType::Audio) { // a sound has no picture: no ROI, color, mapping, masks, effects or routing
         for (int t = 0; t < tabs->count(); ++t) {
-            if (t == m_animTab || tabs->tabText(t) == QLatin1String("Source")) continue; // its transport, volume, speed
+            const QString name = tabs->tabText(t).section(' ', 0, 0);
+            if (name == QLatin1String("Source") || name == QLatin1String("Anim")) continue; // transport, volume, speed
             tabs->setTabEnabled(t, false);
-            tabs->setTabToolTip(t, QStringLiteral("An audio layer has no picture"));
+            tabs->setTabVisible(t, false); // not shown at all (kept built: the inspector's fields stay valid)
         }
     }
     m_tabs = tabs;
@@ -761,8 +762,8 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
     });
     if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
 
-    // Transition when a snapshot gives this layer another source
-    {
+    // Transition when a snapshot gives this layer another source (a sound: its levels cross, nothing to choose)
+    if (s.type != SourceType::Audio) {
         auto *row = new QHBoxLayout;
         auto *label = new ResetLabel(QStringLiteral("Transition"), [this] {
             setProp(cmd::SetLayerProp::Transition, QString());
@@ -1464,8 +1465,10 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
             return b;
         };
 
-        // Play: direction and pause, then go to start and step one frame
-        rowLabel(0, QStringLiteral("Play"));
+        // Play: direction and pause, then go to start and step one frame. Its label: the play state and "restart on
+        // recall" in presets (right-click), as any value
+        QLabel *playLabel = rowLabel(0, QStringLiteral("Play"));
+        m_animate->attach(playLabel, {QStringLiteral("play"), QStringLiteral("restart")});
         auto *playRow = new QHBoxLayout;
         playRow->setSpacing(2);
         m_playButtons = new QButtonGroup(g);
@@ -1581,11 +1584,13 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
         m_loop->setValues(s.inPoint, s.outPoint < 0 ? s.duration : s.outPoint);
         m_loop->setToolTip(QStringLiteral("Played range: playback, loops and ping-pong stay between these two points"));
         const double duration0 = s.duration;
-        barLabel(1, QStringLiteral("Loop"), [this] {
+        QLabel *loopLabel = barLabel(1, QStringLiteral("Loop"), [this] {
             setValues({{"in", 0.0}, {"out", -1.0}}, QStringLiteral("Clear In / Out Points"));
             rebuild();
         });
         bars->addWidget(m_loop, 1, 1);
+        // The in / out points in presets (right-click the bar or its name), as any value
+        m_animate->attach({loopLabel, m_loop}, {QStringLiteral("in"), QStringLiteral("out")});
         v->addLayout(bars);
 
         // Playback is not a project edit: no undo on play, pause or seek.

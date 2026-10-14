@@ -337,7 +337,10 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
     if (o.contains("mesh")) l->mapping.setMeshJson(o.value("mesh").toObject());
     parametersFromJson(l->parameters(), o.value("params").toObject(), &l->extraParams);
     if (l->hasTransport()) {
-        l->playing = o.value("play").toBool(true);
+        // Played or paused: its parameter when the state has it (a snapshot that restarts it plays it), else the older
+        // key of the projects
+        const QJsonObject params = o.value("params").toObject();
+        l->playing = params.value("restart").toBool(false) || params.value("play").toBool(o.value("play").toBool(true));
         startMedia(*l); // its speed: backwards starts from the end
     }
     l->anims.clear();
