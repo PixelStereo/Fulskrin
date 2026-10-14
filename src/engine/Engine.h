@@ -144,7 +144,12 @@ public:
         PartSpatial = 1 << 3,     // mapping: corners and mesh
         PartEffects = 1 << 4,     // ISF chain and its enable switch
         PartCompositing = 1 << 5, // opacity, blend mode
-        PartAll = PartSource | PartRoi | PartColor | PartSpatial | PartEffects | PartCompositing,
+        PartMasks = 1 << 6,       // its shape masks (drawn in the preview)
+        PartViewports = 1 << 7,   // how much of it each viewport shows
+        PartAnimations = 1 << 8,  // the animations of its values
+        PartTransport = 1 << 9,   // speed, play mode, in / out, played or paused, volume, mute (the media stays)
+        PartAll = PartSource | PartRoi | PartColor | PartSpatial | PartEffects | PartCompositing | PartMasks |
+                  PartViewports | PartAnimations | PartTransport,
     };
     // Copies the chosen parts of `o` (a layerJson, from any layer or project) onto layer i, leaving its
     // identity (id, name, group, place in the list) alone. False if the layer is missing or locked.
