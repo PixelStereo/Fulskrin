@@ -3,7 +3,10 @@
 // after the replacement objects are created.
 #include "Engine.h"
 #include "Gl.h"
+#include "Publishing.h"
 #include <QImage>
+#include <QThread>
+#include <atomic>
 #include <cstdio>
 
 int runGpuTargetTests(Engine &e)
@@ -113,6 +116,89 @@ int runGpuTargetTests(Engine &e)
         std::printf("FAIL GPU target: could not set up ROI synthetic input: %s\n", qPrintable(err));
         ++failures;
     }
+
+    // NDI/OMT network readback uses the same CPU tap; exercise real PBOs
+    // and sender thread without requiring proprietary NDI/OMT libraries.
+    std::atomic<int> received{0}, lastW{0}, lastH{0}, lastGreen{0}, lastBlue{0};
+    e.runGl([&] {
+        auto f = gl();
+        GLuint vao = 0, vbo = 0;
+        const float quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+        f->glGenVertexArrays(1, &vao);
+        f->glBindVertexArray(vao);
+        f->glGenBuffers(1, &vbo);
+        f->glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        f->glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+        f->glEnableVertexAttribArray(0);
+        f->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        f->glBindVertexArray(0);
+
+        Publishing pub([&] {
+            f->glBindVertexArray(vao);
+            f->glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            f->glBindVertexArray(0);
+        });
+        QString initError;
+        const bool shader = pub.initGl(&initError);
+        check(shader, "publishing readback shader initialized");
+        if (shader) {
+            pub.setTap([&](const CpuFrame &c) {
+                lastW.store(c.width, std::memory_order_relaxed);
+                lastH.store(c.height, std::memory_order_relaxed);
+                if (c.bgra.size() >= 4) {
+                    lastBlue.store(c.bgra[0], std::memory_order_relaxed);
+                    lastGreen.store(c.bgra[1], std::memory_order_relaxed);
+                }
+                received.fetch_add(1, std::memory_order_release);
+            });
+            pub.follow({{quint64(777), PublishSettings{}}});
+            RenderTarget small, large;
+            check(small.ensure(32, 32) && large.ensure(64, 64), "two network source resolutions allocated");
+            small.clear(0, 1, 0, 1);
+            large.clear(0, 0, 1, 1);
+
+            // No replacement exists yet. Skip instead of drawing to FBO 0.
+            failNextRenderTargetAllocationForTests();
+            const quint64 before = pub.readbacksSkipped();
+            pub.readback(777, small, 60.0, 1);
+            check(pub.readbacksSkipped() == before + 1, "missing readback target is skipped");
+
+            for (int i = 0; i < 12; ++i) {
+                pub.readback(777, small, 60.0, quint64(i + 2));
+                f->glFinish();
+                QThread::msleep(10);
+                if (received.load(std::memory_order_acquire) >= 2) break;
+            }
+            check(received.load() >= 1 && lastW.load() == 32 && lastH.load() == 32 &&
+                  lastGreen.load() > 240 && lastBlue.load() < 10,
+                  "network readback recovers and sends 32x32 green frame");
+
+            // Resizing fails: the previous 32x32 readback FBO is retained.
+            // It must not be used for an unrelated 64x64 picture.
+            failNextRenderTargetAllocationForTests();
+            const quint64 beforeResize = pub.readbacksSkipped();
+            pub.readback(777, large, 60.0, 15);
+            check(pub.readbacksSkipped() == beforeResize + 1, "stale 32x32 readback target rejected for 64x64");
+            for (int i = 0; i < 15; ++i) {
+                pub.readback(777, large, 60.0, quint64(i + 16));
+                f->glFinish();
+                QThread::msleep(10);
+                if (lastW.load(std::memory_order_relaxed) == 64 && lastBlue.load(std::memory_order_relaxed) > 240)
+                    break;
+            }
+            check(lastW.load() == 64 && lastH.load() == 64 && lastBlue.load() > 240 &&
+                  lastGreen.load() < 10, "network sender resumes at 64x64 blue without stale pixels");
+
+            pub.setTap(nullptr);
+            pub.follow({{quint64(777), PublishSettings{}}});
+            small.destroy();
+            large.destroy();
+        }
+        pub.release();
+        f->glDeleteBuffers(1, &vbo);
+        f->glDeleteVertexArrays(1, &vao);
+        f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    });
     e.newProject();
     return failures;
 }
