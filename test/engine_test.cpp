@@ -1899,6 +1899,35 @@ void main(){ gl_FragColor = definitely_not_defined; }
             e.sequencer().setCurrent(autoIndex);
             CHECK(e.sequencer().position() == 1);
             e.sequencer().stop();
+            // A given sequence, whatever is selected (OSC /sequence/<n>/go, step, stop), and Stop all: the operator's
+            // panic button must reach the sequences playing in the background too
+            {
+                Sequencer::Sequence p, q;
+                Sequencer::Step w;
+                w.snapshot = e.snapshot(0).id;
+                w.preWait = 0.5;
+                p.name = "Panel P";
+                p.steps = {w, w};
+                q.name = "Panel Q";
+                q.steps = {w};
+                const int ip = e.sequencer().add(p), iq = e.sequencer().add(q);
+                e.sequencer().setCurrent(iq);
+                CHECK(e.sequencer().goSequence(ip) && e.sequencer().positionOf(ip) == 0);
+                CHECK(e.sequencer().positionOf(iq) == -1 && e.sequencer().position() == -1); // the selected one untouched
+                CHECK(e.sequencer().active(ip) && !e.sequencer().running() && e.sequencer().anyActive());
+                CHECK(e.sequencer().goToStepOf(ip, 1) && e.sequencer().positionOf(ip) == 1);
+                CHECK(e.sequencer().go()); // the selected one: Q
+                const size_t before = fired.size();
+                e.sequencer().stopSequence(ip); // only P
+                CHECK(!e.sequencer().active(ip) && e.sequencer().active(iq));
+                CHECK(e.sequencer().goSequence(ip) || e.sequencer().positionOf(ip) == 1); // P at its end: nothing next
+                CHECK(e.sequencer().goToStepOf(ip, 0));
+                e.sequencer().stopAll();
+                CHECK(!e.sequencer().anyActive() && !e.sequencer().active(ip) && !e.sequencer().active(iq));
+                e.sequencer().advance(1.0);
+                CHECK(fired.size() == before); // nothing fired after Stop all, in either sequence
+                CHECK(!e.sequencer().goSequence(-1) && !e.sequencer().goSequence(e.sequencer().count()));
+            }
             e.sequencer().setRecaller(nullptr);
             e.sequencer().clear();
             e.setFadesManual(false);

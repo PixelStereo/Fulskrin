@@ -98,6 +98,8 @@ QString OscNamespace::signature() const
     }
     for (int i = 0; i < m_e->snapshotCount(); ++i) s += QStringLiteral("snapshot:") + m_e->snapshot(i).name + '\n';
     for (int i = 0; i < m_e->presetCount(); ++i) s += QStringLiteral("preset:") + m_e->preset(i).name + '\n';
+    for (int i = 0; i < m_e->sequencer().count(); ++i)
+        s += QStringLiteral("sequence:") + m_e->sequencer().sequence(i).name + '\n';
     for (const Interaction &it : m_e->interactions()) // their names, and which filter settings they have
         s += QStringLiteral("interaction:%1:%2:%3\n").arg(it.id).arg(it.name).arg(int(it.filter));
     for (int i = 0; i < m_e->animationCount(); ++i) s += QStringLiteral("timeline:") + m_e->animation(i).name + '\n';
@@ -333,7 +335,44 @@ void OscNamespace::build()
             e->sequencer().setCurrent(i);
             return true;
         };
+        // Stop: the selected sequence's waits; stop_all: every sequence's, those playing in the background too
+        add("/sequence/stop", "N", 2, "Stop").set = [e](const QVariantList &) {
+            e->sequencer().stop();
+            return true;
+        };
+        add("/sequence/stop_all", "N", 2, "Stop All").set = [e](const QVariantList &) {
+            e->sequencer().stopAll();
+            return true;
+        };
         m_nodes["/sequence"].description = "Sequence";
+        // Each sequence (1 = first) on its own: several cue lists play side by side, a controller drives one
+        // whatever the interface has selected
+        for (int i = 0; i < e->sequencer().count(); ++i) {
+            const QString base = QStringLiteral("/sequence/%1").arg(i + 1);
+            auto valid = [e, i] { return i < e->sequencer().count(); };
+            add(base + "/go", "N", 2, "GO").set = [e, i, valid](const QVariantList &) {
+                return valid() && e->sequencer().goSequence(i);
+            };
+            add(base + "/back", "N", 2, "GO Back").set = [e, i, valid](const QVariantList &) {
+                return valid() && e->sequencer().backSequence(i);
+            };
+            add(base + "/stop", "N", 2, "Stop").set = [e, i, valid](const QVariantList &) {
+                if (!valid()) return false;
+                e->sequencer().stopSequence(i);
+                return true;
+            };
+            OscNode &step = add(base + "/step", "i", 3, "Step");
+            step.get = [e, i] { return QVariantList{e->sequencer().positionOf(i) + 1}; };
+            step.set = [e, i, valid](const QVariantList &a) {
+                return valid() && e->sequencer().goToStepOf(i, int(std::lround(num(a.value(0)))) - 1);
+            };
+            OscNode &active = add(base + "/active", "T", 1, "Playing");
+            active.get = [e, i] { return QVariantList{e->sequencer().active(i)}; };
+            OscNode &nm = add(base + "/name", "s", 1, "Name");
+            nm.get = [e, i] { return QVariantList{e->sequencer().sequence(i).name}; };
+            const QString name = e->sequencer().sequence(i).name;
+            m_nodes[base].description = name.isEmpty() ? QString::number(i + 1) : name;
+        }
     }
 
     // --- Timelines (1 = first): their transport

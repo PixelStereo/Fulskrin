@@ -134,6 +134,14 @@ public:
     bool back();
     bool goTo(int step, bool chain = true);
     void stop();                   // cancel pending waits in the selected sequence only
+    void stopAll();                // cancel every sequence's pending waits and follows (background ones too)
+    bool anyActive() const;        // a sequence, selected or not, has a step on its way (Stop all is enabled)
+    // A given sequence (0 = first), whatever is selected: OSC /sequence/<n>/go, back, step, stop
+    bool goSequence(int index);
+    bool backSequence(int index);
+    bool goToStepOf(int index, int step);
+    void stopSequence(int index);
+    int positionOf(int index) const; // its playhead (-1: before the first step)
     std::vector<Run> runs() const; // the steps of the selected sequence on their way
     bool running() const; // waits/follows pending in the selected sequence (Stop is enabled)
     bool active(int sequenceIndex) const; // any active pre-wait, cue action or follow (UI activity indicator)
@@ -163,6 +171,9 @@ signals:
 private:
     int sequenceIndexLocked(quint64 id) const; // under m_mutex; stable identity for queued GO
     bool goToSequence(quint64 id, int step, bool chain);
+    int nextOfLocked(int index) const;     // under m_mutex
+    int previousOfLocked(int index) const; // under m_mutex
+    void stopSequenceLocked(int index);    // under m_mutex
     void startTimer();
     void runClock(); // clock thread
     void tick();     // clock thread

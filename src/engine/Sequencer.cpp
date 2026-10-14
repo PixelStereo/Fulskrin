@@ -210,23 +210,42 @@ void Sequencer::setPosition(int step)
 int Sequencer::next() const
 {
     QMutexLocker lk(&m_mutex);
-    if (m_current < 0) return -1;
-    const Sequence &s = m_sequences[size_t(m_current)];
-    const int n = int(s.steps.size());
-    if (n == 0) return -1;
-    if (m_positions[size_t(m_current)] + 1 < n) return m_positions[size_t(m_current)] + 1;
-    return s.loop ? 0 : -1;
+    return nextOfLocked(m_current);
 }
 
 int Sequencer::previous() const
 {
     QMutexLocker lk(&m_mutex);
-    if (m_current < 0) return -1;
-    const Sequence &s = m_sequences[size_t(m_current)];
+    return previousOfLocked(m_current);
+}
+
+// The step GO plays in sequence `index` (-1: none), from its own playhead
+int Sequencer::nextOfLocked(int index) const
+{
+    if (index < 0 || index >= int(m_sequences.size())) return -1;
+    const Sequence &s = m_sequences[size_t(index)];
     const int n = int(s.steps.size());
-    if (n == 0 || m_positions[size_t(m_current)] < 0) return -1;
-    if (m_positions[size_t(m_current)] > 0) return m_positions[size_t(m_current)] - 1;
+    if (n == 0) return -1;
+    const int at = m_positions[size_t(index)];
+    if (at + 1 < n) return at + 1;
+    return s.loop ? 0 : -1;
+}
+
+int Sequencer::previousOfLocked(int index) const
+{
+    if (index < 0 || index >= int(m_sequences.size())) return -1;
+    const Sequence &s = m_sequences[size_t(index)];
+    const int n = int(s.steps.size());
+    const int at = m_positions[size_t(index)];
+    if (n == 0 || at < 0) return -1;
+    if (at > 0) return at - 1;
     return s.loop ? n - 1 : -1;
+}
+
+int Sequencer::positionOf(int index) const
+{
+    QMutexLocker lk(&m_mutex);
+    return index >= 0 && index < int(m_positions.size()) ? m_positions[size_t(index)] : -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -302,37 +321,93 @@ bool Sequencer::goToSequence(quint64 owner, int step, bool chain)
 
 bool Sequencer::go()
 {
-    quint64 owner;
-    int step;
+    int index;
     {
         QMutexLocker lk(&m_mutex);
-        if (m_current < 0) return false;
-        owner = m_sequenceIds[size_t(m_current)];
-        step = next();
+        index = m_current;
     }
-    return goToSequence(owner, step, true);
+    return goSequence(index);
 }
 
 bool Sequencer::back()
+{
+    int index;
+    {
+        QMutexLocker lk(&m_mutex);
+        index = m_current;
+    }
+    return backSequence(index);
+}
+
+// GO / GO BACK / a step of a given sequence, whatever is selected (OSC /sequence/<n>/…)
+bool Sequencer::goSequence(int index)
 {
     quint64 owner;
     int step;
     {
         QMutexLocker lk(&m_mutex);
-        if (m_current < 0) return false;
-        owner = m_sequenceIds[size_t(m_current)];
-        step = previous();
+        if (index < 0 || index >= int(m_sequences.size())) return false;
+        owner = m_sequenceIds[size_t(index)];
+        step = nextOfLocked(index);
+    }
+    return goToSequence(owner, step, true);
+}
+
+bool Sequencer::backSequence(int index)
+{
+    quint64 owner;
+    int step;
+    {
+        QMutexLocker lk(&m_mutex);
+        if (index < 0 || index >= int(m_sequences.size())) return false;
+        owner = m_sequenceIds[size_t(index)];
+        step = previousOfLocked(index);
     }
     return goToSequence(owner, step, false);
+}
+
+bool Sequencer::goToStepOf(int index, int step)
+{
+    quint64 owner;
+    {
+        QMutexLocker lk(&m_mutex);
+        if (index < 0 || index >= int(m_sequences.size())) return false;
+        owner = m_sequenceIds[size_t(index)];
+    }
+    return goToSequence(owner, step, true);
 }
 
 void Sequencer::stop()
 {
     QMutexLocker lk(&m_mutex);
-    if (m_current < 0) return;
-    const quint64 owner = m_sequenceIds[size_t(m_current)];
+    stopSequenceLocked(m_current);
+}
+
+void Sequencer::stopSequence(int index)
+{
+    QMutexLocker lk(&m_mutex);
+    stopSequenceLocked(index);
+}
+
+void Sequencer::stopSequenceLocked(int index)
+{
+    if (index < 0 || index >= int(m_sequenceIds.size())) return;
+    const quint64 owner = m_sequenceIds[size_t(index)];
     m_runs.erase(std::remove_if(m_runs.begin(), m_runs.end(),
         [owner](const Run &r) { return r.sequenceId == owner; }), m_runs.end());
+}
+
+// Every sequence: the pre-waits and follows still to come, in the background too (the operator's panic button)
+void Sequencer::stopAll()
+{
+    QMutexLocker lk(&m_mutex);
+    m_runs.clear();
+}
+
+bool Sequencer::anyActive() const
+{
+    QMutexLocker lk(&m_mutex);
+    return !m_runs.empty();
 }
 
 std::vector<Sequencer::Run> Sequencer::runs() const

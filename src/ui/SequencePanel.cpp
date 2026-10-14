@@ -205,11 +205,19 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     m_currentText->setWordWrap(true);
     m_currentText->setStyleSheet("color:#e4e4e8; font-style:italic;");
     m_stop = new QPushButton(QStringLiteral("■"));
-    m_stop->setToolTip(QStringLiteral("Stop the waits: the pre-waits and follows still to come are dropped "
-                                      "(the snapshots already running go on)"));
+    m_stop->setToolTip(QStringLiteral("Stop the waits of the selected sequence: its pre-waits and follows still to "
+                                      "come are dropped (the snapshots already running go on; the other sequences "
+                                      "keep playing)"));
     m_stop->setEnabled(false);
     m_stop->setFixedWidth(34);
     m_stop->setStyleSheet("QPushButton:enabled { background:#8a2a24; color:white; }");
+    // Several sequences may play at once: one button stops them all, whichever is selected
+    m_stopAll = new QPushButton(QStringLiteral("■■"));
+    m_stopAll->setToolTip(QStringLiteral("Stop all: the pre-waits and follows still to come in every sequence, "
+                                         "those playing in the background too (the snapshots already running go on)"));
+    m_stopAll->setEnabled(false);
+    m_stopAll->setFixedWidth(40);
+    m_stopAll->setStyleSheet("QPushButton:enabled { background:#a01e18; color:white; font-weight:bold; }");
     m_wait = new QLabel;
     m_wait->setTextFormat(Qt::RichText);
     m_wait->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -219,6 +227,7 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     row->addWidget(m_back);
     row->addWidget(m_go);
     row->addWidget(m_stop);
+    row->addWidget(m_stopAll);
     row->addSpacing(6);
     // Previous, current and next steps, each with its text under it
     auto column = [](QLabel *name, QLabel *text) {
@@ -254,6 +263,7 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     connect(m_go, &QPushButton::clicked, this, &SequenceBar::goRequested);
     connect(m_back, &QPushButton::clicked, this, &SequenceBar::backRequested);
     connect(m_stop, &QPushButton::clicked, this, &SequenceBar::stopRequested);
+    connect(m_stopAll, &QPushButton::clicked, this, &SequenceBar::stopAllRequested);
     connect(m_open, &QPushButton::clicked, this, &SequenceBar::windowRequested);
     auto *waits = new QTimer(this);
     waits->setInterval(50);
@@ -295,6 +305,7 @@ void SequenceBar::pollWaits()
     if (text != m_wait->text()) m_wait->setText(text);
     m_wait->setVisible(!text.isEmpty());
     m_stop->setEnabled(!text.isEmpty());
+    m_stopAll->setEnabled(m_engine->sequencer().anyActive());
 }
 
 void SequenceBar::setModified(bool on)
@@ -534,10 +545,17 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     for (QPushButton *b : {m_stepAdd, m_stepDel, m_up, m_down}) stb->addWidget(b);
     stb->addStretch();
     m_stop = new QPushButton(QStringLiteral("■ Stop the waits"));
-    m_stop->setToolTip(QStringLiteral("The pre-waits and follows still to come are dropped (the snapshots already running go on)"));
+    m_stop->setToolTip(QStringLiteral("The selected sequence: its pre-waits and follows still to come are dropped "
+                                      "(the snapshots already running go on; the other sequences keep playing)"));
     m_stop->setEnabled(false);
     stb->addWidget(m_stop);
     connect(m_stop, &QPushButton::clicked, this, &SequenceWindow::stopRequested);
+    m_stopAll = new QPushButton(QStringLiteral("■■ Stop all"));
+    m_stopAll->setToolTip(QStringLiteral("The pre-waits and follows still to come in every sequence, those playing "
+                                         "in the background too (the snapshots already running go on)"));
+    m_stopAll->setEnabled(false);
+    stb->addWidget(m_stopAll);
+    connect(m_stopAll, &QPushButton::clicked, this, &SequenceWindow::stopAllRequested);
     auto *timelines = new QPushButton(QStringLiteral("Timelines…"));
     timelines->setToolTip(QStringLiteral("The timelines: drag one from there onto a step"));
     stb->insertWidget(stb->count() - 1, timelines);
@@ -745,6 +763,7 @@ void SequenceWindow::pollRuns()
     // Always update Stop: after selecting an idle sequence both run lists may be
     // empty, but the button may still be enabled for the former selection.
     m_stop->setEnabled(m_engine->sequencer().running());
+    m_stopAll->setEnabled(m_engine->sequencer().anyActive());
     std::vector<Sequencer::Run> runs = m_engine->sequencer().runs();
     if (runs.empty() && m_runs.empty()) return;
     m_runs = std::move(runs);
