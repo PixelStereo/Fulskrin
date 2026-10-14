@@ -290,6 +290,27 @@ QWidget *CompositionPanel::buildComposition()
     form->addRow(note(QStringLiteral("The pixel space every layer lives in. Each viewport shows a part of it, "
                                      "placed by its Spatial tab: three 1920 × 1080 projectors side by side "
                                      "make a 5760 × 1080 composition. The spatial placement is relative: it follows size changes.")));
+    m_startupEnabled = new QCheckBox(QStringLiteral("Play sequence on project open"));
+    m_startupEnabled->setToolTip(QStringLiteral("Automatically send GO to the first step after opening this project. "
+                                              "Disabled for a new project, or if its sequence is deleted."));
+    m_startupSequence = new QComboBox;
+    m_startupSequence->setToolTip(QStringLiteral("The sequence played at project open (not when recovering an autosave)"));
+    form->addRow(m_startupEnabled);
+    form->addRow(QStringLiteral("Startup sequence"), m_startupSequence);
+    form->addRow(note(QStringLiteral("Saved with the project. A manual New Project or an autosave recovery never starts a sequence.")));
+    connect(m_startupEnabled, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_syncing) return;
+        m_engine->sequencer().setStartupSequence(on ? m_startupSequence->currentData().toInt(-1) : -1);
+        m_startupSequence->setEnabled(on && m_startupSequence->count() > 0);
+        emit compositionEdited();
+    });
+    connect(m_startupSequence, qOverload<int>(&QComboBox::activated), this, [this](int i) {
+        if (m_syncing || !m_startupEnabled->isChecked()) return;
+        m_engine->sequencer().setStartupSequence(m_startupSequence->itemData(i).toInt(-1));
+        emit compositionEdited();
+    });
+    connect(&m_engine->sequencer(), &Sequencer::changed, this, &CompositionPanel::syncStartupSequence);
+
 
     connect(m_preset, qOverload<int>(&QComboBox::activated), this, [this](int i) {
         const QSize s = m_preset->itemData(i).toSize();
@@ -321,6 +342,23 @@ void CompositionPanel::applyComposition()
     emit compositionEdited();
 }
 
+void CompositionPanel::syncStartupSequence()
+{
+    if (!m_startupSequence || !m_startupEnabled) return;
+    const int chosen = m_engine->sequencer().startupSequence();
+    const int count = m_engine->sequencer().count();
+    QSignalBlocker blockCombo(m_startupSequence);
+    QSignalBlocker blockCheck(m_startupEnabled);
+    m_startupSequence->clear();
+    for (int i = 0; i < count; ++i)
+        m_startupSequence->addItem(m_engine->sequencer().sequence(i).name, i);
+    const bool selected = chosen >= 0 && chosen < count;
+    m_startupEnabled->setChecked(selected);
+    m_startupEnabled->setEnabled(count > 0);
+    m_startupSequence->setCurrentIndex(selected ? chosen : (count > 0 ? 0 : -1));
+    m_startupSequence->setEnabled(selected);
+}
+
 void CompositionPanel::syncFromEngine()
 {
     m_syncing = true;
@@ -329,6 +367,7 @@ void CompositionPanel::syncFromEngine()
     m_height->setValue(c.height());
     m_preset->setCurrentIndex(qMax(0, m_preset->findData(c)));
     syncRate();
+    syncStartupSequence();
     m_audioVolume->setValue(std::lround(m_engine->audioVolume() * 100));
     m_audioVolumeLabel->setText(volumeText(int(m_audioVolume->value())));
     m_syncing = false;
