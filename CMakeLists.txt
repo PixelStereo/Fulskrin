@@ -321,8 +321,7 @@ if(APPLE)
   enable_language(OBJCXX)
   list(APPEND APP_SOURCES src/ui/MacPresentation.mm)
   add_executable(Pinol MACOSX_BUNDLE ${APP_SOURCES})
-  target_compile_definitions(Pinol PRIVATE PINOL_BUILD_SHA="${PINOL_BUILD_SHA}")
-target_link_libraries(Pinol PRIVATE "-framework AppKit")
+  target_link_libraries(Pinol PRIVATE "-framework AppKit")
   # The camera permission plugin (static, from Qt): without it Qt refuses the camera before macOS is asked
   find_package(Qt6QDarwinCameraPermissionPlugin QUIET)
   if(TARGET Qt6::QDarwinCameraPermissionPlugin)
@@ -353,6 +352,7 @@ else()
   set(ISF_DEST "$<TARGET_FILE_DIR:Pinol>/isf")
 endif()
 
+target_compile_definitions(Pinol PRIVATE PINOL_BUILD_SHA="${PINOL_BUILD_SHA}")
 target_include_directories(Pinol PRIVATE src src/ui)
 target_link_libraries(Pinol PRIVATE pinol_engine Qt6::Widgets Qt6::OpenGLWidgets)
 
