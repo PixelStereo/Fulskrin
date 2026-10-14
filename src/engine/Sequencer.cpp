@@ -76,10 +76,17 @@ Sequencer::CueTiming Sequencer::cueTiming() const
     return m_timing;
 }
 
+Sequencer::CueWorkTiming Sequencer::cueWorkTiming() const
+{
+    QMutexLocker lk(&m_mutex);
+    return m_workTiming;
+}
+
 void Sequencer::resetCueTiming()
 {
     QMutexLocker lk(&m_mutex);
     m_timing = CueTiming();
+    m_workTiming = CueWorkTiming();
 }
 
 bool Sequencer::clockRunning() const { return m_ticking.load(); }
@@ -335,13 +342,26 @@ void Sequencer::fireSnapshot(int mi)
         else m_engine.recallSnapshot(mi);
         return;
     }
-    // The cue clock: the recall now, the interface told afterwards (what it replaced, for its undo)
+    // The cue clock: record how long it takes to *actually* execute a
+    // snapshot. CueTiming::noteFired() only measures timer lateness, which
+    // can be tiny even when Undo capture or scene application is slow.
+    const qint64 start = FrameTiming::nowNs();
+    const auto recordWork = [this, start](qint64 captured, qint64 applied) {
+        QMutexLocker lk(&m_mutex);
+        m_workTiming.capture.add(double(captured - start) / 1e6);
+        m_workTiming.recall.add(double(applied - captured) / 1e6);
+        m_workTiming.total.add(double(applied - start) / 1e6);
+    };
     if (!recorder) {
         m_engine.recallSnapshot(mi);
+        const qint64 done = FrameTiming::nowNs();
+        recordWork(start, done); // no UI Undo recording, so capture time is zero
         return;
     }
     RecallBefore before{m_engine.captureRecallLayers(mi), m_engine.captureComposition(), m_engine.captureInteractions()};
+    const qint64 captured = FrameTiming::nowNs();
     m_engine.recallSnapshot(mi);
+    recordWork(captured, FrameTiming::nowNs());
     QMetaObject::invokeMethod(this, [this, mi, before] {
         std::function<void(int, const RecallBefore &)> f;
         {

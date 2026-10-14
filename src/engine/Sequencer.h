@@ -20,6 +20,7 @@
 // A GO from the interface or OSC is played on the Sequencer's own thread, as before (setRecaller).
 
 #include "Anim.h"
+#include "FrameTiming.h" // histogram reused for cue-clock execution timings
 
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -97,6 +98,14 @@ public:
         std::array<quint64, 12> buckets{}; // ≤ 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512 ms, beyond
         double percentile(double p) const; // upper edge of the bucket (seconds); 0: none yet
     };
+    // Clock-thread snapshot work; these separate preparation/undo cost
+    // from actual scene application. All durations are milliseconds.
+    // A manual GO through the UI recaller is not included.
+    struct CueWorkTiming {
+        FrameTiming::Histogram capture; // serialize affected layers, composition, interactions for Undo
+        FrameTiming::Histogram recall;  // apply the snapshot (source changes, fades, interactions)
+        FrameTiming::Histogram total;   // capture + recall, including clock path overhead
+    };
 
     Sequencer(Engine &engine, Annotated<QRecursiveMutex> &mutex);
     ~Sequencer() override;
@@ -128,7 +137,8 @@ public:
     // replaced. None: the recall is made all the same, without undo
     void setRecallRecorder(std::function<void(int snapshotIndex, const RecallBefore &before)> f);
     CueTiming cueTiming() const;
-    void resetCueTiming();
+    CueWorkTiming cueWorkTiming() const;
+    void resetCueTiming(); // resets lateness and execution histograms together
     bool clockRunning() const; // the cue clock is ticking (waits on their way)
     // A step's action: its snapshot's, or the time its timeline will play (Play on a timeline that ends; else 0;
     // infinity: its timeline is frozen, speed 0, and plays on when its speed is raised)
@@ -163,4 +173,5 @@ private:
     QElapsedTimer m_clock;             // clock thread
     std::atomic<bool> m_ticking{false};
     CueTiming m_timing;                // under m_mutex
+    CueWorkTiming m_workTiming;         // under m_mutex
 };
