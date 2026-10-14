@@ -106,6 +106,8 @@ bool Engine::initialize(QString *err)
     }
     auto f = gl();
     m_glRenderer = QString::fromLatin1(reinterpret_cast<const char *>(f->glGetString(GL_RENDERER)));
+    m_glVersion = QString::fromLatin1(reinterpret_cast<const char *>(f->glGetString(GL_VERSION)));
+    m_glVendor = QString::fromLatin1(reinterpret_cast<const char *>(f->glGetString(GL_VENDOR)));
     qInfo().noquote() << "OpenGL" << reinterpret_cast<const char *>(f->glGetString(GL_VERSION)) << "-"
                       << reinterpret_cast<const char *>(f->glGetString(GL_RENDERER));
 
