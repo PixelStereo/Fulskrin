@@ -166,6 +166,9 @@ public:
         bool isFilter = false, isTransition = false, ok = false;
     };
     static Header readHeader(const QString &path);
+    // The files a shader needs besides itself: its vertex shader (same name, .vs / .vert) and its IMPORTED images,
+    // each as (absolute path, path relative to the shader's folder). Those that do not exist are left out
+    static std::vector<std::pair<QString, QString>> dependencies(const QString &path);
 
 private:
     bool parse(const QString &src, QString *body);

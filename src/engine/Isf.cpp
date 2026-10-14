@@ -288,6 +288,33 @@ static QPointF jsonPoint(const QJsonValue &v, QPointF def = {})
     return def;
 }
 
+std::vector<std::pair<QString, QString>> IsfInstance::dependencies(const QString &path)
+{
+    std::vector<std::pair<QString, QString>> out;
+    const QFileInfo fi(path);
+    const QDir dir = fi.absoluteDir();
+    for (const QString ext : {QStringLiteral("vs"), QStringLiteral("vert")}) {
+        const QString vs = fi.completeBaseName() + '.' + ext;
+        if (dir.exists(vs)) out.push_back({dir.absoluteFilePath(vs), vs});
+    }
+    QString src, json;
+    if (!readText(fi.absoluteFilePath(), &src) || !splitIsf(src, &json, nullptr)) return out;
+    const QJsonObject o = parseLooseJson(json, nullptr);
+    auto add = [&](const QString &p) {
+        if (p.isEmpty()) return;
+        const QString abs = QDir::cleanPath(dir.absoluteFilePath(p));
+        if (QFileInfo(abs).isFile()) out.push_back({abs, QDir::cleanPath(p)});
+    };
+    const QJsonValue imp = o.value("IMPORTED");
+    if (imp.isObject()) {
+        const QJsonObject io = imp.toObject();
+        for (auto it = io.begin(); it != io.end(); ++it) add(it.value().toObject().value("PATH").toString());
+    } else if (imp.isArray()) {
+        for (const QJsonValue &x : imp.toArray()) add(x.toObject().value("PATH").toString());
+    }
+    return out;
+}
+
 IsfInstance::Header IsfInstance::readHeader(const QString &path)
 {
     Header h;

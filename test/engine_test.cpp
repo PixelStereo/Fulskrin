@@ -345,6 +345,120 @@ void main(){ gl_FragColor = definitely_not_defined; }
               why.contains("format 99"));
         CHECK(e.layerCount() == before);
     }
+    // Collect Files: the project and every file it uses in one folder, copied, then moved
+    {
+        e.newProject();
+        const QString src = tmp + "/collect_src", other = tmp + "/collect_other";
+        QDir(src).removeRecursively();
+        QDir(other).removeRecursively();
+        QDir(tmp + "/collect_out").removeRecursively();
+        QDir().mkpath(src + "/shaders");
+        QDir().mkpath(other);
+        auto put = [](const QString &from, const QString &to) {
+            QFile::remove(to);
+            const bool ok = QFile::copy(from, to);
+            QFile::setPermissions(to, QFile::ReadOwner | QFile::WriteOwner);
+            return ok;
+        };
+        CHECK(put(root + "/media/bars.png", src + "/bars.png") && put(root + "/media/h264.mp4", src + "/clip.mp4") &&
+              put(root + "/media/tone.wav", src + "/tone.wav") && put(root + "/media/av.mp4", src + "/later.mp4") &&
+              put(isf + "/effects/FlipCrop.fs", src + "/Flip.fs") &&
+              put(isf + "/transitions/Dissolve.fs", src + "/Dissolve.fs") &&
+              put(root + "/media/bars.png", src + "/shaders/tex.png") &&
+              put(root + "/media/bars.png", other + "/bars.png")); // another file of the same name
+        {
+            QFile f(src + "/shaders/Pic.fs");
+            CHECK(f.open(QIODevice::WriteOnly));
+            f.write("/*{\"ISFVSN\":\"2\",\"INPUTS\":[],\"IMPORTED\":{\"tex\":{\"PATH\":\"tex.png\"}}}*/\n"
+                    "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }\n");
+        }
+        const int img = e.addLayer(QStringLiteral("Image"));
+        CHECK(e.setLayerImage(img, src + "/bars.png", &err));
+        CHECK(e.addEffect(img, src + "/Flip.fs", &err) >= 0);
+        const int img2 = e.addLayer(QStringLiteral("Image 2"));
+        CHECK(e.setLayerImage(img2, other + "/bars.png", &err));
+        const int vid = e.addLayer(QStringLiteral("Clip"));
+        CHECK(e.setLayerVideo(vid, src + "/clip.mp4", &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(vid)->transition = src + "/Dissolve.fs";
+        }
+        const quint64 vidId = e.layerId(vid);
+        const int snd = e.addLayer(QStringLiteral("Sound"));
+        CHECK(e.setLayerAudio(snd, src + "/tone.wav", &err));
+        const int gen = e.addLayer(QStringLiteral("Generator"));
+        CHECK(e.setLayerIsf(gen, src + "/shaders/Pic.fs", &err));
+        e.addBinItems({src + "/missing.mov"});
+        // A snapshot that gives the clip another file: that file is collected too
+        Engine::Snapshot later;
+        later.name = QStringLiteral("Later");
+        for (const QJsonValue &v : e.captureLayers()) {
+            QJsonObject o = v.toObject();
+            if (o.value("id").toString().toULongLong() == vidId) {
+                QJsonObject so = o.value("source").toObject();
+                so["path"] = src + "/later.mp4";
+                o["source"] = so;
+            }
+            later.layers.append(o);
+        }
+        e.addSnapshot(later);
+
+        const Engine::CollectPlan plan = e.planCollect(tmp + "/collect_out", QStringLiteral("Show"), {});
+        QStringList rel;
+        for (const auto &f : plan.files) rel << QDir(plan.folder).relativeFilePath(f.to);
+        rel.sort();
+        std::printf("       collect: %s; missing: %s\n", qPrintable(rel.join(", ")), qPrintable(plan.missing.join(", ")));
+        for (const char *want : {"MEDIA/PICTS/bars.png", "MEDIA/PICTS/bars 2.png", "MEDIA/MOVIES/clip.mp4",
+                                 "MEDIA/MOVIES/later.mp4", "MEDIA/AUDIO/tone.wav", "MEDIA/ISF/Flip.fs",
+                                 "MEDIA/ISF/Dissolve.fs", "MEDIA/ISF/Pic/Pic.fs", "MEDIA/ISF/Pic/tex.png"})
+            CHECK(rel.contains(QString::fromLatin1(want)));
+        CHECK(plan.files.size() == 9 && plan.missing.size() == 1 && plan.missing.front().endsWith("missing.mov"));
+        CHECK(plan.projectFile == tmp + "/collect_out/Show/Show.pinol" && !QFileInfo::exists(plan.folder)); // nothing yet
+        CHECK(e.collect(plan, &err));
+        CHECK(!e.collect(plan, &err) && !err.isEmpty()); // the folder exists now: refused
+        {
+            QFile f(plan.projectFile);
+            CHECK(f.open(QIODevice::ReadOnly));
+            const QByteArray json = f.readAll();
+            CHECK(!json.contains(QFile::encodeName(src + "/bars.png")) && !json.contains(QFile::encodeName(src + "/later.mp4")) &&
+                  json.contains("missing.mov")); // every collected path relocated; a missing one kept
+        }
+        // Opened from there: every source, effect, transition and imported image found inside the folder
+        auto inside = [&](const QString &p) { return QDir::cleanPath(p).startsWith(plan.folder + "/MEDIA/"); };
+        auto checkOpened = [&] {
+            CHECK(e.loadProject(plan.projectFile, nullptr, &err));
+            for (int k = 0; k < e.layerCount(); ++k) {
+                Engine::Lock lk(&e.mutex());
+                const Layer *l = e.layer(k);
+                if (l->isViewport) continue;
+                CHECK(inside(l->sourcePath) && l->error.isEmpty());
+                for (const auto &fx : l->effects) CHECK(inside(fx->path()) && fx->isValid());
+                if (l->name == QStringLiteral("Clip")) CHECK(inside(l->transition));
+                if (l->generator) CHECK(l->generator->isValid());
+            }
+            bool snapshotInside = false;
+            for (const QJsonValue &v : e.snapshot(0).layers)
+                if (v.toObject().value("source").toObject().value("path").toString().endsWith("later.mp4"))
+                    snapshotInside = inside(v.toObject().value("source").toObject().value("path").toString());
+            CHECK(snapshotInside);
+        };
+        checkOpened();
+        CHECK(QFileInfo::exists(src + "/clip.mp4")); // Copy: the originals stay
+
+        // Move: the originals go once the collected project is the one open
+        e.loadProject(plan.projectFile, nullptr, &err);
+        const Engine::CollectPlan moved = e.planCollect(tmp + "/collect_out", QStringLiteral("Moved"), {});
+        CHECK(e.collect(moved, &err) && e.loadProject(moved.projectFile, nullptr, &err));
+        QStringList failed;
+        CHECK(Engine::removeCollectedOriginals(moved, &failed) == int(moved.files.size()) && failed.isEmpty());
+        CHECK(!QFileInfo::exists(plan.folder + "/MEDIA/MOVIES/clip.mp4") && QFileInfo::exists(moved.folder + "/MEDIA/MOVIES/clip.mp4"));
+        for (int k = 0; k < e.layerCount(); ++k) {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(k);
+            if (!l->isViewport) CHECK(QDir::cleanPath(l->sourcePath).startsWith(moved.folder + "/MEDIA/"));
+        }
+        e.newProject();
+    }
     } // project
 
     if (area("playback")) {

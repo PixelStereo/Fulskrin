@@ -357,7 +357,23 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
 
 bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QString *err)
 {
-    const QString dir = QFileInfo(path).absolutePath();
+    const QJsonObject root = projectToJson(QFileInfo(path).absolutePath(), uiState);
+    // Atomic write: a crash during save does not corrupt the existing file.
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    if (!f.commit()) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    return true;
+}
+
+QJsonObject Engine::projectToJson(const QString &dir, const QJsonObject &uiState) const
+{
     QJsonObject root;
     {
         Lock lk(&m_mutex);
@@ -396,18 +412,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["current_sequence"] = m_sequencer->current();
     }
     root["ui"] = uiState;
-    // Atomic write: a crash during save does not corrupt the existing file.
-    QSaveFile f(path);
-    if (!f.open(QIODevice::WriteOnly)) {
-        if (err) *err = f.errorString();
-        return false;
-    }
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    if (!f.commit()) {
-        if (err) *err = f.errorString();
-        return false;
-    }
-    return true;
+    return root;
 }
 
 bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err)
