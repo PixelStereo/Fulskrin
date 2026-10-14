@@ -135,8 +135,8 @@ public:
     bool goTo(int step, bool chain = true);
     void stop();                   // cancel pending waits in the selected sequence only
     std::vector<Run> runs() const; // the steps of the selected sequence on their way
-    bool running() const; // pending cues of the selected sequence
-    bool running(int sequenceIndex) const; // pending cues of any sequence, for background-playback indicator
+    bool running() const; // waits/follows pending in the selected sequence (Stop is enabled)
+    bool active(int sequenceIndex) const; // any active pre-wait, cue action or follow (UI activity indicator)
     void advance(double dt);       // moves the waits on (a timer does, except with Engine::setFadesManual)
     // The snapshot a step recalls goes through this (the interface: its undo stack); Engine::recallSnapshot by default
     void setRecaller(std::function<void(int snapshotIndex)> f);
