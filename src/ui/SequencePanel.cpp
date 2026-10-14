@@ -731,7 +731,7 @@ void SequenceWindow::pollRuns()
     // Show its activity on the list item without changing the editable name.
     for (int i = 0; i < m_sequences->count(); ++i) {
         QListWidgetItem *item = m_sequences->item(i);
-        const bool active = m_engine->sequencer().running(i);
+        const bool active = m_engine->sequencer().active(i);
         if (item->data(Qt::UserRole).toBool() == active) continue;
         QSignalBlocker blocker(m_sequences); // styling must not trigger a rename
         item->setData(Qt::UserRole, active);
