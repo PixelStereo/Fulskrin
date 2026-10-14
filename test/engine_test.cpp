@@ -1858,6 +1858,7 @@ void main(){ gl_FragColor = definitely_not_defined; }
             CHECK(fired == (std::vector<int>{1, 0, 1, 0}));
             // Stop B only: A's next pre-wait is untouched.
             e.sequencer().setCurrent(1); // A shifted to index 1
+            e.sequencer().stop(); // clear the prior test's unfinished follow first
             CHECK(e.sequencer().goTo(0));
             e.sequencer().setCurrent(2); // B shifted to index 2
             CHECK(e.sequencer().goTo(0));
@@ -1867,6 +1868,7 @@ void main(){ gl_FragColor = definitely_not_defined; }
             // Removing the selected unrelated sequence leaves the remaining
             // sequence's pending pre-wait alive, even if the indices shift.
             e.sequencer().setCurrent(1);
+            e.sequencer().stop();
             CHECK(e.sequencer().goTo(0));
             const size_t beforeRemove = fired.size();
             e.sequencer().remove(0);
