@@ -1040,6 +1040,18 @@ void main(){ gl_FragColor = definitely_not_defined; }
         t.noteFrame(26 * ms, 29 * ms, 30 * ms, period, true);
         t.noteFrame(80 * ms, 82 * ms, 90 * ms, period, false); // 54 ms after the one before: deadlines missed
         FrameTiming::Stats st = t.stats();
+        // Interval telemetry must have a *window-local* maximum: an early spike
+        // must not mask later seconds. Late events are bounded, timestamped data.
+        const FrameTiming::Window firstWindow = t.takeWindow();
+        CHECK(firstWindow.stats.frames == 3 && firstWindow.stats.interval.count == 2);
+        CHECK(std::abs(firstWindow.stats.interval.max - 54.0) < 1e-9);
+        CHECK(firstWindow.eventCount == 1 && firstWindow.events[0].atNs == 90 * ms);
+        CHECK(std::abs(firstWindow.events[0].intervalMs - 54.0) < 1e-9);
+        CHECK(t.takeWindow().stats.frames == 0);
+        t.noteFrame(100 * ms, 102 * ms, 104 * ms, period, true);
+        const FrameTiming::Window secondWindow = t.takeWindow();
+        CHECK(secondWindow.stats.frames == 1 && secondWindow.stats.interval.count == 1);
+        CHECK(std::abs(secondWindow.stats.interval.max - 20.0) < 1e-9 && secondWindow.eventCount == 0);
         CHECK(st.frames == 3 && st.presented == 2 && st.missed == 1);
         CHECK(st.interval.count == 2 && std::abs(st.interval.max - 54.0) < 1e-9);
         CHECK(st.inputToFrame[FrameTiming::Osc].count == 1 && std::abs(st.inputToFrame[FrameTiming::Osc].max - 10.0) < 1e-9);
