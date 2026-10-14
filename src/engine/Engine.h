@@ -638,6 +638,9 @@ public:
     bool collect(const CollectPlan &plan, QString *err);
     static int removeCollectedOriginals(const CollectPlan &plan, QStringList *failed = nullptr);
     bool loadProject(const QString &path, QJsonObject *uiState, QString *err);
+    // A project used as a template (the startup project of Settings ▸ Interface): its content loaded, but untitled —
+    // "Save" asks where, the file it came from is never written over
+    bool loadProjectAsTemplate(const QString &path, QJsonObject *uiState, QString *err);
     QString projectPath() const;
     void setProjectPath(const QString &p);
 

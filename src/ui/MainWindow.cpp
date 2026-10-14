@@ -1751,6 +1751,33 @@ bool MainWindow::openProject(const QString &path)
     return true;
 }
 
+void MainWindow::openStartupProject()
+{
+    const QString path = SettingsPanel::startupProject();
+    if (path.isEmpty()) return;
+    if (!QFileInfo::exists(path)) {
+        statusBar()->showMessage(QStringLiteral("Startup project not found: %1 — empty project").arg(path), 15000);
+        return;
+    }
+    QJsonObject ui;
+    QString err;
+    if (!m_engine->loadProjectAsTemplate(path, &ui, &err)) {
+        m_engine->newProject(); // never half of it
+        QMessageBox::warning(this, QStringLiteral("Startup Project"),
+                             QStringLiteral("The startup project could not be opened:\n\n%1\n\nAn empty project is open "
+                                            "instead (Settings ▸ Interface ▸ Startup).")
+                                 .arg(err.isEmpty() ? path : err));
+        afterProjectLoaded({});
+        return;
+    }
+    m_forceDirty = false;
+    afterProjectLoaded(ui);
+    if (!err.isEmpty() && m_quiet) statusBar()->showMessage(err.section('\n', 0, 0), 15000);
+    else if (!err.isEmpty())
+        QMessageBox::warning(this, QStringLiteral("Startup Project"),
+                             QStringLiteral("Startup project opened with warnings:\n\n") + err);
+}
+
 bool MainWindow::saveTo(const QString &path)
 {
     QString err;
