@@ -1117,6 +1117,17 @@ void main(){ gl_FragColor = definitely_not_defined; }
         CHECK(osc::decode(bundle, back) && back.size() == 2 && back[1].address == "/y");
         CHECK(osc::match("/layer/*/opacity", "/layer/A_b/opacity") && !osc::match("/layer/*/opacity", "/layer/a/b/opacity"));
         CHECK(osc::match("/l/{foo,bar}/[a-c]?", "/l/bar/bx") && !osc::match("/l/{foo,bar}/[!a-c]", "/l/foo/a"));
+        CHECK(osc::match("/l/*o*o*", "/l/foo") && osc::match("/l/f**", "/l/f") && !osc::match("/l/*x*", "/l/foo"));
+        CHECK(osc::match("/l/{a,ab}c", "/l/abc") && osc::match("/l/x{}y", "/l/xy") && !osc::match("/l/[ab", "/l/a"));
+        { // Runs of '*' (found by the fuzzer): exponential for a backtracking matcher, linear here
+            QElapsedTimer t;
+            t.start();
+            const QString stars = QString(40, '*');
+            CHECK(!osc::match("/****/" + stars + "/" + stars + "777777777", "/layer/a/opacity"));
+            CHECK(!osc::match("/l/" + stars + "a" + stars + "a" + stars + "b", "/l/" + QString(200, 'a')));
+            CHECK(osc::match("/l/" + stars + "a" + stars + "a" + stars + "b", "/l/" + QString(200, 'a') + "b"));
+            CHECK(t.elapsed() < 500);
+        }
         CHECK(osc::safeName(" My layer/1 ") == "My_layer_1");
         // Hostile packets (lengths read from the network): refused, never read out of bounds
         {

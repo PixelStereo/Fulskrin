@@ -15,4 +15,6 @@ mkdir -p "$out/osc"
 printf '/layer/a/opacity\0\0\0\0,f\0\0\077\0\0' > "$out/osc/float"
 printf '/composition/x\0\0,ihdsSbcrmtTFNI\0\0\0\0\0\0\0\001\0\0\0\0\0\0\0\002\077\360\0\0\0\0\0\0hi\0\0S\0\0\0\0\0\0\002ab\0\0\0\0\0A\377\0\0\377\0\220\074\100\0\0\0\0\0\0\0\001' > "$out/osc/all_types"
 printf '#bundle\0\0\0\0\0\0\0\0\001\0\0\0\024/a\0\0,i\0\0\0\0\0\007\0\0\0\0\0\0\0\020/b/*\0\0\0\0,T\0\0' > "$out/osc/bundle"
+# Inputs that once made a fuzzer fail (timeouts, crashes): kept as seeds so they are tried on every run
+[ -d fuzz_regressions/osc ] && cp fuzz_regressions/osc/* "$out/osc/"
 ls "$out" | wc -l
