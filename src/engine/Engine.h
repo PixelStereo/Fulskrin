@@ -594,8 +594,8 @@ public:
     // graphics memory free (when the driver says: NVIDIA, AMD), and which budget is exceeded now ("warnings").
     // OSC /composition/budget. Sampled by the render thread once a second; a budget newly exceeded is logged.
     QJsonObject resourcesJson() const;
-    // Syphon and Spout: false (default) the frame is finished before it is shared (the render thread waits for the
-    // GPU); true the previous frame is shared, no wait on the render path, one frame later for the receivers
+    // Syphon/Spout: true (default) publishes the prior complete viewport picture using
+    // a protected third buffer; false waits for GPU completion with glFinish (legacy mode).
     void setGpuShareOneFrameLate(bool on) { m_shareOneFrameLate = on; }
     bool gpuShareOneFrameLate() const { return m_shareOneFrameLate.load(); }
     quint64 mipmapsMade() const { return m_mipmapsMade.load(); } // layers' mipmaps generated since the start
