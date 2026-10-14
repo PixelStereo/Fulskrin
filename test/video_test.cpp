@@ -540,7 +540,18 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
                                             fr->data[p] + ptrdiff_t(y) * fr->linesize[p], L->plane[p].rowBytes);
                     }
                     VideoTexture vt;
-                    vt.upload(vf, none, conv);
+                    if (path == 0 && QByteArray(fm.name) == "yuv420p") {
+                        // Force FBO validation to fail after plane upload:
+                        // no new picture/serial may be published and no draw
+                        // may reach the default/window framebuffer.
+                        failNextRenderTargetAllocationForTests();
+                        vt.upload(vf, none, conv);
+                        VCHECK(vt.texture() == 0 && vt.uploads() == 0 &&
+                               vt.pictureSerial() == 0);
+                    }
+                    vt.upload(vf, none, conv); // retry (and normal format cases)
+                    VCHECK(vt.texture() != 0 && vt.uploads() == 1 &&
+                           vt.pictureSerial() != 0);
                     QImage gpu(w, h, QImage::Format_RGBA8888);
                     f->glBindFramebuffer(GL_FRAMEBUFFER, fbo);
                     f->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, vt.texture(), 0);
