@@ -69,12 +69,23 @@ public:
     // ns); `periodNs` its deadline (one frame at the rate asked or the screen's); `presented`: a window got it
     void noteFrame(qint64 start, qint64 computed, qint64 end, qint64 periodNs, bool presented);
     Stats stats() const;
+    // Consumed by the optional endurance logger. Independent one-second maxima / histograms,
+    // plus a bounded in-memory log of frames whose intervals exceeded twice the budget.
+    struct DeadlineEvent { qint64 atNs = 0; double intervalMs = 0, budgetMs = 0; };
+    struct Window {
+        Stats stats;
+        std::array<DeadlineEvent, 128> events{};
+        size_t eventCount = 0;
+        quint64 eventsLost = 0;
+    };
+    Window takeWindow();
     void reset();
     static qint64 nowNs(); // the steady clock
 
 private:
     mutable std::mutex m_mutex; // the totals (short: copied out by stats())
     Stats m_stats;
+    Window m_window;
     qint64 m_lastStart = -1;
     // The earliest input not yet in a frame, per kind (-1: none): the frame started after it takes it (the latency of
     // the earliest is the one counted: the worst of that frame's)
