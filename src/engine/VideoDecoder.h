@@ -107,6 +107,8 @@ public:
         uint64_t decodesOverFrame = 0; // decodes longer than one frame of the file (1 / fps): a deadline missed
         double lastFrameLatenessMs = 0;
         double maxFrameLatenessMs = 0;
+        uint64_t demuxErrors = 0, codecErrors = 0, emptyLoopStops = 0;
+        int lastAvError = 0; // last non-EOF FFmpeg error code, 0 if none
     };
     Metrics metrics() const;
     void resetMetrics();
@@ -152,6 +154,7 @@ private:
     void produceBackwardWindow(); // decode thread, backward leg
     void startLeg(const Timeline::Leg &leg, double position); // decode thread
     void finishLeg();                                          // decode thread: next leg, or end
+    void markDecodeError(int code, bool demux); // never treats I/O failure as EOF
     void recycle(VideoFrame &&f);       // takes the lock
     void recycleLocked(VideoFrame &&f); // lock held
     void takePooledBytes(VideoFrame &f); // takes the lock
@@ -221,6 +224,8 @@ private:
         50000000, 100000000, 250000000, 500000000, 1000000000, 2000000000};
     std::array<std::atomic<uint64_t>, kDecodeBuckets> m_metricDecodeBuckets{};
     std::atomic<uint64_t> m_metricOverFrame{0};
+    std::atomic<uint64_t> m_metricDemuxErrors{0}, m_metricCodecErrors{0}, m_metricEmptyLoopStops{0};
+    std::atomic<int> m_lastAvError{0};
     void recordQueueDepth(size_t depth);
     void accountFrame(VideoFrame &frame); // counted in the process-wide budget of decoded frames
 
@@ -236,4 +241,5 @@ private:
     std::vector<VideoFrame> m_backStack; // backward leg: frames still to deliver (reverse order)
     double m_backEnd = 0;               // backward leg: end (position) of the next window
     bool m_legDone = false;
+    uint64_t m_legFrames = 0; // a Loop/PingPong leg with no frames must never spin forever
 };
