@@ -183,6 +183,10 @@ jobs:
   # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
   fuzz:
     name: Fuzzing (HAP, Snappy, OSC)
+    # libFuzzer's default per-input timeout is 1200 s, and a fork-mode child stuck on one input is not stopped by
+    # -max_total_time: a 1-minute OSC run once stayed up for over 20 minutes. Per input: 10 s (a timeout becomes a
+    # finding, its input kept); for the job: a hard ceiling
+    timeout-minutes: 20
     runs-on: ubuntu-24.04
     needs: media
     steps:
@@ -207,11 +211,11 @@ jobs:
         run: |
           sh test/make_fuzz_corpus.sh "$PWD/fuzz_corpus"
           mkdir -p fuzz_crashes
-          ./build-fuzz/fuzz_hap -fork=4 -max_total_time=120 -rss_limit_mb=4096 -artifact_prefix=fuzz_crashes/ fuzz_corpus
+          ./build-fuzz/fuzz_hap -fork=4 -max_total_time=120 -timeout=10 -rss_limit_mb=4096 -artifact_prefix=fuzz_crashes/ fuzz_corpus
       - name: Fuzz OSC (1 minute)
         run: |
           mkdir -p fuzz_crashes
-          ./build-fuzz/fuzz_osc -fork=4 -max_total_time=60 -rss_limit_mb=2048 -artifact_prefix=fuzz_crashes/osc- fuzz_corpus/osc
+          ./build-fuzz/fuzz_osc -fork=4 -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -artifact_prefix=fuzz_crashes/osc- fuzz_corpus/osc
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
