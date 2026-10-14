@@ -1019,6 +1019,10 @@ void Engine::readSourcePreview()
     const double k = std::min(1.0, double(m_previewSide) / std::max(l->rawW, l->rawH));
     const int w = std::max(1, int(std::lround(l->rawW * k))), h = std::max(1, int(std::lround(l->rawH * k)));
     m_previewTarget.ensure(w, h);
+    // A failed allocation may leave an old FBO with another size; never
+    // draw the preview into framebuffer 0 or read back stale dimensions.
+    if (!m_previewTarget.fbo || !m_previewTarget.tex ||
+        m_previewTarget.w != w || m_previewTarget.h != h) return;
     m_previewTarget.bind();
     f->glDisable(GL_BLEND);
     f->glUseProgram(m_prepProgram); // unpremultiplied (groups), no roi, no color
@@ -1160,6 +1164,8 @@ QImage Engine::grabLayerSource(int index)
         if (!l || !l->rawTex || l->rawW <= 0 || l->rawH <= 0) return;
         RenderTarget t;
         t.ensure(l->rawW, l->rawH);
+        if (!t.fbo || !t.tex || t.w != l->rawW || t.h != l->rawH)
+            return; // no valid source target: return a null image, never the default framebuffer
         blit(l->rawTex, t);
         img = QImage(t.w, t.h, QImage::Format_RGBA8888);
         auto f = gl();
