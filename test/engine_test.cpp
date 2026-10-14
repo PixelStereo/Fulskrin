@@ -229,6 +229,19 @@ int main(int argc, char **argv)
         malformed("bad-sequence.pinol", R"({"app":"Pinol","format_version":1,"layers":[],"sequences":[false]})");
         malformed("bad-params.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"params":[1,2]}]})");
         malformed("bad-anims.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"anims":[null]}]})");
+        malformed("bad-snapshot-tree.pinol", R"({"app":"Pinol","format_version":1,"layers":[],"snapshot_tree":[false]})");
+        malformed("bad-snapshot-id.pinol", R"({"app":"Pinol","format_version":1,"layers":[],"snapshot_tree":["oops"]})");
+        malformed("bad-snapshot-children.pinol", R"({"app":"Pinol","format_version":1,"layers":[],"snapshot_tree":[{"group":"Act","id":"3","children":[null]}]})");
+
+        // saveProject() serializes snapshot leaves as strings, while groups
+        // are objects; both (also when nested) must load successfully.
+        const QString treeProject = write("mixed-snapshot-tree.pinol",
+            R"({"app":"Pinol","format_version":1,"layers":[{"name":"Live","source":{"type":"none"}}],"snapshots":[{"id":"12","name":"Look 1","fade":0,"layers":[]},{"id":"13","name":"Look 2","fade":0,"layers":[]}],"snapshot_tree":["12",{"group":"Act","id":"44","open":true,"children":["13"]}]})");
+        QString treeLoadError;
+        CHECK(e.loadProject(treeProject, nullptr, &treeLoadError));
+        CHECK(e.snapshotCount() == 2 && e.snapshotTree().size() == 2);
+        CHECK(e.snapshotTree().size() == 2 && e.snapshotTree()[1].group == 44 &&
+              e.snapshotTree()[1].children.size() == 1 && e.snapshotTree()[1].children[0].snapshot == 13);
     }
     } // project
 
