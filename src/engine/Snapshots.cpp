@@ -511,6 +511,39 @@ QJsonArray Engine::captureLayers(bool withAnimated) const
     return a;
 }
 
+QJsonArray Engine::captureRecallLayers(int snapshotIndex) const
+{
+    Lock lk(&m_mutex);
+    if (snapshotIndex < 0 || snapshotIndex >= int(m_snapshots.size())) return {};
+    const QJsonArray &states = m_snapshots[size_t(snapshotIndex)].layers;
+    if (states.isEmpty()) return {}; // composition-only and interaction-only recalls don't touch layers
+
+    QSet<quint64> named, included;
+    for (const QJsonValue &v : states) {
+        const QJsonObject o = v.toObject();
+        const quint64 id = o.value(QStringLiteral("id")).toString().toULongLong();
+        named.insert(id); // even excluded states protect their layers from hideOthers
+        if (o.value(QStringLiteral("included")).toBool(true) && !o.value(QStringLiteral("viewport")).toBool())
+            included.insert(id);
+    }
+
+    QJsonArray result;
+    for (int i = 0; i < int(m_layers.size()); ++i) {
+        const Layer &l = *m_layers[size_t(i)];
+        if (l.isViewport || isLocked(i)) continue; // recall also skips locked/viewport layers
+        const bool touchedByState = included.contains(l.id);
+        const bool hiddenByRecall = !named.contains(l.id) && l.enabled;
+        if (!touchedByState && !hiddenByRecall) continue;
+
+        // This is an undo, not a snapshot capture: animation-driven values
+        // must be preserved exactly as they were just before the cue.
+        QJsonObject o = layerJson(i);
+        o[QStringLiteral("included")] = true;
+        result.append(o);
+    }
+    return result;
+}
+
 Engine::RecallProgress Engine::recallProgress() const
 {
     Lock lk(&m_mutex);
@@ -937,7 +970,11 @@ void Engine::startSourceTransition(int index, const QJsonObject &state, double d
         return;
     }
     auto t = std::make_unique<SourceTransition>();
-    t->shaderPath = now->transition.isEmpty() ? m_defaultTransition : now->transition;
+    // A sound on either side (no picture to mix): the levels cross, no shader; else the layer's transition or the
+    // default one
+    const bool pictures = now->hasPicture() && old->hasPicture();
+    t->shaderPath = !pictures ? QString() : now->transition.isEmpty() ? m_defaultTransition : now->transition;
+    t->crossfadeOnly = !pictures;
     t->duration = std::max(1e-3, duration);
     old->transitionGain = 1.0f;
     now->transitionGain = 0.0f;
@@ -1187,4 +1224,11 @@ void Engine::stepInteractionFades(double dt)
         it = it->elapsed >= it->time ? m_interactionFades.erase(it) : it + 1;
     }
     interactionValuesTouched();
+}
+
+QString Engine::transitionShader(quint64 layer) const
+{
+    Lock lk(&m_mutex);
+    const auto it = m_transitions.find(layer);
+    return it == m_transitions.end() ? QString() : it->second->shaderPath;
 }

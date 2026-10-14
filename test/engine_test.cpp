@@ -12,6 +12,7 @@
 #include "Parameter.h"
 #include "Zeroconf.h"
 #include <QJsonArray>
+#include <QSet>
 #include <QTcpSocket>
 #include <QUdpSocket>
 #include <QtEndian>
@@ -44,6 +45,9 @@
 
 static int failures = 0;
 int runVideoTests(Engine &e, const QString &root, const QString &tmp); // video_test.cpp
+int runCueCaptureTests(Engine &e); // cue_capture.cpp
+int runGpuTargetTests(Engine &e); // gpu_targets.cpp
+int runGoldenRenderTests(Engine &e, const QString &root, const QString &tmp); // golden_render.cpp
 #define CHECK(cond)                                                                 \
     do {                                                                            \
         if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++failures; } \
@@ -132,9 +136,11 @@ int main(int argc, char **argv)
             bool valid;
             if (h.isFilter) {
                 int fx = e.addEffect(v, path, &msg);
-                valid = e.layer(v)->effects[size_t(fx)]->isValid();
-                for (int i = 0; i < 2; ++i) e.renderFrame();
-                e.removeEffect(v, fx);
+                valid = fx >= 0 && e.layer(v)->effects[size_t(fx)]->isValid();
+                if (valid) {
+                    for (int i = 0; i < 2; ++i) e.renderFrame();
+                    e.removeEffect(v, fx);
+                }
             } else {
                 valid = e.setLayerIsf(g, path, &msg);
                 for (int i = 0; i < 2; ++i) e.renderFrame();
@@ -146,6 +152,139 @@ int main(int argc, char **argv)
         e.shutdown();
         return ok == total ? 0 : 1;
     }
+
+    if (area("cue_capture")) {
+        failures += runCueCaptureTests(e);
+    } // cue_capture
+    if (area("gpu_targets")) {
+        failures += runGpuTargetTests(e);
+    } // gpu_targets
+    if (area("golden")) {
+        failures += runGoldenRenderTests(e, root, tmp);
+    } // golden
+    if (area("isf_safe")) {
+        // Live reloading or inserting an invalid shader must never take the
+        // existing source, its program, its parameters or its image away.
+        e.setCompositionSize(QSize(128, 64));
+        e.setViewportSize(e.indexOfId(e.mainViewportId()), QSize(128, 64));
+        e.fadeCompositionOpacity(1.0, 0.0);
+        const QString live = tmp + "/HotReload.fs";
+        QFile original(isf + "/generators/SolidColor.fs");
+        CHECK(original.open(QIODevice::ReadOnly));
+        const QByteArray valid = original.readAll();
+        const QByteArray broken = R"(/*{"INPUTS":[{"NAME":"color","TYPE":"color","DEFAULT":[1,1,1,1]}]}*/
+void main(){ gl_FragColor = definitely_not_defined; }
+)";
+        auto writeShader = [&](const QByteArray &body) {
+            QFile f(live);
+            return f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(body) == body.size();
+        };
+        CHECK(writeShader(valid));
+        int g = e.addLayer(QStringLiteral("Live shader"));
+        CHECK(e.setLayerIsf(g, live, &err));
+        IsfInstance *inst = e.layer(g)->generator.get();
+        CHECK(inst && inst->isValid());
+        IsfInput *color = inst->input(QStringLiteral("color"));
+        CHECK(color != nullptr);
+        if (color) {
+            color->cValue[0] = 0.0f;
+            color->cValue[1] = 1.0f;
+            color->cValue[2] = 0.0f;
+            color->cValue[3] = 1.0f;
+        }
+        e.renderFrame();
+        const QImage before = e.grabViewport(e.mainViewportId());
+        CHECK(!before.isNull() && before.pixelColor(64, 32).green() > 240);
+        CHECK(writeShader(broken));
+        CHECK(!e.reloadIsf(inst));
+        CHECK(inst->isValid() && e.layer(g)->generator.get() == inst);
+        CHECK(inst->error().contains("definitely_not_defined"));
+        e.renderFrame();
+        const QImage afterBadReload = e.grabViewport(e.mainViewportId());
+        CHECK(!afterBadReload.isNull() && afterBadReload.pixelColor(64, 32).green() > 240);
+        CHECK(!e.setLayerIsf(g, live, &err) && err.contains("definitely_not_defined"));
+        CHECK(e.layer(g)->generator.get() == inst && inst->isValid());
+        const int nFx = int(e.layer(g)->effects.size());
+        CHECK(e.addEffect(g, live, &err) == -1);
+        CHECK(int(e.layer(g)->effects.size()) == nFx);
+        CHECK(writeShader(valid));
+        CHECK(e.reloadIsf(inst) && inst->isValid());
+        CHECK(e.layer(g)->generator.get() == inst);
+        color = inst->input(QStringLiteral("color"));
+        CHECK(color && color->cValue[0] == 0.0f && color->cValue[1] == 1.0f);
+        e.renderFrame();
+        const QImage afterRepair = e.grabViewport(e.mainViewportId());
+        CHECK(!afterRepair.isNull() && afterRepair.pixelColor(64, 32).green() > 240);
+        // A project whose shaders are broken or missing when it is opened (another machine, a shader being
+        // edited): the generator and the effect stay, with their paths, values and errors. Saved again, nothing of
+        // them is lost; once the shaders are back, they work again with their values.
+        {
+            e.newProject();
+            const QString gen = tmp + "/KeepGen.fs", fx = tmp + "/KeepFx.fs";
+            QFile::remove(gen);
+            QFile::remove(fx);
+            CHECK(QFile::copy(isf + "/generators/SolidColor.fs", gen) && QFile::copy(isf + "/effects/FlipCrop.fs", fx));
+            QFile::setPermissions(gen, QFile::ReadOwner | QFile::WriteOwner);
+            QFile::setPermissions(fx, QFile::ReadOwner | QFile::WriteOwner);
+            const int gl = e.addLayer(QStringLiteral("Kept generator"));
+            CHECK(e.setLayerIsf(gl, gen, &err));
+            if (IsfInput *c = e.layer(gl)->generator->input(QStringLiteral("color"))) {
+                c->cValue[0] = 0.25f;
+                c->cValue[1] = 0.5f;
+                c->cValue[2] = 0.75f;
+            }
+            CHECK(e.addEffect(gl, fx, &err) == 0);
+            const QString first = tmp + "/keep_first.pinol", second = tmp + "/keep_second.pinol";
+            CHECK(e.saveProject(first, {}, &err));
+            // The generator does not compile any more; the effect's file is gone
+            {
+                QFile f(gen);
+                CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(broken) == broken.size());
+            }
+            CHECK(QFile::remove(fx));
+            err.clear();
+            CHECK(e.loadProject(first, nullptr, &err));
+            std::printf("       opened with broken shaders: %s\n", qPrintable(err.section('\n', 0, 1)));
+            int kept = -1;
+            for (int k = 0; k < e.layerCount(); ++k)
+                if (e.layer(k)->name == QStringLiteral("Kept generator")) kept = k;
+            CHECK(kept >= 0);
+            if (kept >= 0) {
+                const Layer *l = e.layer(kept);
+                CHECK(l->type == SourceType::Isf && l->generator && !l->generator->isValid() && !l->error.isEmpty());
+                CHECK(QFileInfo(l->sourcePath).fileName() == QStringLiteral("KeepGen.fs"));
+                CHECK(l->effects.size() == 1 && !l->effects[0]->isValid() &&
+                      QFileInfo(l->effects[0]->path()).fileName() == QStringLiteral("KeepFx.fs"));
+                e.renderFrame(); // a broken generator and a missing effect render (black / passed through), no crash
+                // An undo of the chain keeps the broken effect too
+                const QJsonArray chain = e.effectsJson(kept);
+                e.setEffectsJson(kept, chain);
+                CHECK(e.layer(kept)->effects.size() == 1);
+            }
+            CHECK(e.saveProject(second, {}, &err));
+            {
+                QFile f(second);
+                CHECK(f.open(QIODevice::ReadOnly));
+                const QByteArray saved = f.readAll();
+                CHECK(saved.contains("KeepGen.fs") && saved.contains("KeepFx.fs")); // nothing lost on save
+            }
+            // The shaders back: the second save opens as the first one was, values included
+            QFile::remove(gen);
+            CHECK(QFile::copy(isf + "/generators/SolidColor.fs", gen) && QFile::copy(isf + "/effects/FlipCrop.fs", fx));
+            CHECK(e.loadProject(second, nullptr, &err));
+            kept = -1;
+            for (int k = 0; k < e.layerCount(); ++k)
+                if (e.layer(k)->name == QStringLiteral("Kept generator")) kept = k;
+            CHECK(kept >= 0);
+            if (kept >= 0) {
+                const Layer *l = e.layer(kept);
+                CHECK(l->generator && l->generator->isValid() && l->effects.size() == 1 && l->effects[0]->isValid());
+                const IsfInput *c = l->generator->input(QStringLiteral("color"));
+                CHECK(c && std::abs(c->cValue[0] - 0.25f) < 1e-6 && std::abs(c->cValue[2] - 0.75f) < 1e-6);
+            }
+            e.newProject();
+        }
+    } // isf_safe
 
     if (area("video")) {
     // 0. Video pipeline: pixel formats, HAP, upload buffers (video_test.cpp). Leaves a new project.
@@ -209,6 +348,153 @@ int main(int argc, char **argv)
         CHECK(!e.loadProject(write("future.pinol", R"({"app":"Pinol","format_version":99,"layers":[]})"), nullptr, &why) &&
               why.contains("format 99"));
         CHECK(e.layerCount() == before);
+
+        // Invalid *structure* must be refused before clearProject(): the live
+        // scene, viewport and current project path all remain untouched.
+        const QJsonObject working = e.layerJson(V);
+        const quint64 workingId = e.layerId(V);
+        const QString workingPath = e.projectPath();
+        const auto malformed = [&](const QString &name, const QByteArray &body) {
+            QString reason;
+            const bool loaded = e.loadProject(write(name, body), nullptr, &reason);
+            CHECK(!loaded && reason.startsWith("Invalid Pinol project at "));
+            CHECK(e.layerCount() == before && e.layerId(V) == workingId && e.layerJson(V) == working);
+            CHECK(e.projectPath() == workingPath);
+        };
+        malformed("bad-layer.pinol", R"({"app":"Pinol","format_version":1,"layers":[null]})");
+        malformed("bad-fx.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"source":{"type":"none"},"fx":[null]}]})");
+        malformed("bad-source.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"source":{"type":"unrecognized"}}]})");
+        malformed("bad-size.pinol", R"({"app":"Pinol","format_version":1,"composition":{"width":-5},"layers":[]})");
+        malformed("bad-sequence.pinol", R"({"app":"Pinol","format_version":1,"layers":[],"sequences":[false]})");
+        malformed("bad-params.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"params":[1,2]}]})");
+        malformed("bad-anims.pinol", R"({"app":"Pinol","format_version":1,"layers":[{"anims":[null]}]})");
+        malformed("bad-snapshot-tree.pinol", R"({"app":"Pinol","format_version":1,"layers":[],"snapshot_tree":[false]})");
+        malformed("bad-snapshot-id.pinol", R"({"app":"Pinol","format_version":1,"layers":[],"snapshot_tree":["oops"]})");
+        malformed("bad-snapshot-children.pinol", R"({"app":"Pinol","format_version":1,"layers":[],"snapshot_tree":[{"group":"Act","id":"3","children":[null]}]})");
+
+        // saveProject() serializes snapshot leaves as strings, while groups
+        // are objects; both (also when nested) must load successfully.
+        const QString treeProject = write("mixed-snapshot-tree.pinol",
+            R"({"app":"Pinol","format_version":1,"layers":[{"name":"Live","source":{"type":"none"}}],"snapshots":[{"id":"12","name":"Look 1","fade":0,"layers":[]},{"id":"13","name":"Look 2","fade":0,"layers":[]}],"snapshot_tree":["12",{"group":"Act","id":"44","open":true,"children":["13"]}]})");
+        QString treeLoadError;
+        CHECK(e.loadProject(treeProject, nullptr, &treeLoadError));
+        CHECK(e.snapshotCount() == 2 && e.snapshotTree().size() == 2);
+        CHECK(e.snapshotTree().size() == 2 && e.snapshotTree()[1].group == 44 &&
+              e.snapshotTree()[1].children.size() == 1 && e.snapshotTree()[1].children[0].snapshot == 13);
+    }
+    // Collect Files: the project and every file it uses in one folder, copied, then moved
+    {
+        e.newProject();
+        const QString src = tmp + "/collect_src", other = tmp + "/collect_other";
+        QDir(src).removeRecursively();
+        QDir(other).removeRecursively();
+        QDir(tmp + "/collect_out").removeRecursively();
+        QDir().mkpath(src + "/shaders");
+        QDir().mkpath(other);
+        auto put = [](const QString &from, const QString &to) {
+            QFile::remove(to);
+            const bool ok = QFile::copy(from, to);
+            QFile::setPermissions(to, QFile::ReadOwner | QFile::WriteOwner);
+            return ok;
+        };
+        CHECK(put(root + "/media/bars.png", src + "/bars.png") && put(root + "/media/h264.mp4", src + "/clip.mp4") &&
+              put(root + "/media/tone.wav", src + "/tone.wav") && put(root + "/media/av.mp4", src + "/later.mp4") &&
+              put(isf + "/effects/FlipCrop.fs", src + "/Flip.fs") &&
+              put(isf + "/transitions/Dissolve.fs", src + "/Dissolve.fs") &&
+              put(root + "/media/bars.png", src + "/shaders/tex.png") &&
+              put(root + "/media/bars.png", other + "/bars.png")); // another file of the same name
+        {
+            QFile f(src + "/shaders/Pic.fs");
+            CHECK(f.open(QIODevice::WriteOnly));
+            f.write("/*{\"ISFVSN\":\"2\",\"INPUTS\":[],\"IMPORTED\":{\"tex\":{\"PATH\":\"tex.png\"}}}*/\n"
+                    "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }\n");
+        }
+        const int img = e.addLayer(QStringLiteral("Image"));
+        CHECK(e.setLayerImage(img, src + "/bars.png", &err));
+        CHECK(e.addEffect(img, src + "/Flip.fs", &err) >= 0);
+        const int img2 = e.addLayer(QStringLiteral("Image 2"));
+        CHECK(e.setLayerImage(img2, other + "/bars.png", &err));
+        const int vid = e.addLayer(QStringLiteral("Clip"));
+        CHECK(e.setLayerVideo(vid, src + "/clip.mp4", &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(vid)->transition = src + "/Dissolve.fs";
+        }
+        const quint64 vidId = e.layerId(vid);
+        const int snd = e.addLayer(QStringLiteral("Sound"));
+        CHECK(e.setLayerAudio(snd, src + "/tone.wav", &err));
+        const int gen = e.addLayer(QStringLiteral("Generator"));
+        CHECK(e.setLayerIsf(gen, src + "/shaders/Pic.fs", &err));
+        e.addBinItems({src + "/missing.mov"});
+        // A snapshot that gives the clip another file: that file is collected too
+        Engine::Snapshot later;
+        later.name = QStringLiteral("Later");
+        for (const QJsonValue &v : e.captureLayers()) {
+            QJsonObject o = v.toObject();
+            if (o.value("id").toString().toULongLong() == vidId) {
+                QJsonObject so = o.value("source").toObject();
+                so["path"] = src + "/later.mp4";
+                o["source"] = so;
+            }
+            later.layers.append(o);
+        }
+        e.addSnapshot(later);
+
+        const Engine::CollectPlan plan = e.planCollect(tmp + "/collect_out", QStringLiteral("Show"), {});
+        QStringList rel;
+        for (const auto &f : plan.files) rel << QDir(plan.folder).relativeFilePath(f.to);
+        rel.sort();
+        std::printf("       collect: %s; missing: %s\n", qPrintable(rel.join(", ")), qPrintable(plan.missing.join(", ")));
+        for (const char *want : {"MEDIA/PICTS/bars.png", "MEDIA/PICTS/bars 2.png", "MEDIA/MOVIES/clip.mp4",
+                                 "MEDIA/MOVIES/later.mp4", "MEDIA/AUDIO/tone.wav", "MEDIA/ISF/Flip.fs",
+                                 "MEDIA/ISF/Dissolve.fs", "MEDIA/ISF/Pic/Pic.fs", "MEDIA/ISF/Pic/tex.png"})
+            CHECK(rel.contains(QString::fromLatin1(want)));
+        CHECK(plan.files.size() == 9 && plan.missing.size() == 1 && plan.missing.front().endsWith("missing.mov"));
+        CHECK(plan.projectFile == tmp + "/collect_out/Show/Show.pinol" && !QFileInfo::exists(plan.folder)); // nothing yet
+        CHECK(e.collect(plan, &err));
+        CHECK(!e.collect(plan, &err) && !err.isEmpty()); // the folder exists now: refused
+        {
+            QFile f(plan.projectFile);
+            CHECK(f.open(QIODevice::ReadOnly));
+            const QByteArray json = f.readAll();
+            CHECK(!json.contains(QFile::encodeName(src + "/bars.png")) && !json.contains(QFile::encodeName(src + "/later.mp4")) &&
+                  json.contains("missing.mov")); // every collected path relocated; a missing one kept
+        }
+        // Opened from there: every source, effect, transition and imported image found inside the folder
+        auto inside = [&](const QString &p) { return QDir::cleanPath(p).startsWith(plan.folder + "/MEDIA/"); };
+        auto checkOpened = [&] {
+            CHECK(e.loadProject(plan.projectFile, nullptr, &err));
+            for (int k = 0; k < e.layerCount(); ++k) {
+                Engine::Lock lk(&e.mutex());
+                const Layer *l = e.layer(k);
+                if (l->isViewport) continue;
+                CHECK(inside(l->sourcePath) && l->error.isEmpty());
+                for (const auto &fx : l->effects) CHECK(inside(fx->path()) && fx->isValid());
+                if (l->name == QStringLiteral("Clip")) CHECK(inside(l->transition));
+                if (l->generator) CHECK(l->generator->isValid());
+            }
+            bool snapshotInside = false;
+            for (const QJsonValue &v : e.snapshot(0).layers)
+                if (v.toObject().value("source").toObject().value("path").toString().endsWith("later.mp4"))
+                    snapshotInside = inside(v.toObject().value("source").toObject().value("path").toString());
+            CHECK(snapshotInside);
+        };
+        checkOpened();
+        CHECK(QFileInfo::exists(src + "/clip.mp4")); // Copy: the originals stay
+
+        // Move: the originals go once the collected project is the one open
+        e.loadProject(plan.projectFile, nullptr, &err);
+        const Engine::CollectPlan moved = e.planCollect(tmp + "/collect_out", QStringLiteral("Moved"), {});
+        CHECK(e.collect(moved, &err) && e.loadProject(moved.projectFile, nullptr, &err));
+        QStringList failed;
+        CHECK(Engine::removeCollectedOriginals(moved, &failed) == int(moved.files.size()) && failed.isEmpty());
+        CHECK(!QFileInfo::exists(plan.folder + "/MEDIA/MOVIES/clip.mp4") && QFileInfo::exists(moved.folder + "/MEDIA/MOVIES/clip.mp4"));
+        for (int k = 0; k < e.layerCount(); ++k) {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(k);
+            if (!l->isViewport) CHECK(QDir::cleanPath(l->sourcePath).startsWith(moved.folder + "/MEDIA/"));
+        }
+        e.newProject();
     }
     } // project
 
@@ -241,12 +527,13 @@ int main(int argc, char **argv)
     bad.open(QIODevice::WriteOnly);
     bad.write("/*{ \"INPUTS\": [ {\"NAME\":\"inputImage\",\"TYPE\":\"image\"}, ] }*/\nvoid main(){ gl_FragColor = undefinedThing; }\n");
     bad.close();
+    const int beforeFx = int(e.layer(v)->effects.size());
     int fx2 = e.addEffect(v, tmp + "/Broken.fs", &err);
-    CHECK(!e.layer(v)->effects[size_t(fx2)]->isValid());
-    CHECK(e.layer(v)->effects[size_t(fx2)]->error().contains("undefinedThing"));
+    CHECK(fx2 == -1 && int(e.layer(v)->effects.size()) == beforeFx);
+    CHECK(err.contains("undefinedThing"));
     int fx3 = e.addEffect(v, root + "/../isf/effects/Blur.fs", &err);
-    CHECK(e.layer(v)->effects[size_t(fx3)]->isValid());
-    for (int i = 0; i < 5; ++i) e.renderFrame(); // the broken shader passes the image through
+    CHECK(fx3 >= 0 && e.layer(v)->effects[size_t(fx3)]->isValid());
+    for (int i = 0; i < 5; ++i) e.renderFrame(); // still shows the working video and effects
     QImage out = e.grabOutput();
     CHECK(!out.isNull());
     } // playback
@@ -2450,6 +2737,130 @@ int main(int argc, char **argv)
         CHECK(e.loadProject(tmp + "/presets.pinol", nullptr, &err));
         CHECK(e.presetCount() == 2 && e.preset(0).name == "Half" && e.preset(0).values.size() == 3 &&
               e.preset(0).values[1].time == 0 && e.preset(0).values[0].layer == lid);
+        e.setFadesManual(false);
+        e.newProject();
+    }
+    // The transport in snapshots and presets: played or paused, "restart on recall", the in / out points; a sound
+    // crosses its levels when a snapshot changes its file, whatever the layer's transition
+    {
+        e.newProject();
+        e.setFadesManual(true);
+        auto params = [&](quint64 id) {
+            QSet<QString> out;
+            for (const ParamInfo &i : e.parameters(id)) out.insert(i.path);
+            return out;
+        };
+        const int vi = e.addLayer(QStringLiteral("Clip"));
+        CHECK(e.setLayerVideo(vi, root + "/media/h264.mp4", &err));
+        const quint64 vid = e.layerId(vi);
+        {
+            const QSet<QString> p = params(vid);
+            CHECK(p.contains("play") && p.contains("restart") && p.contains("in") && p.contains("out"));
+        }
+        auto playing = [&] {
+            Engine::Lock lk(&e.mutex());
+            return e.layer(e.indexOfId(vid))->playing;
+        };
+        auto position = [&] {
+            Engine::Lock lk(&e.mutex());
+            return e.layer(e.indexOfId(vid))->position();
+        };
+        auto snapshotOf = [&](const QString &name, std::function<void(QJsonObject &)> edit = {}) {
+            Engine::Snapshot m;
+            m.name = name;
+            m.fade = 0;
+            for (const QJsonValue &v : e.captureLayers()) {
+                QJsonObject o = v.toObject();
+                const bool me = o.value("id").toString().toULongLong() == vid;
+                o["included"] = me;
+                if (me && edit) edit(o);
+                m.layers.append(o);
+            }
+            return e.addSnapshot(m);
+        };
+        e.setLayerPlaying(vi, true);
+        const int sPlay = snapshotOf(QStringLiteral("Playing"));
+        e.setLayerPlaying(vi, false);
+        const int sPause = snapshotOf(QStringLiteral("Paused"));
+        for (const QJsonValue &v : e.snapshot(sPause).layers) // the paused state is held
+            if (v.toObject().value("id").toString().toULongLong() == vid)
+                CHECK(v.toObject().value("params").toObject().value("play") == QJsonValue(false));
+        e.recallSnapshot(sPlay);
+        CHECK(playing());
+        e.recallSnapshot(sPause);
+        CHECK(!playing());
+        // Restart on recall: from the in point, playing, wherever it was and paused or not
+        const int sRestart = snapshotOf(QStringLiteral("Restart"), [](QJsonObject &o) {
+            QJsonObject p = o.value("params").toObject();
+            p["restart"] = true;
+            p["play"] = false; // a restart plays all the same
+            o["params"] = p;
+        });
+        e.seekLayer(e.indexOfId(vid), 2.5);
+        e.setLayerPlaying(e.indexOfId(vid), false);
+        CHECK(position() > 2.0);
+        e.recallSnapshot(sRestart);
+        std::printf("       restart on recall: position %.3f s, playing %d\n", position(), int(playing()));
+        CHECK(playing() && position() < 0.1);
+        CHECK(e.parameterValue(vid, "restart").toBool() == false); // an action, not a state
+        // In / out points and the play state in a preset (recalled at once)
+        Engine::Preset pr;
+        pr.name = QStringLiteral("Range");
+        pr.fade = 1.0;
+        pr.values.push_back({vid, QStringLiteral("in"), QJsonValue(1.0), -1.0, QString()});
+        pr.values.push_back({vid, QStringLiteral("out"), QJsonValue(2.0), -1.0, QString()});
+        pr.values.push_back({vid, QStringLiteral("play"), QJsonValue(false), -1.0, QString()});
+        const int pi = e.addPreset(pr);
+        e.recallPreset(pi);
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(e.indexOfId(vid));
+            CHECK(std::abs(l->inPoint - 1.0) < 1e-6 && std::abs(l->outPoint - 2.0) < 1e-6 && !l->playing);
+            CHECK(l->position() >= 1.0 - 1e-6 && l->position() <= 2.0 + 1e-6);
+        }
+        // A restart in a preset: from the new in point
+        pr.values.push_back({vid, QStringLiteral("restart"), QJsonValue(true), -1.0, QString()});
+        e.setPreset(pi, pr);
+        e.seekLayer(e.indexOfId(vid), 1.8);
+        e.recallPreset(pi);
+        CHECK(playing() && std::abs(position() - 1.0) < 0.05);
+        // Saved and opened: the play state comes back
+        e.setLayerPlaying(e.indexOfId(vid), false);
+        CHECK(e.saveProject(tmp + "/transport.pinol", {}, &err) && e.loadProject(tmp + "/transport.pinol", nullptr, &err));
+        CHECK(!playing());
+
+        // A sound whose file a snapshot changes: the levels cross, the layer's ISF transition is not used
+        e.newProject();
+        e.setDefaultTransition(root + "/../isf/transitions/Dissolve.fs");
+        const QString tone2 = tmp + "/tone_b.wav";
+        QFile::remove(tone2);
+        CHECK(QFile::copy(root + "/media/tone.wav", tone2));
+        const int ai = e.addLayer(QStringLiteral("Sound"));
+        CHECK(e.setLayerAudio(ai, root + "/media/tone.wav", &err));
+        const quint64 aid = e.layerId(ai);
+        const int ii = e.addLayer(QStringLiteral("Picture"));
+        CHECK(e.setLayerVideo(ii, root + "/media/h264.mp4", &err));
+        const quint64 iid = e.layerId(ii);
+        Engine::Snapshot sw;
+        sw.name = QStringLiteral("Other files");
+        sw.fade = 1.0;
+        for (const QJsonValue &v : e.captureLayers()) {
+            QJsonObject o = v.toObject();
+            QJsonObject src = o.value("source").toObject();
+            const quint64 id = o.value("id").toString().toULongLong();
+            if (id == aid) src["path"] = tone2;
+            if (id == iid) src["path"] = root + "/media/av.mp4";
+            src.remove("relative_path");
+            o["source"] = src;
+            sw.layers.append(o);
+        }
+        e.recallSnapshot(e.addSnapshot(sw));
+        CHECK(e.isTransitioning(aid) && e.isTransitioning(iid));
+        std::printf("       sound transition: \"%s\", picture: \"%s\"\n", qPrintable(e.transitionShader(aid)),
+                    qPrintable(QFileInfo(e.transitionShader(iid)).fileName()));
+        CHECK(e.transitionShader(aid).isEmpty()); // a crossfade of the levels
+        CHECK(QFileInfo(e.transitionShader(iid)).fileName() == QStringLiteral("Dissolve.fs")); // the default, for a picture
+        e.setDefaultTransition(QString());
         e.setFadesManual(false);
         e.newProject();
     }

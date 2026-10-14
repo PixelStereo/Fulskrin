@@ -2,6 +2,7 @@
 #include "EngineInternal.h"
 
 #include <set>
+#include <functional>
 
 #include <QDir>
 #include <QFile>
@@ -281,7 +282,8 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             layer(index)->genWidth = src.value("width").toInt(m_compSize.width());
             layer(index)->genHeight = src.value("height").toInt(m_compSize.height());
         }
-        if (!setLayerIsf(index, path, &err) && warnings) *warnings << name + ": " + err;
+        // A project: the generator stays even when its shader is missing or broken (path, values, error shown)
+        if (!setLayerIsf(index, path, &err, IsfFailure::KeepWithError) && warnings) *warnings << name + ": " + err;
         IsfInstance *gen;
         {
             Lock lk(&m_mutex);
@@ -320,7 +322,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
     for (const QJsonValue &v : o.value("fx").toArray()) {
         const QJsonObject e = v.toObject();
         const QString p = resolvePath(e, projectDir);
-        const int fi = addEffect(index, p, &err);
+        const int fi = addEffect(index, p, &err, IsfFailure::KeepWithError); // kept, broken or not (see IsfFailure)
         if (fi < 0) continue;
         IsfInstance *inst;
         {
@@ -337,7 +339,10 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
     if (o.contains("mesh")) l->mapping.setMeshJson(o.value("mesh").toObject());
     parametersFromJson(l->parameters(), o.value("params").toObject(), &l->extraParams);
     if (l->hasTransport()) {
-        l->playing = o.value("play").toBool(true);
+        // Played or paused: its parameter when the state has it (a snapshot that restarts it plays it), else the older
+        // key of the projects
+        const QJsonObject params = o.value("params").toObject();
+        l->playing = params.value("restart").toBool(false) || params.value("play").toBool(o.value("play").toBool(true));
         startMedia(*l); // its speed: backwards starts from the end
     }
     l->anims.clear();
@@ -353,7 +358,23 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
 
 bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QString *err)
 {
-    const QString dir = QFileInfo(path).absolutePath();
+    const QJsonObject root = projectToJson(QFileInfo(path).absolutePath(), uiState);
+    // Atomic write: a crash during save does not corrupt the existing file.
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    if (!f.commit()) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    return true;
+}
+
+QJsonObject Engine::projectToJson(const QString &dir, const QJsonObject &uiState) const
+{
     QJsonObject root;
     {
         Lock lk(&m_mutex);
@@ -392,18 +413,130 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["current_sequence"] = m_sequencer->current();
     }
     root["ui"] = uiState;
-    // Atomic write: a crash during save does not corrupt the existing file.
-    QSaveFile f(path);
-    if (!f.open(QIODevice::WriteOnly)) {
-        if (err) *err = f.errorString();
-        return false;
+    return root;
+}
+
+// Preflight is deliberately limited to structural errors: missing media and
+// unplugged hardware must remain recoverable, reported per layer as warnings.
+// Never clear the live show for a malformed but otherwise valid .pinol JSON.
+static QString projectPreflightError(const QJsonObject &root)
+{
+    auto invalid = [](const QString &at, const QString &expect) {
+        return QStringLiteral("Invalid Pinol project at %1: expected %2").arg(at, expect);
+    };
+    auto optionalObject = [&](const QJsonObject &o, const QString &k, const QString &at) -> QString {
+        return o.contains(k) && !o.value(k).isObject() ? invalid(at + "/" + k, QStringLiteral("object")) : QString();
+    };
+    auto optionalArray = [&](const QJsonObject &o, const QString &k, const QString &at) -> QString {
+        return o.contains(k) && !o.value(k).isArray() ? invalid(at + "/" + k, QStringLiteral("array")) : QString();
+    };
+    const QString rootPath = QStringLiteral("$");
+    for (const QString &key : {QStringLiteral("composition"), QStringLiteral("audio"), QStringLiteral("ui")}) {
+        const QString error = optionalObject(root, key, rootPath);
+        if (!error.isEmpty()) return error;
     }
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    if (!f.commit()) {
-        if (err) *err = f.errorString();
-        return false;
+    const QJsonObject composition = root.value(QStringLiteral("composition")).toObject();
+    for (const QString &dim : {QStringLiteral("width"), QStringLiteral("height")}) {
+        const QJsonValue v = composition.value(dim);
+        if (!v.isUndefined() && (!v.isDouble() || v.toDouble() < 1 || v.toDouble() > 16384))
+            return invalid(QStringLiteral("$/composition/") + dim, QStringLiteral("size in [1, 16384]"));
     }
-    return true;
+    for (const QString &key : {QStringLiteral("fps"), QStringLiteral("speed")}) {
+        const QJsonValue v = composition.value(key);
+        if (!v.isUndefined() && !v.isDouble())
+            return invalid(QStringLiteral("$/composition/") + key, QStringLiteral("number"));
+    }
+    // snapshot_tree is intentionally heterogeneous: snapshot leaves are
+    // string IDs, while nested groups are objects with a children array.
+    // Do not validate it as a homogeneous array of objects.
+    for (const QString &key : {QStringLiteral("layers"), QStringLiteral("bin"),
+                               QStringLiteral("snapshots"),
+                               QStringLiteral("presets"), QStringLiteral("timelines"),
+                               QStringLiteral("timecode_outputs"), QStringLiteral("midi_outputs"),
+                               QStringLiteral("audio_channel_outputs"), QStringLiteral("interactions"),
+                               QStringLiteral("sequences")}) {
+        const QString error = optionalArray(root, key, rootPath);
+        if (!error.isEmpty()) return error;
+        const QJsonArray arr = root.value(key).toArray();
+        for (int i = 0; i < arr.size(); ++i) {
+            if (!arr[i].isObject())
+                return invalid(QStringLiteral("$/%1/%2").arg(key).arg(i), QStringLiteral("object"));
+        }
+    }
+    const QString treeKey = QStringLiteral("snapshot_tree");
+    const QString treeError = optionalArray(root, treeKey, rootPath);
+    if (!treeError.isEmpty()) return treeError;
+    // A snapshot leaf has the form "123"; a group is
+    // {"group":"Name","id":"123","open":true,"children":[...]}.
+    // Validate nested children too, and bound recursion on untrusted files.
+    std::function<QString(const QJsonArray &, const QString &, int)> checkTree =
+        [&](const QJsonArray &nodes, const QString &at, int depth) -> QString {
+        if (depth > 64) return invalid(at, QStringLiteral("snapshot tree nesting <= 64"));
+        for (int i = 0; i < nodes.size(); ++i) {
+            const QString nodeAt = at + QLatin1Char('/') + QString::number(i);
+            const QJsonValue v = nodes.at(i);
+            if (v.isString()) {
+                bool ok = false;
+                const quint64 id = v.toString().toULongLong(&ok);
+                if (!ok || !id) return invalid(nodeAt, QStringLiteral("nonzero snapshot ID string"));
+                continue;
+            }
+            if (!v.isObject()) return invalid(nodeAt, QStringLiteral("snapshot ID string or group object"));
+            const QJsonObject group = v.toObject();
+            if (!group.value(QStringLiteral("group")).isString() ||
+                !group.value(QStringLiteral("id")).isString())
+                return invalid(nodeAt, QStringLiteral("group name and ID strings"));
+            const QString childPath = nodeAt + QStringLiteral("/children");
+            const QString childError = optionalArray(group, QStringLiteral("children"), nodeAt);
+            if (!childError.isEmpty()) return childError;
+            if (group.contains(QStringLiteral("children"))) {
+                const QString nested = checkTree(group.value(QStringLiteral("children")).toArray(), childPath, depth + 1);
+                if (!nested.isEmpty()) return nested;
+            }
+        }
+        return {};
+    };
+    const QString invalidTree = checkTree(root.value(treeKey).toArray(), rootPath + QLatin1Char('/') + treeKey, 0);
+    if (!invalidTree.isEmpty()) return invalidTree;
+
+    const QJsonArray layers = root.value(QStringLiteral("layers")).toArray();
+    for (int i = 0; i < layers.size(); ++i) {
+        const QString where = QStringLiteral("$/layers/%1").arg(i);
+        const QJsonObject l = layers[i].toObject();
+        for (const QString &key : {QStringLiteral("source"), QStringLiteral("params"),
+                                   QStringLiteral("mesh"), QStringLiteral("output"),
+                                   QStringLiteral("publish"), QStringLiteral("viewports")}) {
+            const QString error = optionalObject(l, key, where);
+            if (!error.isEmpty()) return error;
+        }
+        for (const QString &key : {QStringLiteral("fx"), QStringLiteral("masks"),
+                                   QStringLiteral("anims")}) {
+            const QString error = optionalArray(l, key, where);
+            if (!error.isEmpty()) return error;
+            const QJsonArray list = l.value(key).toArray();
+            for (int j = 0; j < list.size(); ++j)
+                if (!list[j].isObject())
+                    return invalid(QStringLiteral("%1/%2/%3").arg(where, key).arg(j), QStringLiteral("object"));
+        }
+        const QJsonObject src = l.value(QStringLiteral("source")).toObject();
+        if (!src.isEmpty()) {
+            const QJsonValue typeValue = src.value(QStringLiteral("type"));
+            const QString type = typeValue.toString();
+            if (!typeValue.isString() ||
+                (type != QLatin1String("none") && type != QLatin1String("video") &&
+                 type != QLatin1String("audio") && type != QLatin1String("image") &&
+                 type != QLatin1String("layer") && type != QLatin1String("isf") &&
+                 type != QLatin1String("input") && type != QLatin1String("text")))
+                return invalid(where + QStringLiteral("/source/type"), QStringLiteral("known source type"));
+            for (const QString &field : {QStringLiteral("path"), QStringLiteral("relative_path"),
+                                         QStringLiteral("uri"), QStringLiteral("layer")}) {
+                const QJsonValue value = src.value(field);
+                if (!value.isUndefined() && !value.isString())
+                    return invalid(where + QStringLiteral("/source/") + field, QStringLiteral("string"));
+            }
+        }
+    }
+    return {};
 }
 
 bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err)
@@ -432,6 +565,13 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
                        .arg(QFileInfo(path).fileName())
                        .arg(version)
                        .arg(kProjectFormat);
+        return false;
+    }
+    // Validate the complete JSON structure before detaching the current show.
+    // A missing media file is still a warning, not an invalid project.
+    const QString preflightError = projectPreflightError(root);
+    if (!preflightError.isEmpty()) {
+        if (err) *err = preflightError;
         return false;
     }
     clearProject();

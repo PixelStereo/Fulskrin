@@ -288,6 +288,33 @@ static QPointF jsonPoint(const QJsonValue &v, QPointF def = {})
     return def;
 }
 
+std::vector<std::pair<QString, QString>> IsfInstance::dependencies(const QString &path)
+{
+    std::vector<std::pair<QString, QString>> out;
+    const QFileInfo fi(path);
+    const QDir dir = fi.absoluteDir();
+    for (const QString ext : {QStringLiteral("vs"), QStringLiteral("vert")}) {
+        const QString vs = fi.completeBaseName() + '.' + ext;
+        if (dir.exists(vs)) out.push_back({dir.absoluteFilePath(vs), vs});
+    }
+    QString src, json;
+    if (!readText(fi.absoluteFilePath(), &src) || !splitIsf(src, &json, nullptr)) return out;
+    const QJsonObject o = parseLooseJson(json, nullptr);
+    auto add = [&](const QString &p) {
+        if (p.isEmpty()) return;
+        const QString abs = QDir::cleanPath(dir.absoluteFilePath(p));
+        if (QFileInfo(abs).isFile()) out.push_back({abs, QDir::cleanPath(p)});
+    };
+    const QJsonValue imp = o.value("IMPORTED");
+    if (imp.isObject()) {
+        const QJsonObject io = imp.toObject();
+        for (auto it = io.begin(); it != io.end(); ++it) add(it.value().toObject().value("PATH").toString());
+    } else if (imp.isArray()) {
+        for (const QJsonValue &x : imp.toArray()) add(x.toObject().value("PATH").toString());
+    }
+    return out;
+}
+
 IsfInstance::Header IsfInstance::readHeader(const QString &path)
 {
     Header h;
@@ -714,6 +741,60 @@ bool IsfInstance::load(const QString &path)
     return true;
 }
 
+bool IsfInstance::reloadSafely()
+{
+    // A new shader must never destroy the live picture before it is valid.
+    // Build all OpenGL programs, image imports and sampler locations in a
+    // separate instance, then exchange resource ownership in one GL task.
+    IsfInstance prepared;
+    if (!prepared.load(m_path)) {
+        m_error = prepared.error();
+        prepared.releaseGl(); // a failed compile may have allocated import textures
+        return false;
+    }
+
+    // Preserve user controls and current playback time. The shader may add
+    // or remove inputs; restore matches by their parameter path/name.
+    const QJsonObject state = save(QString());
+    prepared.restore(state, QString());
+    prepared.m_time = m_time;
+    prepared.m_frameIndex = m_frameIndex;
+    for (IsfInput &in : prepared.m_inputs) {
+        if (IsfInput *old = input(in.name)) {
+            // Engine-provided texture inputs are not serialized.
+            in.extTex = old->extTex;
+            in.extW = old->extW;
+            in.extH = old->extH;
+        }
+    }
+
+    // Keep *this and all existing IsfInstance* references stable. The
+    // temporary now owns the retired GL objects and disposes them here,
+    // while the engine's context is current. No stale program is drawn.
+    using std::swap;
+    swap(m_path, prepared.m_path);
+    swap(m_name, prepared.m_name);
+    swap(m_description, prepared.m_description);
+    swap(m_credit, prepared.m_credit);
+    swap(m_error, prepared.m_error);
+    swap(m_isFilter, prepared.m_isFilter);
+    swap(m_inputs, prepared.m_inputs);
+    swap(m_passes, prepared.m_passes);
+    swap(m_targets, prepared.m_targets);
+    swap(m_imported, prepared.m_imported);
+    swap(m_program, prepared.m_program);
+    swap(m_locPassIndex, prepared.m_locPassIndex);
+    swap(m_locRenderSize, prepared.m_locRenderSize);
+    swap(m_locTime, prepared.m_locTime);
+    swap(m_locTimeDelta, prepared.m_locTimeDelta);
+    swap(m_locDate, prepared.m_locDate);
+    swap(m_locFrameIndex, prepared.m_locFrameIndex);
+    swap(m_time, prepared.m_time);
+    swap(m_frameIndex, prepared.m_frameIndex);
+    prepared.releaseGl();
+    return true;
+}
+
 bool IsfInstance::setImageInput(int index, const QString &path, QString *err)
 {
     if (index < 0 || index >= int(m_inputs.size())) return false;
@@ -733,6 +814,7 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
 {
     auto f = gl();
     out.ensure(outW, outH);
+    if (!out.fbo) return; // no framebuffer: don't draw to OpenGL's default/window target
     if (!m_program) {
         // Broken shader: pass the image through (filter) or render black (generator).
         if (inputTex) rc.blit(inputTex, out);
@@ -802,6 +884,10 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
         if (target) {
             target->rt[0].ensure(pw, ph, target->isFloat);
             target->rt[1].ensure(pw, ph, target->isFloat);
+            if (!target->rt[0].fbo || !target->rt[1].fbo) {
+                // Cannot render this pass safely; leave the old output alone.
+                return;
+            }
         }
 
         // Already-rendered targets are readable ("front" buffer).

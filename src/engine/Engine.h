@@ -158,7 +158,13 @@ public:
 
     bool setLayerVideo(int i, const QString &path, QString *err = nullptr);
     bool setLayerImage(int i, const QString &path, QString *err = nullptr);
-    bool setLayerIsf(int i, const QString &path, QString *err = nullptr);
+    // What a shader that does not load (missing, does not compile) does to the layer:
+    //  - Refuse (an operator replacing a source, live): nothing changes, the source shown stays; false and err;
+    //  - KeepWithError (a project opened, an undo, a snapshot): it takes its place all the same, with its path, its
+    //    values and its error (black, or the image passed through for an effect), so that nothing of the show is lost
+    //    on the next save and it works again once the shader is there
+    enum class IsfFailure { Refuse, KeepWithError };
+    bool setLayerIsf(int i, const QString &path, QString *err = nullptr, IsfFailure onFailure = IsfFailure::Refuse);
     bool setLayerAudio(int i, const QString &path, QString *err = nullptr);
     // Video, image or audio according to the file: a video file without a picture becomes an audio layer.
     bool setLayerFile(int i, const QString &path, QString *err = nullptr);
@@ -204,6 +210,8 @@ public:
     void setDefaultTransition(const QString &path);
     QString defaultTransition() const;
     bool isTransitioning(quint64 layer) const; // a source transition is running on it
+    // The ISF shader the running transition of `layer` mixes with (empty: a crossfade, always for a sound)
+    QString transitionShader(quint64 layer) const;
     // Mask of an effect: the picture of another layer (0: none) says where the effect applies. Refused for a
     // viewport, the layer itself, or a layer that already depends on this one (err says why).
     bool setEffectMask(int layer, int effect, quint64 maskLayer, bool invert, QString *err = nullptr);
@@ -282,7 +290,8 @@ public:
     void setLayerTextContent(int i, const QString &text);
     void editLayerText(int i, const std::function<void(Layer &)> &edit); // style (bold, outline, shadow…), under the lock
 
-    int addEffect(int layerIndex, const QString &path, QString *err = nullptr);
+    // -1 when refused (see IsfFailure); with KeepWithError, a broken effect joins the chain and passes the image through
+    int addEffect(int layerIndex, const QString &path, QString *err = nullptr, IsfFailure onFailure = IsfFailure::Refuse);
     void removeEffect(int layerIndex, int fx);
     void moveEffect(int layerIndex, int from, int to);
     bool setIsfImageInput(IsfInstance *inst, int input, const QString &path, QString *err = nullptr);
@@ -324,6 +333,9 @@ public:
     // State of every layer, all included; for a snapshot, without the values their animations drive (the
     // animations, held with their state, give them); withAnimated: every value (the undo of a recall)
     QJsonArray captureLayers(bool withAnimated = false) const;
+    // Undo snapshot recalls from the cue clock: serialize only existing layers
+    // the recall can actually modify, rather than every layer in the show.
+    QJsonArray captureRecallLayers(int snapshotIndex) const;
     // Applies layer states (those not excluded): opacity, volume, roi, color, mapping and ISF numbers fade in
     // `fade` seconds, or in the time a state gives them ("timing": key → seconds, 0 a cut); sources and effect chains change at once; a layer that became visible fades in from 0,
     // one that becomes hidden fades out; layers removed since are recreated. Other layers are left alone, or with
@@ -597,6 +609,31 @@ public:
     // --- Project
     void newProject();   // empty, with one viewport
     bool saveProject(const QString &path, const QJsonObject &uiState, QString *err);
+    QJsonObject projectToJson(const QString &projectDir, const QJsonObject &uiState) const; // what saveProject writes
+
+    // --- Collect Files (ProjectCollect.cpp): the project and every file it uses gathered in one folder,
+    // <folder>/<name>.pinol and <folder>/MEDIA/{MOVIES, PICTS, AUDIO, ISF, OTHER}, the paths of the project (layers,
+    // effects, ISF images, transitions, snapshots, media bin) pointing there. ISF shaders come with their vertex
+    // shader and the images they import (a shader that imports some: in a folder of its own, ISF/<name>/)
+    struct CollectFile {
+        QString from, to; // absolute paths
+        qint64 bytes = 0;
+    };
+    struct CollectPlan {
+        QString folder, projectFile;
+        std::vector<CollectFile> files;
+        QStringList missing; // referenced, not found: their paths are kept as they are
+        QStringList skipped; // found, not collected (an ISF image outside its shader's folder)
+        qint64 bytes = 0;
+        QJsonObject project; // the project as it will be written there
+    };
+    // What would be done (nothing is written): `parent` the folder that receives `name` (a new folder)
+    CollectPlan planCollect(const QString &parent, const QString &name, const QJsonObject &uiState) const;
+    // Copies the files and writes the project. Fails (and removes what it wrote) if the folder exists already or a
+    // copy fails. The originals are left: removeCollectedOriginals deletes them (Move), once the collected project
+    // is the one open
+    bool collect(const CollectPlan &plan, QString *err);
+    static int removeCollectedOriginals(const CollectPlan &plan, QStringList *failed = nullptr);
     bool loadProject(const QString &path, QJsonObject *uiState, QString *err);
     QString projectPath() const;
     void setProjectPath(const QString &p);
@@ -800,6 +837,7 @@ private:
         QString shaderPath;
         std::unique_ptr<IsfInstance> shader; // loaded by the render thread (none: a crossfade)
         bool loaded = false;
+        bool crossfadeOnly = false; // a sound on either side: no shader, the levels cross (tests: transitionUsesShader)
         RenderTarget target;
         double elapsed = 0, duration = 1;
     };

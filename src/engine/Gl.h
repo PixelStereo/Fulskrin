@@ -39,6 +39,11 @@ GLuint compileProgram(const QString &vs, const QString &fs, QString *log);
 void setRenderBits(int bits);
 int renderBits();
 
+// Regression-test fault injection. The next allocation fails *after* the new
+// GL objects exist, validating that the previous target is never destroyed.
+void failNextRenderTargetAllocationForTests();
+void failNextMsaaAllocationForTests();
+
 struct RenderTarget {
     GLuint fbo = 0, tex = 0;
     int w = 0, h = 0;

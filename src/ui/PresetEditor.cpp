@@ -7,6 +7,7 @@
 #include <QEvent>
 #include <QLabel>
 #include <QMenu>
+#include <algorithm>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QUndoStack>
@@ -317,5 +318,58 @@ void PresetEditor::updateMarks()
         m_overlay->setVisible(m_editing || hasDriven);
         m_overlay->raise();
         m_overlay->update();
+    }
+}
+
+std::vector<std::pair<QString, QStringList>> PresetEditor::layerValues(Engine *engine, quint64 layer)
+{
+    std::vector<std::pair<QString, QStringList>> out;
+    for (const ParamInfo &i : engine->parameters(layer)) {
+        if (i.type == ParamInfo::Type::Trigger || i.access != ParamInfo::ReadWrite) continue;
+        const int cut = i.label.indexOf(QStringLiteral(" › "));
+        const QString cat = cut < 0 ? QStringLiteral("Layer") : i.label.left(cut);
+        auto it = std::find_if(out.begin(), out.end(), [&](const auto &c) { return c.first == cat; });
+        if (it == out.end()) {
+            out.push_back({cat, {}});
+            it = out.end() - 1;
+        }
+        it->second << i.path;
+    }
+    return out;
+}
+
+void PresetEditor::fillLayerMenu(QMenu *menu, quint64 layer)
+{
+    const auto groups = layerValues(m_engine, layer);
+    if (groups.empty()) return;
+    const int i = m_engine->indexOfPreset(m_selected);
+    const QString target = i >= 0 ? QStringLiteral("Add to Preset \"%1\"").arg(m_engine->preset(i).name)
+                                  : QStringLiteral("Add to New Preset");
+    QMenu *sub = menu->addMenu(target);
+    sub->setToolTip(QStringLiteral("Any value of this layer, whether the inspector shows it or not"));
+    auto add = [this, layer](const QStringList &paths) {
+        if (m_selected && m_engine->indexOfPreset(m_selected) >= 0) addToSelected(layer, paths);
+        else addToNew(layer, paths);
+    };
+    QStringList all;
+    for (const auto &g : groups) all << g.second;
+    sub->addAction(QStringLiteral("All Values"), this, [add, all] { add(all); });
+    sub->addSeparator();
+    for (const auto &[cat, paths] : groups) {
+        QMenu *c = sub->addMenu(cat);
+        c->addAction(QStringLiteral("All %1 Values").arg(cat), this, [add, paths = paths] { add(paths); });
+        c->addSeparator();
+        for (const QString &p : paths) {
+            ParamInfo info;
+            QString label = p;
+            if (m_engine->parameterInfo(layer, p, &info)) {
+                const int cut = info.label.indexOf(QStringLiteral(" › "));
+                label = cut < 0 ? info.label : info.label.mid(cut + 3);
+            }
+            QAction *a = c->addAction(label, this, [add, p] { add({p}); });
+            a->setToolTip(p);
+            a->setCheckable(true);
+            a->setChecked(i >= 0 && inSelected(layer, {p}));
+        }
     }
 }

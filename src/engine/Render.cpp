@@ -562,6 +562,7 @@ void Engine::renderGroup(Layer &g, const std::vector<Layer *> &members, const Is
     g.finalTex = 0;
     g.rawTex = 0;
     g.groupTarget.ensure(m_compSize.width(), m_compSize.height());
+    if (!g.groupTarget.fbo) return;
     compositeLayers(g.groupTarget, members);
     processLayer(g, g.groupTarget.tex, g.groupTarget.w, g.groupTarget.h, true, rc);
 }
@@ -582,6 +583,7 @@ void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const I
         return;
     }
     v.groupTarget.ensure(size.width(), size.height());
+    if (!v.groupTarget.fbo) return;
     // Its region: a rectangle of the composition, upright or turned
     const Mapping::Rect r = v.mapping.rect(m_compSize);
     const double cw = std::max(1, m_compSize.width()), ch = std::max(1, m_compSize.height());
@@ -596,6 +598,9 @@ void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const I
 void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer *> &layers, const QRectF &view,
                              QColor clear, quint64 viewport, double angle)
 {
+    // A failed allocation must not accidentally draw onto framebuffer 0
+    // (the output window) or overwrite an unrelated GPU target.
+    if (!target.fbo) return;
     auto f = gl();
     const RenderSettings rs = effectiveRender();
     // Antialiasing: drawn into a multisampled buffer of the same size, resolved into the target at the end
@@ -603,9 +608,17 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     const int samples = std::min(rs.samples, std::max(1, m_maxSamples));
     MsaaBuffer *ms = nullptr;
     if (samples > 1) {
-        ms = &m_msaa[{target.w, target.h}];
-        ms->ensure(target.w, target.h, samples);
-        ms->used = true;
+        MsaaBuffer &candidate = m_msaa[{target.w, target.h}];
+        candidate.ensure(target.w, target.h, samples);
+        // If MSAA couldn't allocate its replacement, draw into the valid
+        // ordinary target, rather than use a stale-sized or incomplete FBO.
+        if (candidate.fbo && candidate.w == target.w && candidate.h == target.h &&
+            candidate.samples == samples && candidate.bits == renderBits()) {
+            ms = &candidate;
+            ms->used = true;
+        }
+    }
+    if (ms) {
         f->glBindFramebuffer(GL_FRAMEBUFFER, ms->fbo);
         f->glViewport(0, 0, target.w, target.h);
     } else {
@@ -769,6 +782,7 @@ void Engine::composite()
 
     RenderTarget &out = m_output[m_back];
     out.ensure(m_compSize.width(), m_compSize.height());
+    if (!out.fbo) return; // no valid target: the last published frame remains available
     std::vector<Layer *> top;
     for (auto &l : m_layers)
         if (!l->parent && !l->isViewport) top.push_back(l.get());
@@ -782,6 +796,7 @@ void Engine::composite()
         RenderTarget &o = v.vpOut[v.vpBack];
         const QSize size = v.viewportSize();
         o.ensure(size.width(), size.height());
+        if (!o.fbo) continue; // keep the previously published viewport frame
         o.clear(0, 0, 0, 1);
         if (v.finalTex && v.opacity > 0.0f) {
             // The viewport's own picture fills its output, at its opacity

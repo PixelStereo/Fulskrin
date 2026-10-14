@@ -114,6 +114,10 @@ public:
 
     // Parses the .fs file (and optional .vs), then compiles. The GL context must be current.
     bool load(const QString &path);
+    // Compile and load into a temporary instance; the current program stays
+    // alive on failure. The IsfInstance pointer itself is never replaced.
+    // The OpenGL context must be current (same as load()).
+    bool reloadSafely();
     void releaseGl();
 
     // Renders into `out` (size outW x outH). inputTex may be 0 (generator).
@@ -162,6 +166,9 @@ public:
         bool isFilter = false, isTransition = false, ok = false;
     };
     static Header readHeader(const QString &path);
+    // The files a shader needs besides itself: its vertex shader (same name, .vs / .vert) and its IMPORTED images,
+    // each as (absolute path, path relative to the shader's folder). Those that do not exist are left out
+    static std::vector<std::pair<QString, QString>> dependencies(const QString &path);
 
 private:
     bool parse(const QString &src, QString *body);
