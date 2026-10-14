@@ -111,6 +111,8 @@ public:
         int lastAvError = 0; // last non-EOF FFmpeg error code, 0 if none
     };
     Metrics metrics() const;
+    static uint64_t ffmpegErrorsTotal(); // process-wide counters for endurance telemetry
+    static uint64_t emptyLoopStopsTotal();
     void resetMetrics();
     void recordDecodeTime(uint64_t nanoseconds); // decode thread (and tests)
 
