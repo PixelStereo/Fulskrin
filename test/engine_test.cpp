@@ -3936,6 +3936,23 @@ void main(){ gl_FragColor = definitely_not_defined; }
         CHECK(decklink::bestMode(modes, QSize(1920, 1080), 60)->key == "Hp30"); // the closest rate, a whole one first
         CHECK(decklink::bestMode(modes, QSize(1280, 720), 60)->key == "hp50");
         CHECK(decklink::bestMode(modes, QSize(1000, 500), 25)->key == "Hp25"); // no such size: 1080
+        // The driver is asked for its ports once, not at every look (the interface looks every two seconds): a
+        // rescan asks again. Without the SDK or a driver, nothing is asked at all
+        {
+            const int before = decklink::lookups();
+            for (int k = 0; k < 20; ++k) {
+                decklink::outputPorts();
+                decklink::inputPorts();
+                decklink::outputModes(QStringLiteral("no such port"));
+            }
+            const int asked = decklink::lookups() - before;
+            CHECK(asked <= 1);
+            decklink::rescan();
+            decklink::outputPorts();
+            decklink::outputPorts();
+            CHECK(decklink::lookups() - before <= asked + 1);
+            CHECK(!decklink::compiledIn() || decklink::lookups() - before == asked + 1);
+        }
         CHECK(decklink::bestMode({}, QSize(1920, 1080), 25) == nullptr);
         // White, black and red (BT.709, video range): Cb Y Cr Y
         auto uyvy = [](QColor c, int h) {

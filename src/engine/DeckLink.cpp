@@ -1,5 +1,6 @@
 // Blackmagic DeckLink outputs (DeckLink.h): the ports, their modes, and the publisher that plays a viewport out.
 #include "DeckLink.h"
+#include <map>
 #include "Publish.h"
 
 #include <algorithm>
@@ -67,6 +68,8 @@ std::vector<decklink::Port> decklink::outputPorts() { return {}; }
 std::vector<decklink::Mode> decklink::outputModes(const QString &) { return {}; }
 std::unique_ptr<CpuPublisher> createDeckLinkPublisher() { return nullptr; }
 std::vector<decklink::Port> decklink::inputPorts() { return {}; }
+void decklink::rescan() {}
+int decklink::lookups() { return 0; }
 struct decklink::TimecodeInput::Impl {};
 decklink::TimecodeInput::TimecodeInput() : d(std::make_unique<Impl>()) {}
 decklink::TimecodeInput::~TimecodeInput() = default;
@@ -253,27 +256,56 @@ QString decklink::driverVersion()
     return (v >> 8) & 0xFF ? s + QStringLiteral(".%1").arg((v >> 8) & 0xFF) : s;
 }
 
-std::vector<decklink::Port> decklink::outputPorts()
+// The ports and modes, looked up once (decklink::rescan looks again): the interface asks for them often
+namespace {
+std::mutex g_cacheMutex;
+bool g_cached = false;
+std::vector<decklink::Port> g_outputs, g_inputs;
+std::map<QString, std::vector<decklink::Mode>> g_modes;
+std::atomic<int> g_lookups{0};
+
+void fillCache() // g_cacheMutex held
 {
-    std::vector<Port> out;
-    eachPort([&](IDeckLink *, const Port &p) {
-        out.push_back(p);
+    if (g_cached) return;
+    ++g_lookups;
+    g_outputs.clear();
+    g_inputs.clear();
+    eachPort([&](IDeckLink *, const decklink::Port &p) {
+        g_outputs.push_back(p);
         return false;
     });
-    return out;
+    eachPort(
+        [&](IDeckLink *, const decklink::Port &p) {
+            g_inputs.push_back(p);
+            return false;
+        },
+        true);
+    g_modes.clear();
+    g_cached = true;
+}
+} // namespace
+
+std::vector<decklink::Port> decklink::outputPorts()
+{
+    std::lock_guard<std::mutex> lk(g_cacheMutex);
+    fillCache();
+    return g_outputs;
 }
 
 std::vector<decklink::Port> decklink::inputPorts()
 {
-    std::vector<Port> out;
-    eachPort(
-        [&](IDeckLink *, const Port &p) {
-            out.push_back(p);
-            return false;
-        },
-        true);
-    return out;
+    std::lock_guard<std::mutex> lk(g_cacheMutex);
+    fillCache();
+    return g_inputs;
 }
+
+void decklink::rescan()
+{
+    std::lock_guard<std::mutex> lk(g_cacheMutex);
+    g_cached = false;
+}
+
+int decklink::lookups() { return g_lookups.load(); }
 
 static Ref<IDeckLink> findPort(const QString &id, decklink::Port *found, bool input = false)
 {
@@ -324,10 +356,18 @@ static std::vector<decklink::Mode> modesOf(IDeckLinkOutput *o)
 
 std::vector<decklink::Mode> decklink::outputModes(const QString &port)
 {
+    std::lock_guard<std::mutex> lk(g_cacheMutex);
+    fillCache();
+    if (const auto it = g_modes.find(port); it != g_modes.end()) return it->second;
+    bool known = port.isEmpty();
+    for (const Port &p : g_outputs) known = known || p.id == port || p.name == port;
+    if (!known) return {}; // no such port: the driver is not asked
     Port p;
     Ref<IDeckLink> d = findPort(port, &p);
     auto o = query<IDeckLinkOutput>(d.p, IID_IDeckLinkOutput);
-    return o ? modesOf(o.p) : std::vector<Mode>{};
+    std::vector<Mode> modes = o ? modesOf(o.p) : std::vector<Mode>{};
+    g_modes[port] = modes;
+    return modes;
 }
 
 // ---------------------------------------------------------------------------

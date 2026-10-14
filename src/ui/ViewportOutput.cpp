@@ -242,6 +242,16 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
     pv->addLayout(form);
     m_libInfo = note(QString());
     pv->addWidget(m_libInfo);
+    if (decklink::compiledIn()) { // the ports are looked up once (DeckLink.h): a card plugged in since, found here
+        auto *rescan = new QPushButton(QStringLiteral("Look for DeckLink Devices Again"));
+        rescan->setToolTip(QStringLiteral("A DeckLink card or UltraStudio connected since Pinol started"));
+        pv->addWidget(rescan, 0, Qt::AlignLeft);
+        connect(rescan, &QPushButton::clicked, this, [this] {
+            decklink::rescan();
+            m_dlSeen.clear();
+            refreshDeckLink();
+        });
+    }
     pv->addWidget(note(QStringLiteral("NDI and OMT send the picture at the viewport's size; "
                                       "Syphon and Spout share it directly on the GPU.")));
     v->addWidget(pub);
@@ -382,7 +392,7 @@ void ViewportOutputPanel::refreshStatus()
         m_dlState->setText(QStringLiteral("<span style='color:%1'>%2</span>")
                                .arg(color, (st.text.isEmpty() ? QStringLiteral("Off") : st.text).toHtmlEscaped()));
     }
-    // Library lookup and the DeckLink ports: roughly every two seconds (disk access, the driver)
+    // Library lookup and the DeckLink ports (kept by DeckLink.cpp: the driver is not asked again): every two seconds
     if (m_libTick++ % 20 != 0) return;
     refreshDeckLink();
     const QString folder = m_libFolder->text().trimmed();
