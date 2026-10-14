@@ -379,9 +379,10 @@ void VideoTexture::upload(VideoFrame &fr, VideoDecoder &dec, const VideoConverte
     auto f = gl();
     if (L.surface) {
         if (fr.av && conv.surfaces() && bindSurface(fr, L)) {
-            convert(L, conv, true);
-            shown();
-            ++m_surfaced;
+            if (convert(L, conv, true)) {
+                shown();
+                ++m_surfaced;
+            }
             return;
         }
         // Refused by the GPU: this frame is copied back and uploaded, and the decoders copy the next ones of
@@ -394,8 +395,7 @@ void VideoTexture::upload(VideoFrame &fr, VideoDecoder &dec, const VideoConverte
             f->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             uploadFrom(sw, L);
             f->glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            convert(L, conv, false);
-            shown();
+            if (convert(L, conv, false)) shown();
         }
         av_frame_free(&sw);
         return;
@@ -443,17 +443,20 @@ void VideoTexture::upload(VideoFrame &fr, VideoDecoder &dec, const VideoConverte
     }
     f->glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     if (!ok) return;
-    convert(L, conv, false);
-    shown();
+    if (convert(L, conv, false)) shown();
 }
 
-void VideoTexture::convert(const VideoLayout &L, const VideoConverter &conv, bool surface)
+bool VideoTexture::convert(const VideoLayout &L, const VideoConverter &conv, bool surface)
 {
     auto f = gl();
     const VideoConverter::Program &P = surface ? conv.m_rect : conv.m_plain;
     const GLenum target = surface ? GLenum(GL_TEXTURE_RECTANGLE) : GLenum(GL_TEXTURE_2D);
     const GLuint *planes = surface ? m_rect : m_planes;
     m_out.ensure(L.width, L.height);
+    // FBO creation is transactional and may keep a previous-size picture on
+    // failure. Never render conversion into framebuffer 0 or a stale FBO,
+    // and never advertise the frame as uploaded when conversion was skipped.
+    if (!m_out.ready(L.width, L.height)) return false;
     m_out.bind();
     f->glDisable(GL_BLEND);
     f->glUseProgram(P.id);
@@ -503,6 +506,7 @@ void VideoTexture::convert(const VideoLayout &L, const VideoConverter &conv, boo
         f->glActiveTexture(GL_TEXTURE0 + GLenum(c));
         f->glBindTexture(target, 0);
     }
+    return true;
 }
 
 void VideoTexture::shown()
