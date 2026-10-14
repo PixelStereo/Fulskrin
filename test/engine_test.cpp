@@ -1095,6 +1095,14 @@ void main(){ gl_FragColor = definitely_not_defined; }
         CHECK(osc::decode(bundle, back) && back.size() == 2 && back[1].address == "/y");
         CHECK(osc::match("/layer/*/opacity", "/layer/A_b/opacity") && !osc::match("/layer/*/opacity", "/layer/a/b/opacity"));
         CHECK(osc::match("/l/{foo,bar}/[a-c]?", "/l/bar/bx") && !osc::match("/l/{foo,bar}/[!a-c]", "/l/foo/a"));
+        // Previously exponential: a hostile repeated-wildcard address with
+        // an unmatched suffix could block the OSC control thread for seconds.
+        const QString manyStars = QStringLiteral("/") + QString(40, QChar('*'));
+        const QString longAddress = QStringLiteral("/") + QString(96, QChar('a'));
+        CHECK(!osc::match(manyStars + "z", longAddress));
+        CHECK(osc::match(manyStars + "a", longAddress));
+        // Explicit CPU/memory limits for remote OSC paths.
+        CHECK(!osc::match(QStringLiteral("/") + QString(9000, 'a'), longAddress));
         CHECK(osc::safeName(" My layer/1 ") == "My_layer_1");
         // Hostile packets (lengths read from the network): refused, never read out of bounds
         {
@@ -1115,6 +1123,15 @@ void main(){ gl_FragColor = definitely_not_defined; }
             QByteArray deep = osc::encode({"/x", "i", {1}});
             for (int k = 0; k < 10; ++k) deep = QByteArray("#bundle\0", 8) + QByteArray(8, '\0') + be32(qint32(deep.size())) + deep;
             CHECK(!osc::decode(deep, none));
+            // A UDP/TCP bundle containing thousands of tiny valid messages
+            // must be rejected rather than allocate/match all of them.
+            QByteArray flood("#bundle\0", 8);
+            flood += QByteArray(8, '\0');
+            const QByteArray item = osc::encode({"/x", "", {}});
+            for (int k = 0; k < 1100; ++k) flood += be32(qint32(item.size())) + item;
+            std::vector<osc::Message> flooded;
+            CHECK(!osc::decode(flood, flooded));
+            CHECK(flooded.size() <= 1024);
             // Strings without their end, an address alone, a packet too large
             CHECK(!osc::decode(QByteArray("/abc"), none));
             CHECK(!osc::decode(QByteArray("/a\0\0,s\0\0abc", 11), none));
