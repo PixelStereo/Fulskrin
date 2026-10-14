@@ -42,8 +42,11 @@ QString renderChoice::frameRateName(double fps)
 {
     return fps <= 0 ? QStringLiteral("Screen refresh") : QStringLiteral("%1 fps").arg(fps);
 }
-QList<int> renderChoice::depths() { return {8, 10}; }
-QString renderChoice::depthName(int bits) { return bits >= 10 ? QStringLiteral("10 bits") : QStringLiteral("8 bits"); }
+QList<int> renderChoice::depths() { return {10, 8}; }
+QString renderChoice::depthName(int bits)
+{
+    return bits >= 10 ? QStringLiteral("16 bits/channel (RGBA16)") : QStringLiteral("8 bits/channel (lighter)");
+}
 QList<int> renderChoice::samples() { return {0, 2, 4, 8}; }
 QString renderChoice::samplesName(int n) { return n <= 1 ? QStringLiteral("Off") : QStringLiteral("%1× MSAA").arg(n); }
 
@@ -54,7 +57,7 @@ Engine::RenderSettings SettingsPanel::renderDefaults()
     r.frameRate = std::max(0.0, s.value(kRateKey, 0.0).toDouble());
     r.samples = std::max(0, s.value(kSamplesKey, 4).toInt());
     r.mipmaps = s.value(kMipmapsKey, true).toBool() ? 1 : 0;
-    r.depth = s.value(kDepthKey, 8).toInt() >= 10 ? 10 : 8;
+    r.depth = s.value(kDepthKey, 10).toInt() >= 10 ? 10 : 8; // RGBA16 unless 8 bits are chosen
     return r;
 }
 static constexpr int kDefaultOscPort = 1234, kDefaultQueryPort = 5678;
@@ -194,7 +197,11 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
         m_mipmaps->setChecked(d.mipmaps > 0);
         rf->addRow(new ResetLabel(QStringLiteral("Frame rate"), [this] { m_rate->setCurrentIndex(0); }), m_rate);
         rf->addRow(new ResetLabel(QStringLiteral("Antialiasing"), [this] { m_samples->setCurrentIndex(2); }), m_samples);
-        rf->addRow(new ResetLabel(QStringLiteral("Color depth"), [this] { m_depth->setCurrentIndex(0); }), m_depth);
+        rf->addRow(new ResetLabel(QStringLiteral("Internal precision"), [this] { m_depth->setCurrentIndex(0); }), m_depth);
+        rf->addRow(note(QStringLiteral("16 bits (default): composition, ISF and effect render targets in RGBA16, so "
+                                       "generated gradients are not cut to 256 shades inside PINOL. 8 bits: half the GPU "
+                                       "memory and bandwidth, for heavy 4K / 8K shows. Displays, media decoding and "
+                                       "network outputs can still be 8-bit: no HDR or 10-bit output signal is implied.")));
         rf->addRow(m_mipmaps);
         auto *shareLate = new FlagBox(QStringLiteral("Syphon / Spout one frame later, without waiting for the GPU"));
         shareLate->setChecked(gpuShareOneFrameLate());

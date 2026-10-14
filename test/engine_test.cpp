@@ -3404,6 +3404,15 @@ void main(){ gl_FragColor = definitely_not_defined; }
             e.layer(li)->mapping.resetCorners();
             e.layer(li)->opacity = 0.5f;
         }
+        { // nothing chosen on this machine: 16 bits
+            Engine::RenderSettings none = e.renderDefaults();
+            none.depth = -1;
+            e.setRenderDefaults(none);
+            for (int k = 0; k < 2; ++k) e.renderFrame();
+            CHECK(e.effectiveRender().depth == 10 && renderBits() == 16);
+            none.depth = 8; // 8 bits chosen
+            e.setRenderDefaults(none);
+        }
         for (int k = 0; k < 2; ++k) e.renderFrame();
         const QColor c8 = e.grabOutput().pixelColor(8, 8);
         CHECK(renderBits() == 8);

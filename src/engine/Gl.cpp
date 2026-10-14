@@ -57,7 +57,7 @@ GLuint compileProgram(const QString &vs, const QString &fs, QString *log)
     return p;
 }
 
-static std::atomic<int> g_renderBits{8};
+static std::atomic<int> g_renderBits{16}; // before the first frame, never allocate 8-bit composition targets
 static std::atomic<bool> g_failTarget{false}, g_failMsaa{false};
 void failNextRenderTargetAllocationForTests() { g_failTarget = true; }
 void failNextMsaaAllocationForTests() { g_failMsaa = true; }
