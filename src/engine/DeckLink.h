@@ -3,8 +3,9 @@
 // plays, and a viewport's picture sent to one of them (createDeckLinkPublisher, Publish.h).
 //
 // The SDK's headers are in the source tree (third_party/decklink, Boost license); the driver (Desktop Video) is loaded
-// at run time: without it there is simply no port. The ports are looked up again on each call (a card plugged in,
-// an UltraStudio connected, show up).
+// at run time: without it there is simply no port. The ports and their modes are looked up once and kept: asking the
+// driver over and over (the interface did every two seconds) made and dropped its IOKit connections each time, and a
+// crash in macOS's libdispatch came with it. rescan() looks again (a card plugged in, an UltraStudio connected).
 
 #include "Timecode.h"
 
@@ -34,6 +35,8 @@ QString driverVersion();                           // "12.4" (empty: no driver)
 std::vector<Port> outputPorts();                   // the ports that play out (none without a driver or a card)
 std::vector<Mode> outputModes(const QString &port); // the modes it plays (empty: no such port)
 std::vector<Port> inputPorts();                    // the ports that take a signal in
+void rescan();                                     // the ports and modes looked up again at the next call
+int lookups();                                     // how many times the driver was asked for its ports (tests)
 // The mode for a picture of `size` at `fps` among `modes`: the same size, progressive, the closest rate (else 1080p)
 const Mode *bestMode(const std::vector<Mode> &modes, QSize size, double fps);
 
