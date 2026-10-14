@@ -335,6 +335,27 @@ static constexpr uint32_t fourcc(char a, char b, char c, char d)
 int runVideoTests(Engine &e, const QString &root, const QString &tmp)
 {
     g_failures = 0;
+    // Source metadata: the Media Bin probe and the inspector share the same
+    // tags; never infer Rec.709 when a file's tags are unspecified.
+    {
+        VideoDecoder::Info info;
+        VCHECK(VideoDecoder::probe(root + "/media/h264.mp4", &info));
+        VCHECK(info.width > 0 && info.height > 0 && !info.codec.isEmpty());
+        VCHECK(info.colorDescription().contains("matrix:") &&
+               info.colorDescription().contains("primaries:") &&
+               info.colorDescription().contains("transfer:") &&
+               info.colorDescription().contains("range:"));
+        VideoDecoder d;
+        QString err;
+        VCHECK(d.open(root + "/media/h264.mp4", &err));
+        VCHECK(d.sourceInfo().pixelFormat == info.pixelFormat &&
+               d.sourceInfo().bitDepth == info.bitDepth &&
+               d.sourceInfo().matrix == info.matrix &&
+               d.sourceInfo().primaries == info.primaries &&
+               d.sourceInfo().transfer == info.transfer &&
+               d.sourceInfo().range == info.range);
+        d.close();
+    }
     // --- Snappy: literals, the three kinds of copy (overlapping too), malformed streams
     {
         const uint8_t s1[] = {7, 0x08, 'x', 'a', 'b', 0x01, 0x02}; // "xab" + copy(offset 2, length 4)
