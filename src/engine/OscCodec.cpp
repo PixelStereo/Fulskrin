@@ -119,6 +119,9 @@ struct Reader {
 static constexpr qsizetype kMaxPacket = 1 << 20; // OSC over UDP stays far below; TCP and WebSocket frames too
 static constexpr int kMaxArgs = 1024;
 static constexpr int kMaxDepth = 8;          // nested bundles
+static constexpr size_t kMaxMessages = 1024; // bound the number of decoded messages across nested bundles
+static constexpr int kMaxOscPatternChars = 8192;
+static constexpr int kMaxOscSegmentChars = 4096;
 
 static bool decodeInto(const QByteArray &packet, std::vector<Message> &out, int depth)
 {
@@ -183,7 +186,8 @@ static bool decodeInto(const QByteArray &packet, std::vector<Message> &out, int 
             if (!r.ok) return false;
         }
     }
-    out.push_back(m);
+    if (out.size() >= kMaxMessages) return false;
+    out.push_back(std::move(m));
     return true;
 }
 
@@ -299,10 +303,17 @@ static bool matchSeg(const QString &p, const QString &s)
 
 bool match(const QString &pattern, const QString &address)
 {
+    // Bound work and allocations before tokenization or dynamic programming.
+    // Valid OSC inputs fit comfortably within these operational safety caps.
+    if (pattern.size() > kMaxOscPatternChars || address.size() > kMaxOscPatternChars)
+        return false;
     const QStringList p = pattern.split('/'), a = address.split('/');
     if (p.size() != a.size()) return false;
-    for (int k = 0; k < p.size(); ++k)
+    for (int k = 0; k < p.size(); ++k) {
+        if (p[k].size() > kMaxOscSegmentChars || a[k].size() > kMaxOscSegmentChars)
+            return false;
         if (!matchSeg(p[k], a[k])) return false;
+    }
     return true;
 }
 
