@@ -5,6 +5,10 @@
 #include "MacPresentation.h"
 #endif
 #include <QElapsedTimer>
+#include <QRadioButton>
+#include <QFormLayout>
+#include <QDialogButtonBox>
+#include <QDialog>
 #include <memory>
 #include "Engine.h"
 #include "LayerInspector.h"
@@ -508,6 +512,8 @@ void MainWindow::buildMenus()
     file->addSeparator();
     file->addAction(QStringLiteral("Save"), QKeySequence::Save, this, &MainWindow::save);
     file->addAction(QStringLiteral("Save As…"), QKeySequence::SaveAs, this, &MainWindow::saveAs);
+    file->addAction(QStringLiteral("Collect Files…"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_S), this, &MainWindow::collectFiles)
+        ->setToolTip(QStringLiteral("The project and every file it uses (media, shaders, transitions) in one folder"));
     file->addSeparator();
     file->addAction(QStringLiteral("Import to Media Bin…"), QKeySequence(Qt::CTRL | Qt::Key_I), this, [this] {
         QSettings s;
@@ -1858,4 +1864,100 @@ void MainWindow::dropEvent(QDropEvent *e)
     }
     if (!paths.isEmpty()) loadDropped(currentLayer(), paths);
     e->acceptProposedAction();
+}
+
+// ---------------------------------------------------------------------------
+// Collect Files: the project and its media in one folder (Engine::planCollect / collect)
+// ---------------------------------------------------------------------------
+
+void MainWindow::collectFiles()
+{
+    QSettings s;
+    const QString current = m_engine->projectPath();
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Collect Files"));
+    auto *form = new QFormLayout(&dlg);
+    auto *where = new QLineEdit(s.value("dirs/collect", current.isEmpty() ? QDir::homePath() : QFileInfo(current).absolutePath()).toString());
+    auto *browse = new QPushButton(QStringLiteral("Choose…"));
+    auto *whereRow = new QHBoxLayout;
+    whereRow->addWidget(where, 1);
+    whereRow->addWidget(browse);
+    form->addRow(QStringLiteral("In"), whereRow);
+    auto *name = new QLineEdit(current.isEmpty() ? QStringLiteral("Project") : QFileInfo(current).completeBaseName());
+    form->addRow(QStringLiteral("Folder name"), name);
+    auto *copy = new QRadioButton(QStringLiteral("Copy the files (the originals stay where they are)"));
+    auto *move = new QRadioButton(QStringLiteral("Move the files (the originals are deleted once copied)"));
+    copy->setChecked(true);
+    form->addRow(QStringLiteral("Files"), copy);
+    form->addRow(QString(), move);
+    auto *summary = new QLabel;
+    summary->setWordWrap(true);
+    summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    form->addRow(summary);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Collect"));
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(browse, &QPushButton::clicked, &dlg, [&] {
+        const QString d = QFileDialog::getExistingDirectory(&dlg, QStringLiteral("Collect Files In"), where->text());
+        if (!d.isEmpty()) where->setText(d);
+    });
+    Engine::CollectPlan plan;
+    auto refresh = [&] {
+        plan = m_engine->planCollect(where->text(), name->text(), uiState());
+        auto mb = [](qint64 b) { return QString::number(double(b) / (1024.0 * 1024.0), 'f', 1); };
+        QString text = QStringLiteral("<b>%1</b><br>%2 files, %3 MB, into MEDIA/ (MOVIES, PICTS, AUDIO, ISF, OTHER).")
+                           .arg(plan.projectFile.toHtmlEscaped())
+                           .arg(plan.files.size())
+                           .arg(mb(plan.bytes));
+        if (QFileInfo::exists(plan.folder))
+            text += QStringLiteral("<br><span style='color:#e05050'>This folder exists already: choose another name.</span>");
+        if (!plan.missing.isEmpty())
+            text += QStringLiteral("<br><span style='color:#e0a040'>%1 file(s) not found, left as they are: %2</span>")
+                        .arg(plan.missing.size())
+                        .arg(plan.missing.mid(0, 5).join(QStringLiteral(", ")).toHtmlEscaped());
+        if (!plan.skipped.isEmpty())
+            text += QStringLiteral("<br><span style='color:#e0a040'>%1 ISF image(s) outside their shader's folder, not collected.</span>")
+                        .arg(plan.skipped.size());
+        text += QStringLiteral("<br>The default transition of Settings is this machine's, not the project's: not collected."
+                               "<br>The collected project is opened afterwards; the project file open now is left as it "
+                               "was last saved.");
+        summary->setText(text);
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(!QFileInfo::exists(plan.folder) && !name->text().trimmed().isEmpty());
+    };
+    connect(where, &QLineEdit::textChanged, &dlg, refresh);
+    connect(name, &QLineEdit::textChanged, &dlg, refresh);
+    refresh();
+    if (dlg.exec() != QDialog::Accepted) return;
+    plan = m_engine->planCollect(where->text(), name->text(), uiState());
+    if (move->isChecked() &&
+        QMessageBox::question(this, QStringLiteral("Collect Files"),
+                              QStringLiteral("Move %1 files into %2?\n\nThe originals are deleted once every copy is "
+                                             "made and the collected project is open. Other projects that use them will "
+                                             "not find them any more.")
+                                  .arg(plan.files.size())
+                                  .arg(plan.folder),
+                              QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+    QString err;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool ok = m_engine->collect(plan, &err);
+    QApplication::restoreOverrideCursor();
+    if (!ok) {
+        QMessageBox::warning(this, QStringLiteral("Collect Files"), err);
+        return;
+    }
+    s.setValue("dirs/collect", where->text());
+    if (!openProject(plan.projectFile)) return;
+    QString done = QStringLiteral("%1 files collected in %2.").arg(plan.files.size()).arg(plan.folder);
+    if (move->isChecked()) {
+        QStringList failed;
+        const int removed = Engine::removeCollectedOriginals(plan, &failed);
+        done = QStringLiteral("%1 files moved to %2.").arg(removed).arg(plan.folder);
+        if (!failed.isEmpty())
+            QMessageBox::warning(this, QStringLiteral("Collect Files"),
+                                 QStringLiteral("Copied, but these originals could not be deleted:\n\n") + failed.join('\n'));
+    }
+    statusBar()->showMessage(done, 8000);
 }
