@@ -340,7 +340,7 @@ void Sequencer::fireSnapshot(int mi)
         m_engine.recallSnapshot(mi);
         return;
     }
-    RecallBefore before{m_engine.captureLayers(true), m_engine.captureComposition(), m_engine.captureInteractions()};
+    RecallBefore before{m_engine.captureRecallLayers(mi), m_engine.captureComposition(), m_engine.captureInteractions()};
     m_engine.recallSnapshot(mi);
     QMetaObject::invokeMethod(this, [this, mi, before] {
         std::function<void(int, const RecallBefore &)> f;
