@@ -101,7 +101,7 @@ private:
         csv.write("# PINOL endurance metrics v1\n# ");
         csv.write(QJsonDocument(meta).toJson(QJsonDocument::Compact));
         csv.write("\n");
-        csv.write("utc,frames,missed,interval_p99_ms,interval_max_ms,compute_p95_ms,compute_p99_ms,compute_max_ms,present_p99_ms,present_max_ms,osc_to_frame_p99_ms,cue_to_frame_p99_ms,outputs_dropped_total,shares_skipped_total,decoded_frames_mb,upload_buffers_mb,graphics_memory_free_mb,software_decode_threads,resource_warnings,late_events_lost\n");
+        csv.write("utc,frames,missed,interval_p99_ms,interval_max_ms,compute_p95_ms,compute_p99_ms,compute_max_ms,present_p99_ms,present_max_ms,osc_to_frame_p99_ms,cue_to_frame_p99_ms,outputs_dropped_total,shares_skipped_total,decoded_frames_mb,upload_buffers_mb,graphics_memory_free_mb,software_decode_threads,ffmpeg_errors_total,empty_video_loops_stopped_total,resource_warnings,late_events_lost\n");
         jsonLine(events, QJsonObject{{"kind", "session"}, {"meta", meta}});
         csv.flush();
         events.flush();
@@ -130,6 +130,7 @@ private:
                 val(total, "outputs_dropped"), val(total, "shares_skipped"),
                 val(budget, "decoded_frames_mb"), val(budget, "upload_buffers_mb"),
                 val(budget, "graphics_memory_free_mb"), val(budget, "software_decode_threads"),
+                val(budget, "ffmpeg_errors_total"), val(budget, "empty_video_loops_stopped_total"),
                 csvValue(QString::fromUtf8(QJsonDocument(budget.value("warnings").toArray()).toJson(QJsonDocument::Compact))),
                 QString::number(window.eventsLost)};
             csv.write(row.join(',').toUtf8());
