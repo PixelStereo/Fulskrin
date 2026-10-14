@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.21)
 project(Pinol VERSION 0.1.0 LANGUAGES CXX)
 
+# Embed the source revision once in the executable for endurance-session comparison.
+execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    OUTPUT_VARIABLE PINOL_BUILD_SHA ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT PINOL_BUILD_SHA)
+  set(PINOL_BUILD_SHA "unknown")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -314,7 +321,8 @@ if(APPLE)
   enable_language(OBJCXX)
   list(APPEND APP_SOURCES src/ui/MacPresentation.mm)
   add_executable(Pinol MACOSX_BUNDLE ${APP_SOURCES})
-  target_link_libraries(Pinol PRIVATE "-framework AppKit")
+  target_compile_definitions(Pinol PRIVATE PINOL_BUILD_SHA="${PINOL_BUILD_SHA}")
+target_link_libraries(Pinol PRIVATE "-framework AppKit")
   # The camera permission plugin (static, from Qt): without it Qt refuses the camera before macOS is asked
   find_package(Qt6QDarwinCameraPermissionPlugin QUIET)
   if(TARGET Qt6::QDarwinCameraPermissionPlugin)
