@@ -50,6 +50,7 @@ private:
     void refreshMeters();
     void applyComposition();
     void syncRate();
+    void syncStartupSequence();
     // Timecode: the outputs the Timecode layers drive and where each goes; the MIDI outputs and the audio channels they
     // are patched to, given their hardware here. Made again when the patch changes
     QWidget *buildTimecodePatch();
@@ -69,6 +70,8 @@ private:
     SliderField *m_audioVolume = nullptr;
     QLabel *m_audioVolumeLabel = nullptr;
     QComboBox *m_rate = nullptr;
+    QCheckBox *m_startupEnabled = nullptr;
+    QComboBox *m_startupSequence = nullptr;
     QProgressBar *m_meter[2] = {};
     QTimer m_meterTimer;
     bool m_syncing = false;

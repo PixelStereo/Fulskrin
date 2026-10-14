@@ -118,6 +118,10 @@ public:
     void remove(int i);
     int current() const;           // -1: none
     void setCurrent(int i);        // its position goes back to before the first step
+    // Project-specific automatic GO when the project opens; -1 disables it.
+    // Index tracks sequence insertions/deletions and survives renaming.
+    int startupSequence() const;
+    void setStartupSequence(int i);
     int position() const;          // step last played in the current sequence (-1: none yet)
     void setPosition(int step);    // without recalling (the interface recalls, undoable)
     int next() const;              // the step GO plays (-1: none — the end, without loop)
@@ -164,6 +168,7 @@ private:
     Annotated<QRecursiveMutex> &m_mutex;
     std::vector<Sequence> m_sequences;
     int m_current = -1, m_position = -1;
+    int m_startupSequence = -1; // none by default; adjusted on insert/remove
     std::vector<Run> m_runs; // of the current sequence
     std::function<void(int)> m_recaller;                         // under m_mutex
     std::function<void(int, const RecallBefore &)> m_recorder;   // under m_mutex

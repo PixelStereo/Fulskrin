@@ -123,6 +123,7 @@ int Sequencer::add(const Sequence &s, int at)
         QMutexLocker lk(&m_mutex);
         if (at < 0 || at > int(m_sequences.size())) at = int(m_sequences.size());
         m_sequences.insert(m_sequences.begin() + at, s);
+        if (m_startupSequence >= at) ++m_startupSequence;
         if (m_current >= at) ++m_current;
         if (m_current < 0) {
             m_current = at;
@@ -140,6 +141,8 @@ void Sequencer::remove(int i)
         QMutexLocker lk(&m_mutex);
         if (i < 0 || i >= int(m_sequences.size())) return;
         m_sequences.erase(m_sequences.begin() + i);
+        if (m_startupSequence == i) m_startupSequence = -1;
+        else if (m_startupSequence > i) --m_startupSequence;
         m_runs.clear();
         if (m_current == i) {
             m_current = m_sequences.empty() ? -1 : std::min(i, int(m_sequences.size()) - 1);
@@ -168,6 +171,22 @@ void Sequencer::setCurrent(int i)
         m_runs.clear(); // the waits of the other one: no step comes from them any more
     }
     emit positionChanged();
+}
+
+int Sequencer::startupSequence() const
+{
+    QMutexLocker lk(&m_mutex);
+    return m_startupSequence;
+}
+
+void Sequencer::setStartupSequence(int i)
+{
+    {
+        QMutexLocker lk(&m_mutex);
+        if (i < -1 || i >= int(m_sequences.size()) || m_startupSequence == i) return;
+        m_startupSequence = i;
+    }
+    emit changed();
 }
 
 int Sequencer::position() const
@@ -516,6 +535,7 @@ void Sequencer::fromJson(const QJsonArray &a, int current)
         m_sequences.push_back(s);
     }
     m_current = m_sequences.empty() ? -1 : std::clamp(current, 0, int(m_sequences.size()) - 1);
+    m_startupSequence = -1; // chosen by the project after sequences are parsed
     m_position = -1;
     m_runs.clear();
 }
@@ -524,6 +544,7 @@ void Sequencer::clear()
 {
     QMutexLocker lk(&m_mutex);
     m_sequences.clear();
+    m_startupSequence = -1;
     m_current = m_position = -1;
     m_runs.clear();
 }

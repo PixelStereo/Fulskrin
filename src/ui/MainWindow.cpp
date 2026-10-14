@@ -1739,6 +1739,13 @@ bool MainWindow::openProject(const QString &path)
     }
     m_forceDirty = false;
     afterProjectLoaded(ui);
+    // Only an explicitly opened project autoplays. Never trigger this for
+    // autosave recovery (which intentionally restores show outputs blacked out).
+    const int startup = m_engine->sequencer().startupSequence();
+    if (startup >= 0) {
+        m_engine->sequencer().setCurrent(startup);
+        m_engine->sequencer().goTo(0);
+    }
     QSettings s;
     s.setValue("dirs/project", QFileInfo(path).absolutePath());
     s.setValue("project/last", QFileInfo(path).absoluteFilePath());

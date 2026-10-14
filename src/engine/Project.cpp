@@ -411,6 +411,7 @@ QJsonObject Engine::projectToJson(const QString &dir, const QJsonObject &uiState
         root["interactions"] = interactions;
         root["sequences"] = m_sequencer->toJson();
         root["current_sequence"] = m_sequencer->current();
+        root["startup_sequence"] = m_sequencer->startupSequence();
     }
     root["ui"] = uiState;
     return root;
@@ -661,6 +662,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
             if (!p.id) p.id = m_nextPresetId++;
         animationsFromJson(root.value("timelines").toArray());
         m_sequencer->fromJson(root.value("sequences").toArray(), root.value("current_sequence").toInt(0));
+        m_sequencer->setStartupSequence(root.value("startup_sequence").toInt(-1));
     }
     emit snapshotsChanged();
     emit presetsChanged();
