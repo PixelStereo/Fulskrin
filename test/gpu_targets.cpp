@@ -18,6 +18,8 @@ int runGpuTargetTests(Engine &e)
     };
 
     e.runGl([&] {
+        const int bitsBefore = renderBits(); // 16 by default: these checks start from an 8-bit target
+        setRenderBits(8);
         RenderTarget t;
         check(t.ensure(32, 32) && t.fbo && t.tex && t.w == 32, "initial framebuffer complete");
         const GLuint previousFbo = t.fbo, previousTex = t.tex;
@@ -35,7 +37,7 @@ int runGpuTargetTests(Engine &e)
         setRenderBits(16);
         check(!t.ready(64, 64), "an 8-bit FBO is not a valid 16-bit replacement");
         check(t.ensure(64, 64) && t.ready(64, 64), "framebuffer upgrades precision on next successful allocation");
-        setRenderBits(8);
+        setRenderBits(bitsBefore);
         t.destroy();
 
         GLint maximum = 0;
