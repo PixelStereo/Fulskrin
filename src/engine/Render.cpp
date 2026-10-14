@@ -655,8 +655,9 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
             // Difference samples the picture already on the destination. It
             // must never copy into FBO 0 (the app window), or sample a stale
             // buffer whose size/precision belongs to an earlier frame.
-            m_dstCopy.ensure(target.w, target.h, target.isFloat);
-            const bool copyReady = m_dstCopy.fbo && m_dstCopy.tex &&
+            const bool forcedUnavailable = s_failDifferenceCopyForTests.exchange(false);
+            if (!forcedUnavailable) m_dstCopy.ensure(target.w, target.h, target.isFloat);
+            const bool copyReady = !forcedUnavailable && m_dstCopy.fbo && m_dstCopy.tex &&
                                    m_dstCopy.w == target.w && m_dstCopy.h == target.h &&
                                    m_dstCopy.bits == target.bits && m_dstCopy.isFloat == target.isFloat;
             if (!copyReady) diff = false; // degraded but safe: ordinary source-over blending
