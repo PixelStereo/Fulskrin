@@ -436,8 +436,11 @@ static QString projectPreflightError(const QJsonObject &root)
         if (!v.isUndefined() && !v.isDouble())
             return invalid(QStringLiteral("$/composition/") + key, QStringLiteral("number"));
     }
+    // snapshot_tree is intentionally heterogeneous: snapshot leaves are
+    // string IDs, while nested groups are objects with a children array.
+    // Do not validate it as a homogeneous array of objects.
     for (const QString &key : {QStringLiteral("layers"), QStringLiteral("bin"),
-                               QStringLiteral("snapshots"), QStringLiteral("snapshot_tree"),
+                               QStringLiteral("snapshots"),
                                QStringLiteral("presets"), QStringLiteral("timelines"),
                                QStringLiteral("timecode_outputs"), QStringLiteral("midi_outputs"),
                                QStringLiteral("audio_channel_outputs"), QStringLiteral("interactions"),
@@ -450,6 +453,42 @@ static QString projectPreflightError(const QJsonObject &root)
                 return invalid(QStringLiteral("$/%1/%2").arg(key).arg(i), QStringLiteral("object"));
         }
     }
+    const QString treeKey = QStringLiteral("snapshot_tree");
+    const QString treeError = optionalArray(root, treeKey, rootPath);
+    if (!treeError.isEmpty()) return treeError;
+    // A snapshot leaf has the form "123"; a group is
+    // {"group":"Name","id":"123","open":true,"children":[...]}.
+    // Validate nested children too, and bound recursion on untrusted files.
+    std::function<QString(const QJsonArray &, const QString &, int)> checkTree =
+        [&](const QJsonArray &nodes, const QString &at, int depth) -> QString {
+        if (depth > 64) return invalid(at, QStringLiteral("snapshot tree nesting <= 64"));
+        for (int i = 0; i < nodes.size(); ++i) {
+            const QString nodeAt = at + QLatin1Char('/') + QString::number(i);
+            const QJsonValue v = nodes.at(i);
+            if (v.isString()) {
+                bool ok = false;
+                const quint64 id = v.toString().toULongLong(&ok);
+                if (!ok || !id) return invalid(nodeAt, QStringLiteral("nonzero snapshot ID string"));
+                continue;
+            }
+            if (!v.isObject()) return invalid(nodeAt, QStringLiteral("snapshot ID string or group object"));
+            const QJsonObject group = v.toObject();
+            if (!group.value(QStringLiteral("group")).isString() ||
+                !group.value(QStringLiteral("id")).isString())
+                return invalid(nodeAt, QStringLiteral("group name and ID strings"));
+            const QString childPath = nodeAt + QStringLiteral("/children");
+            const QString childError = optionalArray(group, QStringLiteral("children"), nodeAt);
+            if (!childError.isEmpty()) return childError;
+            if (group.contains(QStringLiteral("children"))) {
+                const QString nested = checkTree(group.value(QStringLiteral("children")).toArray(), childPath, depth + 1);
+                if (!nested.isEmpty()) return nested;
+            }
+        }
+        return {};
+    };
+    const QString invalidTree = checkTree(root.value(treeKey).toArray(), rootPath + QLatin1Char('/') + treeKey, 0);
+    if (!invalidTree.isEmpty()) return invalidTree;
+
     const QJsonArray layers = root.value(QStringLiteral("layers")).toArray();
     for (int i = 0; i < layers.size(); ++i) {
         const QString where = QStringLiteral("$/layers/%1").arg(i);
