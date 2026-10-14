@@ -1573,7 +1573,13 @@ bool Engine::reloadIsf(IsfInstance *inst)
         ok = inst->reloadSafely();
     });
     Lock lk(&m_mutex);
-    for (auto &l : m_layers)
-        if (l->generator.get() == inst) l->error = inst->error();
+    for (auto &l : m_layers) {
+        if (l->generator.get() == inst) {
+            l->error = inst->error();
+            if (ok) l->paramKey = 0; // changed input defaults/ranges need a new Parameter registry
+        }
+        for (auto &fx : l->effects)
+            if (fx.get() == inst && ok) l->paramKey = 0;
+    }
     return ok;
 }
