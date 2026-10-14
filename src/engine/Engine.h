@@ -205,6 +205,8 @@ public:
     void setDefaultTransition(const QString &path);
     QString defaultTransition() const;
     bool isTransitioning(quint64 layer) const; // a source transition is running on it
+    // The ISF shader the running transition of `layer` mixes with (empty: a crossfade, always for a sound)
+    QString transitionShader(quint64 layer) const;
     // Mask of an effect: the picture of another layer (0: none) says where the effect applies. Refused for a
     // viewport, the layer itself, or a layer that already depends on this one (err says why).
     bool setEffectMask(int layer, int effect, quint64 maskLayer, bool invert, QString *err = nullptr);
@@ -802,6 +804,7 @@ private:
         QString shaderPath;
         std::unique_ptr<IsfInstance> shader; // loaded by the render thread (none: a crossfade)
         bool loaded = false;
+        bool crossfadeOnly = false; // a sound on either side: no shader, the levels cross (tests: transitionUsesShader)
         RenderTarget target;
         double elapsed = 0, duration = 1;
     };

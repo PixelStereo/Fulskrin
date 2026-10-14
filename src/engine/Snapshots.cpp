@@ -937,7 +937,11 @@ void Engine::startSourceTransition(int index, const QJsonObject &state, double d
         return;
     }
     auto t = std::make_unique<SourceTransition>();
-    t->shaderPath = now->transition.isEmpty() ? m_defaultTransition : now->transition;
+    // A sound on either side (no picture to mix): the levels cross, no shader; else the layer's transition or the
+    // default one
+    const bool pictures = now->hasPicture() && old->hasPicture();
+    t->shaderPath = !pictures ? QString() : now->transition.isEmpty() ? m_defaultTransition : now->transition;
+    t->crossfadeOnly = !pictures;
     t->duration = std::max(1e-3, duration);
     old->transitionGain = 1.0f;
     now->transitionGain = 0.0f;
@@ -1187,4 +1191,11 @@ void Engine::stepInteractionFades(double dt)
         it = it->elapsed >= it->time ? m_interactionFades.erase(it) : it + 1;
     }
     interactionValuesTouched();
+}
+
+QString Engine::transitionShader(quint64 layer) const
+{
+    Lock lk(&m_mutex);
+    const auto it = m_transitions.find(layer);
+    return it == m_transitions.end() ? QString() : it->second->shaderPath;
 }

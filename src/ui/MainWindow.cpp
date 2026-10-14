@@ -1287,6 +1287,10 @@ void MainWindow::layerContextMenu(int row, const QPoint &globalPos)
             into->setToolTip(QStringLiteral("This layer's picture becomes the source of the one chosen"));
         }
         menu.addAction(QStringLiteral("Copy Parameters"), this, [this, row] { copyLayerParams(row); });
+        if (PresetEditor *pe = PresetEditor::instance()) { // any of its values into a preset
+            menu.addSeparator();
+            pe->fillLayerMenu(&menu, m_engine->layerId(row));
+        }
     }
     QMenu *paste = menu.addMenu(m_paramClipboardName.isEmpty()
                                     ? QStringLiteral("Paste Parameters")

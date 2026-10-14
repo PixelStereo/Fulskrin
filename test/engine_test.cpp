@@ -12,6 +12,7 @@
 #include "Parameter.h"
 #include "Zeroconf.h"
 #include <QJsonArray>
+#include <QSet>
 #include <QTcpSocket>
 #include <QUdpSocket>
 #include <QtEndian>
@@ -2585,6 +2586,130 @@ void main(){ gl_FragColor = definitely_not_defined; }
         CHECK(e.loadProject(tmp + "/presets.pinol", nullptr, &err));
         CHECK(e.presetCount() == 2 && e.preset(0).name == "Half" && e.preset(0).values.size() == 3 &&
               e.preset(0).values[1].time == 0 && e.preset(0).values[0].layer == lid);
+        e.setFadesManual(false);
+        e.newProject();
+    }
+    // The transport in snapshots and presets: played or paused, "restart on recall", the in / out points; a sound
+    // crosses its levels when a snapshot changes its file, whatever the layer's transition
+    {
+        e.newProject();
+        e.setFadesManual(true);
+        auto params = [&](quint64 id) {
+            QSet<QString> out;
+            for (const ParamInfo &i : e.parameters(id)) out.insert(i.path);
+            return out;
+        };
+        const int vi = e.addLayer(QStringLiteral("Clip"));
+        CHECK(e.setLayerVideo(vi, root + "/media/h264.mp4", &err));
+        const quint64 vid = e.layerId(vi);
+        {
+            const QSet<QString> p = params(vid);
+            CHECK(p.contains("play") && p.contains("restart") && p.contains("in") && p.contains("out"));
+        }
+        auto playing = [&] {
+            Engine::Lock lk(&e.mutex());
+            return e.layer(e.indexOfId(vid))->playing;
+        };
+        auto position = [&] {
+            Engine::Lock lk(&e.mutex());
+            return e.layer(e.indexOfId(vid))->position();
+        };
+        auto snapshotOf = [&](const QString &name, std::function<void(QJsonObject &)> edit = {}) {
+            Engine::Snapshot m;
+            m.name = name;
+            m.fade = 0;
+            for (const QJsonValue &v : e.captureLayers()) {
+                QJsonObject o = v.toObject();
+                const bool me = o.value("id").toString().toULongLong() == vid;
+                o["included"] = me;
+                if (me && edit) edit(o);
+                m.layers.append(o);
+            }
+            return e.addSnapshot(m);
+        };
+        e.setLayerPlaying(vi, true);
+        const int sPlay = snapshotOf(QStringLiteral("Playing"));
+        e.setLayerPlaying(vi, false);
+        const int sPause = snapshotOf(QStringLiteral("Paused"));
+        for (const QJsonValue &v : e.snapshot(sPause).layers) // the paused state is held
+            if (v.toObject().value("id").toString().toULongLong() == vid)
+                CHECK(v.toObject().value("params").toObject().value("play") == QJsonValue(false));
+        e.recallSnapshot(sPlay);
+        CHECK(playing());
+        e.recallSnapshot(sPause);
+        CHECK(!playing());
+        // Restart on recall: from the in point, playing, wherever it was and paused or not
+        const int sRestart = snapshotOf(QStringLiteral("Restart"), [](QJsonObject &o) {
+            QJsonObject p = o.value("params").toObject();
+            p["restart"] = true;
+            p["play"] = false; // a restart plays all the same
+            o["params"] = p;
+        });
+        e.seekLayer(e.indexOfId(vid), 2.5);
+        e.setLayerPlaying(e.indexOfId(vid), false);
+        CHECK(position() > 2.0);
+        e.recallSnapshot(sRestart);
+        std::printf("       restart on recall: position %.3f s, playing %d\n", position(), int(playing()));
+        CHECK(playing() && position() < 0.1);
+        CHECK(e.parameterValue(vid, "restart").toBool() == false); // an action, not a state
+        // In / out points and the play state in a preset (recalled at once)
+        Engine::Preset pr;
+        pr.name = QStringLiteral("Range");
+        pr.fade = 1.0;
+        pr.values.push_back({vid, QStringLiteral("in"), QJsonValue(1.0), -1.0, QString()});
+        pr.values.push_back({vid, QStringLiteral("out"), QJsonValue(2.0), -1.0, QString()});
+        pr.values.push_back({vid, QStringLiteral("play"), QJsonValue(false), -1.0, QString()});
+        const int pi = e.addPreset(pr);
+        e.recallPreset(pi);
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(e.indexOfId(vid));
+            CHECK(std::abs(l->inPoint - 1.0) < 1e-6 && std::abs(l->outPoint - 2.0) < 1e-6 && !l->playing);
+            CHECK(l->position() >= 1.0 - 1e-6 && l->position() <= 2.0 + 1e-6);
+        }
+        // A restart in a preset: from the new in point
+        pr.values.push_back({vid, QStringLiteral("restart"), QJsonValue(true), -1.0, QString()});
+        e.setPreset(pi, pr);
+        e.seekLayer(e.indexOfId(vid), 1.8);
+        e.recallPreset(pi);
+        CHECK(playing() && std::abs(position() - 1.0) < 0.05);
+        // Saved and opened: the play state comes back
+        e.setLayerPlaying(e.indexOfId(vid), false);
+        CHECK(e.saveProject(tmp + "/transport.pinol", {}, &err) && e.loadProject(tmp + "/transport.pinol", nullptr, &err));
+        CHECK(!playing());
+
+        // A sound whose file a snapshot changes: the levels cross, the layer's ISF transition is not used
+        e.newProject();
+        e.setDefaultTransition(root + "/../isf/transitions/Dissolve.fs");
+        const QString tone2 = tmp + "/tone_b.wav";
+        QFile::remove(tone2);
+        CHECK(QFile::copy(root + "/media/tone.wav", tone2));
+        const int ai = e.addLayer(QStringLiteral("Sound"));
+        CHECK(e.setLayerAudio(ai, root + "/media/tone.wav", &err));
+        const quint64 aid = e.layerId(ai);
+        const int ii = e.addLayer(QStringLiteral("Picture"));
+        CHECK(e.setLayerVideo(ii, root + "/media/h264.mp4", &err));
+        const quint64 iid = e.layerId(ii);
+        Engine::Snapshot sw;
+        sw.name = QStringLiteral("Other files");
+        sw.fade = 1.0;
+        for (const QJsonValue &v : e.captureLayers()) {
+            QJsonObject o = v.toObject();
+            QJsonObject src = o.value("source").toObject();
+            const quint64 id = o.value("id").toString().toULongLong();
+            if (id == aid) src["path"] = tone2;
+            if (id == iid) src["path"] = root + "/media/av.mp4";
+            src.remove("relative_path");
+            o["source"] = src;
+            sw.layers.append(o);
+        }
+        e.recallSnapshot(e.addSnapshot(sw));
+        CHECK(e.isTransitioning(aid) && e.isTransitioning(iid));
+        std::printf("       sound transition: \"%s\", picture: \"%s\"\n", qPrintable(e.transitionShader(aid)),
+                    qPrintable(QFileInfo(e.transitionShader(iid)).fileName()));
+        CHECK(e.transitionShader(aid).isEmpty()); // a crossfade of the levels
+        CHECK(QFileInfo(e.transitionShader(iid)).fileName() == QStringLiteral("Dissolve.fs")); // the default, for a picture
+        e.setDefaultTransition(QString());
         e.setFadesManual(false);
         e.newProject();
     }
