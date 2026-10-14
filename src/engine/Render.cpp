@@ -329,9 +329,11 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
     case SourceType::Isf:
         if (l.generator) {
             l.generator->render(rc, 0, 0, 0, l.generatorTarget, l.genWidth, l.genHeight);
-            tex = l.generatorTarget.tex;
-            w = l.generatorTarget.w;
-            h = l.generatorTarget.h;
+            if (l.generatorTarget.ready(l.genWidth, l.genHeight)) {
+                tex = l.generatorTarget.tex;
+                w = l.generatorTarget.w;
+                h = l.generatorTarget.h;
+            }
         }
         break;
     case SourceType::Text: {
@@ -382,6 +384,7 @@ void Engine::renderTransition(Layer &l, SourceTransition &t, const IsfRenderCont
     }
     const double p = std::clamp(t.elapsed / t.duration, 0.0, 1.0);
     t.target.ensure(w, h);
+    if (!t.target.ready(w, h)) return; // keep the last valid incoming layer output
     if (t.shader) {
         t.shader->setImageTexture(QStringLiteral("startImage"), a, t.from->finalW, t.from->finalH);
         t.shader->setImageTexture(QStringLiteral("endImage"), b, l.finalW, l.finalH);
@@ -422,6 +425,14 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
         auto f = gl();
         const int cw = std::max(1, int(std::lround(w * c.width()))), ch = std::max(1, int(std::lround(h * c.height())));
         l.prepTarget.ensure(cw, ch);
+        if (!l.prepTarget.ready(cw, ch)) {
+            // Fail closed: never expose unprocessed media when ROI/color
+            // preparation cannot allocate a compatible output texture.
+            // The pre-effects tap too: a layer or mask reading it must not get the previous frame.
+            l.preFxTex = 0;
+            l.finalTex = 0;
+            return;
+        }
         l.prepTarget.bind();
         f->glDisable(GL_BLEND);
         f->glUseProgram(m_prepProgram);
@@ -465,12 +476,22 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
             if (!fx->enabled) continue;
             RenderTarget &dst = l.fxTarget[ping];
             fx->render(rc, tex, w, h, dst, w, h);
+            if (!dst.ready(w, h)) {
+                // Do not present a raw source or a stale-size effect output.
+                l.finalTex = 0;
+                return;
+            }
             // Through its mask: the effect where the mask is white, the input where it is black
             const Layer *mask = fx->maskLayer ? layer(indexOfId(fx->maskLayer)) : nullptr;
             const GLuint maskTex = !mask ? 0 : fx->maskPreFx && mask->preFxTex ? mask->preFxTex : mask->finalTex;
             if (mask && maskTex && mask != &l) {
                 RenderTarget &mixed = l.maskTarget[ping];
                 mixed.ensure(w, h);
+                if (!mixed.ready(w, h)) {
+                    // Do not silently bypass an effect visibility mask.
+                    l.finalTex = 0;
+                    return;
+                }
                 mixed.bind();
                 auto f = gl();
                 f->glDisable(GL_BLEND);
@@ -523,6 +544,11 @@ void Engine::applySurfaceMasks(Layer &l, GLuint &tex, int w, int h)
     }
     auto f = gl();
     l.shapeMaskTarget.ensure(w, h);
+    if (!l.shapeMaskTarget.ready(w, h)) {
+        // Surface masks must fail closed, not reveal unmasked content.
+        tex = 0;
+        return;
+    }
     l.shapeMaskTarget.bind();
     f->glDisable(GL_BLEND);
     f->glUseProgram(m_shapeMaskProgram);
@@ -562,7 +588,7 @@ void Engine::renderGroup(Layer &g, const std::vector<Layer *> &members, const Is
     g.finalTex = 0;
     g.rawTex = 0;
     g.groupTarget.ensure(m_compSize.width(), m_compSize.height());
-    if (!g.groupTarget.fbo) return;
+    if (!g.groupTarget.ready(m_compSize.width(), m_compSize.height())) return;
     compositeLayers(g.groupTarget, members);
     processLayer(g, g.groupTarget.tex, g.groupTarget.w, g.groupTarget.h, true, rc);
 }
@@ -583,7 +609,7 @@ void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const I
         return;
     }
     v.groupTarget.ensure(size.width(), size.height());
-    if (!v.groupTarget.fbo) return;
+    if (!v.groupTarget.ready(size.width(), size.height())) return;
     // Its region: a rectangle of the composition, upright or turned
     const Mapping::Rect r = v.mapping.rect(m_compSize);
     const double cw = std::max(1, m_compSize.width()), ch = std::max(1, m_compSize.height());
