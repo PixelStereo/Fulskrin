@@ -154,6 +154,55 @@ int runGoldenRenderTests(Engine &engine, const QString &root, const QString &tmp
             failures += compareImage(QStringLiteral("alpha"), capture(), refs, tmp);
     }
 
+    // Spatial mapping, independently verified against a literal black/red
+    // rectangle. Moving a layer must not stretch it back to fullscreen.
+    QImage red(64, 32, QImage::Format_RGBA8888);
+    red.fill(QColor(255, 0, 0, 255));
+    const QString redPath = tmp + "/golden-mapping-red.png";
+    if (need(red.save(redPath), "mapping input PNG")) {
+        reset();
+        const int mapped = engine.addLayer(QStringLiteral("Mapped red"));
+        if (need(engine.setLayerImage(mapped, redPath, &err), "mapping image source")) {
+            {
+                Engine::Lock lk(&engine.mutex());
+                Mapping &m = engine.layer(mapped)->mapping;
+                m.position = QPointF(0.25, 0.5);
+                m.size = QSizeF(0.5, 1.0);
+                ++m.revision;
+            }
+            failures += compareImage(QStringLiteral("spatial_position"), capture(), refs, tmp);
+        }
+
+        // A projective trapezoid: verify an actual interior region and three
+        // exterior regions, without sampling its anti-aliased boundary.
+        reset();
+        const int pinned = engine.addLayer(QStringLiteral("Corner pin"));
+        if (need(engine.setLayerImage(pinned, redPath, &err), "corner pin image source")) {
+            {
+                Engine::Lock lk(&engine.mutex());
+                Mapping &m = engine.layer(pinned)->mapping;
+                m.setCorner(0, QPointF(0.25, 0.10));
+                m.setCorner(1, QPointF(0.75, 0.10));
+                m.setCorner(2, QPointF(0.90, 0.90));
+                m.setCorner(3, QPointF(0.10, 0.90));
+            }
+            failures += compareImage(QStringLiteral("corner_pin"), capture(), refs, tmp);
+        }
+    }
+
+    // The ROI takes the red half of a red/blue source, then displays only that
+    // half across the full layer area. This detects a reversed ROI or a broken
+    // intermediate texture size in the layer preparation pass.
+    reset();
+    const int cropped = engine.addLayer(QStringLiteral("ROI left half"));
+    if (need(engine.setLayerImage(cropped, halvesPath, &err), "ROI image source")) {
+        {
+            Engine::Lock lk(&engine.mutex());
+            engine.layer(cropped)->roi = QRectF(0.0, 0.0, 0.5, 1.0);
+        }
+        failures += compareImage(QStringLiteral("roi_left"), capture(), refs, tmp);
+    }
+
     // Generator output is checked independently of the texture upload path.
     reset();
     const int gen = engine.addLayer(QStringLiteral("Golden solid"));
