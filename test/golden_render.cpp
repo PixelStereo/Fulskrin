@@ -128,11 +128,12 @@ int runGoldenRenderTests(Engine &engine, const QString &root, const QString &tmp
     const QString bottomPath = tmp + "/golden-blue.png";
     if (need(top.save(topPath) && bottom.save(bottomPath), "alpha input PNGs")) {
         reset();
-        // The first layer in the list is drawn on top of later layers.
-        const int topLayer = engine.addLayer(QStringLiteral("Top"));
+        // addLayer() inserts just below the viewport, so add the bottom
+        // first; the next inserted layer becomes the visible top layer.
         const int bottomLayer = engine.addLayer(QStringLiteral("Bottom"));
+        const int topLayer = engine.addLayer(QStringLiteral("Top"));
         if (need(engine.setLayerImage(topLayer, topPath, &err), "top source") &&
-            need(engine.setLayerImage(bottomLayer, bottomPath, &err), "bottom source"))
+            need(engine.setLayerImage(bottomLayer + 1, bottomPath, &err), "bottom source"))
             failures += compareImage(QStringLiteral("alpha"), capture(), refs, tmp);
     }
 
