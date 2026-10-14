@@ -189,55 +189,112 @@ static bool decodeInto(const QByteArray &packet, std::vector<Message> &out, int 
 
 bool decode(const QByteArray &packet, std::vector<Message> &out) { return decodeInto(packet, out, 0); }
 
-// One segment: * ? [set] {alt,alt}
-static bool matchSeg(const QString &p, int pi, const QString &s, int si)
+// One segment: * ? [set] {alt,alt}. Matched in O(pattern × address) whatever the pattern: a backtracking matcher
+// takes exponential time on runs of '*' ("/**************a"), and any machine on the network can send one (the
+// fuzzer found it: a 1-minute run stuck for over 20 minutes). The pattern becomes tokens, then the positions of the
+// address it can have reached are carried from one token to the next (two rows).
+namespace {
+struct Token {
+    enum Kind { Char, Any, Star, Set, Alt } kind = Char;
+    QChar c;
+    QString set; // Set: its characters and ranges (a-z), without the '!'
+    bool negate = false;
+    QStringList alts; // Alt: literal alternatives (OSC 1.0: "{foo,bar}")
+};
+
+bool inSet(const Token &t, QChar ch)
 {
-    while (pi < p.size()) {
+    bool in = false;
+    for (int k = 0; k < t.set.size(); ++k) {
+        if (k + 2 < t.set.size() && t.set[k + 1] == '-') {
+            in |= ch >= t.set[k] && ch <= t.set[k + 2];
+            k += 2;
+        } else {
+            in |= ch == t.set[k];
+        }
+    }
+    return in != t.negate;
+}
+
+// false: malformed ('[' or '{' never closed), which matches nothing
+bool tokenize(const QString &p, std::vector<Token> &out)
+{
+    for (int pi = 0; pi < p.size(); ++pi) {
         const QChar c = p[pi];
+        Token t;
         if (c == '*') {
-            for (int k = si; k <= s.size(); ++k)
-                if (matchSeg(p, pi + 1, s, k)) return true;
-            return false;
-        }
-        if (c == '?') {
-            if (si >= s.size()) return false;
-            ++pi;
-            ++si;
-            continue;
-        }
-        if (c == '[') {
+            if (!out.empty() && out.back().kind == Token::Star) continue; // "**" is "*"
+            t.kind = Token::Star;
+        } else if (c == '?') {
+            t.kind = Token::Any;
+        } else if (c == '[') {
             const int end = p.indexOf(']', pi);
-            if (end < 0 || si >= s.size()) return false;
-            QString set = p.mid(pi + 1, end - pi - 1);
-            bool negate = set.startsWith('!');
-            if (negate) set.remove(0, 1);
-            bool in = false;
-            for (int k = 0; k < set.size(); ++k) {
-                if (k + 2 < set.size() && set[k + 1] == '-') {
-                    in |= s[si] >= set[k] && s[si] <= set[k + 2];
-                    k += 2;
-                } else {
-                    in |= s[si] == set[k];
-                }
-            }
-            if (in == negate) return false;
-            pi = end + 1;
-            ++si;
-            continue;
-        }
-        if (c == '{') {
+            if (end < 0) return false;
+            t.kind = Token::Set;
+            t.set = p.mid(pi + 1, end - pi - 1);
+            t.negate = t.set.startsWith('!');
+            if (t.negate) t.set.remove(0, 1);
+            pi = end;
+        } else if (c == '{') {
             const int end = p.indexOf('}', pi);
             if (end < 0) return false;
-            const QString rest = p.mid(end + 1);
-            for (const QString &alt : p.mid(pi + 1, end - pi - 1).split(','))
-                if (matchSeg(alt + rest, 0, s, si)) return true;
-            return false;
+            t.kind = Token::Alt;
+            t.alts = p.mid(pi + 1, end - pi - 1).split(',');
+            pi = end;
+        } else {
+            t.c = c;
         }
-        if (si >= s.size() || s[si] != c) return false;
-        ++pi;
-        ++si;
+        out.push_back(std::move(t));
     }
-    return si == s.size();
+    return true;
+}
+} // namespace
+
+static bool matchSeg(const QString &p, const QString &s)
+{
+    static const QString special = QStringLiteral("*?[{");
+    if (std::none_of(p.begin(), p.end(), [](QChar c) { return special.contains(c); })) return p == s; // the usual case
+    std::vector<Token> tokens;
+    if (!tokenize(p, tokens)) return false;
+    const int n = int(s.size());
+    std::vector<char> at(size_t(n) + 1, 0), next(size_t(n) + 1, 0);
+    at[0] = 1;
+    for (const Token &t : tokens) {
+        std::fill(next.begin(), next.end(), 0);
+        bool any = false;
+        if (t.kind == Token::Star) { // from the first position reached, every one after it
+            bool on = false;
+            for (int si = 0; si <= n; ++si) {
+                on = on || at[size_t(si)];
+                next[size_t(si)] = on;
+                any = any || on;
+            }
+        } else {
+            for (int si = 0; si <= n; ++si) {
+                if (!at[size_t(si)]) continue;
+                switch (t.kind) {
+                case Token::Char:
+                    if (si < n && s[si] == t.c) next[size_t(si) + 1] = any = true;
+                    break;
+                case Token::Any:
+                    if (si < n) next[size_t(si) + 1] = any = true;
+                    break;
+                case Token::Set:
+                    if (si < n && inSet(t, s[si])) next[size_t(si) + 1] = any = true;
+                    break;
+                case Token::Alt:
+                    for (const QString &alt : t.alts)
+                        if (QStringView(s).mid(si).startsWith(alt)) next[size_t(si) + size_t(alt.size())] = any = true;
+                    break;
+                case Token::Star:
+                    break;
+                }
+            }
+        }
+        if (!any) return false;
+        at.swap(next);
+    }
+    return at[size_t(n)];
 }
 
 bool match(const QString &pattern, const QString &address)
@@ -245,7 +302,7 @@ bool match(const QString &pattern, const QString &address)
     const QStringList p = pattern.split('/'), a = address.split('/');
     if (p.size() != a.size()) return false;
     for (int k = 0; k < p.size(); ++k)
-        if (!matchSeg(p[k], 0, a[k], 0)) return false;
+        if (!matchSeg(p[k], a[k])) return false;
     return true;
 }
 
