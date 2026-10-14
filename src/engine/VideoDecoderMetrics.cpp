@@ -39,6 +39,10 @@ VideoDecoder::Metrics VideoDecoder::metrics() const
     m.decodeTimeP95Ms = percentile(95);
     m.decodeTimeP99Ms = percentile(99);
     m.decodesOverFrame = m_metricOverFrame.load(std::memory_order_relaxed);
+    m.demuxErrors = m_metricDemuxErrors.load(std::memory_order_relaxed);
+    m.codecErrors = m_metricCodecErrors.load(std::memory_order_relaxed);
+    m.emptyLoopStops = m_metricEmptyLoopStops.load(std::memory_order_relaxed);
+    m.lastAvError = m_lastAvError.load(std::memory_order_relaxed);
     return m;
 }
 
@@ -57,6 +61,10 @@ void VideoDecoder::resetMetrics()
     m_metricMaxLateNs = 0;
     for (auto &bucket : m_metricDecodeBuckets) bucket = 0;
     m_metricOverFrame = 0;
+    m_metricDemuxErrors = 0;
+    m_metricCodecErrors = 0;
+    m_metricEmptyLoopStops = 0;
+    m_lastAvError = 0;
 }
 
 void VideoDecoder::recordQueueDepth(size_t depth)
