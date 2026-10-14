@@ -786,8 +786,17 @@ int VideoDecoder::decodeNext(VideoFrame &f, double skipBefore)
     }
 }
 
+namespace {
+std::atomic<uint64_t> s_ffmpegErrorsTotal{0};
+std::atomic<uint64_t> s_emptyLoopStopsTotal{0};
+}
+
+uint64_t VideoDecoder::ffmpegErrorsTotal() { return s_ffmpegErrorsTotal.load(std::memory_order_relaxed); }
+uint64_t VideoDecoder::emptyLoopStopsTotal() { return s_emptyLoopStopsTotal.load(std::memory_order_relaxed); }
+
 void VideoDecoder::markDecodeError(int code, bool demux)
 {
+    ++s_ffmpegErrorsTotal;
     m_lastAvError.store(code, std::memory_order_relaxed);
     if (demux) ++m_metricDemuxErrors;
     else ++m_metricCodecErrors;
@@ -823,6 +832,7 @@ void VideoDecoder::finishLeg()
     // an unbounded, CPU-consuming Loop/PingPong with no picture ever delivered.
     if (m_legFrames == 0) {
         ++m_metricEmptyLoopStops;
+        ++s_emptyLoopStopsTotal;
         std::lock_guard<std::mutex> lk(m_mutex);
         m_eof = true; // an explicit seek clears this and permits a user retry
         return;
