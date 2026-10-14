@@ -604,6 +604,31 @@ public:
     // --- Project
     void newProject();   // empty, with one viewport
     bool saveProject(const QString &path, const QJsonObject &uiState, QString *err);
+    QJsonObject projectToJson(const QString &projectDir, const QJsonObject &uiState) const; // what saveProject writes
+
+    // --- Collect Files (ProjectCollect.cpp): the project and every file it uses gathered in one folder,
+    // <folder>/<name>.pinol and <folder>/MEDIA/{MOVIES, PICTS, AUDIO, ISF, OTHER}, the paths of the project (layers,
+    // effects, ISF images, transitions, snapshots, media bin) pointing there. ISF shaders come with their vertex
+    // shader and the images they import (a shader that imports some: in a folder of its own, ISF/<name>/)
+    struct CollectFile {
+        QString from, to; // absolute paths
+        qint64 bytes = 0;
+    };
+    struct CollectPlan {
+        QString folder, projectFile;
+        std::vector<CollectFile> files;
+        QStringList missing; // referenced, not found: their paths are kept as they are
+        QStringList skipped; // found, not collected (an ISF image outside its shader's folder)
+        qint64 bytes = 0;
+        QJsonObject project; // the project as it will be written there
+    };
+    // What would be done (nothing is written): `parent` the folder that receives `name` (a new folder)
+    CollectPlan planCollect(const QString &parent, const QString &name, const QJsonObject &uiState) const;
+    // Copies the files and writes the project. Fails (and removes what it wrote) if the folder exists already or a
+    // copy fails. The originals are left: removeCollectedOriginals deletes them (Move), once the collected project
+    // is the one open
+    bool collect(const CollectPlan &plan, QString *err);
+    static int removeCollectedOriginals(const CollectPlan &plan, QStringList *failed = nullptr);
     bool loadProject(const QString &path, QJsonObject *uiState, QString *err);
     QString projectPath() const;
     void setProjectPath(const QString &p);

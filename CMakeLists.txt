@@ -59,6 +59,7 @@ add_library(pinol_engine STATIC
   src/engine/Layers.cpp
   src/engine/Render.cpp
   src/engine/Project.cpp
+  src/engine/ProjectCollect.cpp
   src/engine/Media.cpp
   src/engine/Publish.cpp
   src/engine/DeckLink.cpp

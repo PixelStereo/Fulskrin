@@ -62,6 +62,7 @@ private:
 
     void newProject();
     void openProjectDialog();
+    void collectFiles(); // File › Collect Files…: the project and its media in one folder, copied or moved
     bool save();
     bool saveAs();
     bool saveTo(const QString &path);
