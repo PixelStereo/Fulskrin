@@ -2,17 +2,213 @@
   "_purpose": "Independently specified SDR reference colors. Regions are half-open [left, top, right, bottom] pixel bounds.",
   "_rules": "Never regenerate expected colors from the renderer. All interior pixels of each region are checked, not just sampled centers.",
   "split": [
-    {"rect": [12, 12, 52, 52], "rgb": [255, 0, 0], "tolerance": 5},
-    {"rect": [76, 12, 116, 52], "rgb": [0, 0, 255], "tolerance": 5}
+    {
+      "rect": [
+        12,
+        12,
+        52,
+        52
+      ],
+      "rgb": [
+        255,
+        0,
+        0
+      ],
+      "tolerance": 5
+    },
+    {
+      "rect": [
+        76,
+        12,
+        116,
+        52
+      ],
+      "rgb": [
+        0,
+        0,
+        255
+      ],
+      "tolerance": 5
+    }
   ],
   "flip": [
-    {"rect": [12, 12, 52, 52], "rgb": [0, 0, 255], "tolerance": 5},
-    {"rect": [76, 12, 116, 52], "rgb": [255, 0, 0], "tolerance": 5}
+    {
+      "rect": [
+        12,
+        12,
+        52,
+        52
+      ],
+      "rgb": [
+        0,
+        0,
+        255
+      ],
+      "tolerance": 5
+    },
+    {
+      "rect": [
+        76,
+        12,
+        116,
+        52
+      ],
+      "rgb": [
+        255,
+        0,
+        0
+      ],
+      "tolerance": 5
+    }
   ],
   "alpha": [
-    {"rect": [20, 12, 108, 52], "rgb": [128, 0, 127], "tolerance": 7}
+    {
+      "rect": [
+        20,
+        12,
+        108,
+        52
+      ],
+      "rgb": [
+        128,
+        0,
+        127
+      ],
+      "tolerance": 7
+    }
   ],
   "solid_isf": [
-    {"rect": [12, 12, 116, 52], "rgb": [51, 153, 204], "tolerance": 5}
+    {
+      "rect": [
+        12,
+        12,
+        116,
+        52
+      ],
+      "rgb": [
+        51,
+        153,
+        204
+      ],
+      "tolerance": 5
+    }
+  ],
+  "spatial_position": [
+    {
+      "rect": [
+        12,
+        12,
+        52,
+        52
+      ],
+      "rgb": [
+        255,
+        0,
+        0
+      ],
+      "tolerance": 5
+    },
+    {
+      "rect": [
+        76,
+        12,
+        116,
+        52
+      ],
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "tolerance": 5
+    }
+  ],
+  "corner_pin": [
+    {
+      "rect": [
+        56,
+        24,
+        72,
+        40
+      ],
+      "rgb": [
+        255,
+        0,
+        0
+      ],
+      "tolerance": 5
+    },
+    {
+      "rect": [
+        4,
+        4,
+        16,
+        10
+      ],
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "tolerance": 5
+    },
+    {
+      "rect": [
+        112,
+        4,
+        124,
+        10
+      ],
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "tolerance": 5
+    },
+    {
+      "rect": [
+        4,
+        48,
+        10,
+        56
+      ],
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "tolerance": 5
+    }
+  ],
+  "roi_left": [
+    {
+      "rect": [
+        12,
+        12,
+        52,
+        52
+      ],
+      "rgb": [
+        255,
+        0,
+        0
+      ],
+      "tolerance": 5
+    },
+    {
+      "rect": [
+        76,
+        12,
+        116,
+        52
+      ],
+      "rgb": [
+        255,
+        0,
+        0
+      ],
+      "tolerance": 5
+    }
   ]
 }

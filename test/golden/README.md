@@ -10,6 +10,10 @@ Each scene renders into an exact 128 × 64 viewport and compares **every RGB pix
 - `flip`: same image with the stock ISF FlipCrop filter's horizontal flip enabled.
 - `alpha`: normal source-over composition of a 50% red PNG over opaque blue, evaluated using straight-alpha GPU blending.
 - `solid_isf`: a SolidColor ISF generator with input color (0.2, 0.6, 0.8, 1.0).
+- `spatial_position`: a red layer centered in the left half of the composition; untouched right half remains black.
+- `corner_pin`: a projective trapezoid checked at interior and exterior pixels (not on anti-aliased edges).
+- `roi_left`: cropping a red/blue source to its red left half, which fills the layer.
+
 
 The `rect` fields are half-open `[left, top, right, bottom]` coordinates. RGB values are 8-bit SDR **display-coded** expectations. Per-scene tolerances only absorb GPU quantization, not large visual changes.
 
