@@ -967,12 +967,11 @@ void Engine::frame(double dt)
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
     // Other contexts read these pictures: the output windows and the interface wait for this fence on the GPU
     // (waitForFrame), the CPU goes on. A texture drawn in one context is only seen whole by another once the commands
-    // that drew it are complete (OpenGL spec). Syphon and Spout copy the picture through contexts of their own that
-    // cannot wait for it. Two ways (Settings › Rendering, setGpuShareOneFrameLate):
-    //  - at once (the default): the frame is finished here (glFinish) and shared; the render thread waits for the GPU;
-    //  - one frame later: this frame is only flushed; the previous frame's pictures, finished by now, are shared
-    //    (their fence checked, waited for 4 ms at most, else that share is skipped and counted). No wait for the GPU
-    //    on the render path, one frame more of latency for the applications receiving it.
+    // that drew it are complete (OpenGL spec). Delayed sharing (the default) publishes
+    // the previous completed picture via the SDK. The triple viewport rotation keeps
+    // that picture out of the immediately following render target. The SDK's copy-on-
+    // return contract must also be validated with real Syphon and Spout receivers.
+    // Immediate sharing remains available, but glFinish can stall the render thread.
     const bool shared = m_publishing.sharing();
     const bool late = shared && m_shareOneFrameLate.load(std::memory_order_relaxed);
     GLsync last = nullptr;
@@ -1006,8 +1005,10 @@ void Engine::frame(double dt)
         Lock lk(&m_mutex);
         for (auto &l : m_layers)
             if (l->isViewport) {
-                l->vpPublished = l->vpBack;
-                l->vpBack = 1 - l->vpBack;
+                const int oldFront = l->vpPublished.load();
+                const int newFront = l->vpBack;
+                l->vpPublished = newFront;
+                l->vpBack = Layer::nextViewportBack(oldFront, newFront, late);
             }
     }
     ++m_frameCount;
