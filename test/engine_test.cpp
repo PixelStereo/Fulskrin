@@ -1839,6 +1839,7 @@ void main(){ gl_FragColor = definitely_not_defined; }
             e.sequencer().setCurrent(ib);
             CHECK(e.sequencer().position() == -1 && !e.sequencer().running() &&
                   e.sequencer().runs().empty() && fired.empty());
+            CHECK(e.sequencer().active(ia) && !e.sequencer().active(ib));
             CHECK(e.sequencer().go() && e.sequencer().position() == 0);
             e.sequencer().advance(0.25);
             CHECK(fired == (std::vector<int>{1})); // B fired, A still pending
