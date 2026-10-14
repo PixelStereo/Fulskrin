@@ -51,6 +51,7 @@ add_library(pinol_engine STATIC
   src/engine/VideoDecoderDemux.cpp
   src/engine/VideoDecoderSeek.cpp
   src/engine/VideoDecoderMetrics.cpp
+  src/engine/ProcessMemory.cpp
   src/engine/VideoTexture.cpp
   src/engine/Hap.cpp
   src/engine/Snappy.cpp
@@ -93,6 +94,9 @@ add_library(pinol_engine STATIC
 target_include_directories(pinol_engine PUBLIC src/engine)
 target_link_libraries(pinol_engine PUBLIC Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::Network ffmpeg)
 target_compile_definitions(pinol_engine PUBLIC GL_SILENCE_DEPRECATION)
+if(WIN32)
+  target_link_libraries(pinol_engine PRIVATE psapi) # process memory (ProcessMemory.cpp)
+endif()
 # Cameras (live inputs): Qt Multimedia when it is there
 find_package(Qt6 QUIET COMPONENTS Multimedia)
 if(Qt6Multimedia_FOUND)
@@ -345,6 +349,15 @@ else()
   set(ISF_DEST "$<TARGET_FILE_DIR:Pinol>/isf")
 endif()
 
+# The source revision, for endurance-session comparison: regenerated at every build (cmake/BuildSha.cmake), not
+# frozen at configure time
+set(PINOL_BUILD_SHA_HEADER "${CMAKE_BINARY_DIR}/generated/pinol_build_sha.h")
+add_custom_target(pinol_build_sha
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${PINOL_BUILD_SHA_HEADER} -P ${CMAKE_SOURCE_DIR}/cmake/BuildSha.cmake
+  BYPRODUCTS ${PINOL_BUILD_SHA_HEADER}
+  VERBATIM)
+add_dependencies(Pinol pinol_build_sha)
+target_include_directories(Pinol PRIVATE "${CMAKE_BINARY_DIR}/generated")
 target_include_directories(Pinol PRIVATE src src/ui)
 target_link_libraries(Pinol PRIVATE pinol_engine Qt6::Widgets Qt6::OpenGLWidgets)
 

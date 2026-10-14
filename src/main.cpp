@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "EnduranceLogger.h"
 #include "MainWindow.h"
 #include "Permissions.h"
 #include "Widgets.h"
@@ -48,11 +49,13 @@ int main(int argc, char *argv[])
     QCommandLineOption renderOpt("render", "Render the project headless and save the output as PNG.", "output.png");
     QCommandLineOption framesOpt("frames", "Number of frames to render before capture (with --render).", "n", "30");
     QCommandLineOption shotOpt("screenshot", "Capture the main window, then quit (tests).", "capture.png");
+    QCommandLineOption enduranceOpt("endurance-csv", "Write 1 Hz frame/resource metrics and deadline events to a CSV and JSONL pair.", "session.csv");
     QCommandLineOption strictOpt("strict", "With --render: a layer or effect in error fails the render (exit code 4).");
     cli.addOption(renderOpt);
     cli.addOption(strictOpt);
     cli.addOption(framesOpt);
     cli.addOption(shotOpt);
+    cli.addOption(enduranceOpt);
     cli.addPositionalArgument("project", ".pinol project to open");
     // --render exit codes: 0 rendered, 1 OpenGL unavailable, 2 output not written, 3 project not loaded,
     // 4 a layer or an effect in error (--strict)
@@ -124,6 +127,14 @@ int main(int argc, char *argv[])
     macKeepLiveOutputActive();
 #endif
     engine.start();
+    // Start before any project-open or recovery dialog: a modal prompt must not
+    // prevent telemetry from recording the show startup and subsequent events.
+    EnduranceLogger endurance;
+    if (cli.isSet(enduranceOpt)) {
+        QString logError;
+        if (!endurance.start(engine, cli.value(enduranceOpt), &logError))
+            qWarning("Pinol endurance recorder: %s", qPrintable(logError));
+    }
 
     int rc;
     {
@@ -163,6 +174,7 @@ int main(int argc, char *argv[])
             std::_Exit(3);
         }).detach();
     }
+    endurance.stop();
     engine.shutdown();
     s_quitDone = true;
     return rc;

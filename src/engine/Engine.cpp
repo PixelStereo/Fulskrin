@@ -2,6 +2,7 @@
 // the output window, the composition size, and the composition opacity / blackout fades.
 // The rest of its methods live in Layers.cpp, Render.cpp, Project.cpp, Media.cpp and Snapshots.cpp.
 #include "EngineInternal.h"
+#include "ProcessMemory.h"
 #include "Midi.h"
 #include "VideoDecoder.h"
 #include "VideoTexture.h"
@@ -106,6 +107,8 @@ bool Engine::initialize(QString *err)
     }
     auto f = gl();
     m_glRenderer = QString::fromLatin1(reinterpret_cast<const char *>(f->glGetString(GL_RENDERER)));
+    m_glVersion = QString::fromLatin1(reinterpret_cast<const char *>(f->glGetString(GL_VERSION)));
+    m_glVendor = QString::fromLatin1(reinterpret_cast<const char *>(f->glGetString(GL_VENDOR)));
     qInfo().noquote() << "OpenGL" << reinterpret_cast<const char *>(f->glGetString(GL_VERSION)) << "-"
                       << reinterpret_cast<const char *>(f->glGetString(GL_RENDERER));
 
@@ -945,6 +948,7 @@ QJsonObject Engine::resourcesJson() const
     o["empty_video_loops_stopped_total"] = double(VideoDecoder::emptyLoopStopsTotal());
     if (m_vramFreeKb.load() >= 0) o["graphics_memory_free_mb"] = double(m_vramFreeKb.load()) / 1024.0;
     if (m_vramTotalKb.load() > 0) o["graphics_memory_total_mb"] = double(m_vramTotalKb.load()) / 1024.0;
+    if (const uint64_t rss = processMemory::residentBytes()) o["process_resident_mb"] = mb(size_t(rss)); // all of it
     QJsonArray warnings;
     static const char *const keys[] = {"decoded_frames", "upload_buffers", "decode_threads", "graphics_memory"};
     const quint32 over = m_overBudget.load();

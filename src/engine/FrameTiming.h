@@ -14,6 +14,7 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 // The render thread's pace without a vertical sync to wait for: absolute deadlines, one period apart
 struct FramePacer {
@@ -69,14 +70,34 @@ public:
     // ns); `periodNs` its deadline (one frame at the rate asked or the screen's); `presented`: a window got it
     void noteFrame(qint64 start, qint64 computed, qint64 end, qint64 periodNs, bool presented);
     Stats stats() const;
+    // Consumed by the optional endurance logger. Independent one-second maxima / histograms,
+    // plus a bounded in-memory log of frames whose intervals exceeded twice the budget.
+    struct DeadlineEvent { qint64 atNs = 0; double intervalMs = 0, budgetMs = 0; };
+    // What the show did (a snapshot recalled, a timeline driven, a layer sought): to relate a late frame to its cause
+    struct JournalEvent { qint64 atNs = 0; QString kind, detail; };
+    static constexpr size_t kJournalPerWindow = 256;
+    struct Window {
+        Stats stats;
+        std::array<DeadlineEvent, 128> events{};
+        size_t eventCount = 0;
+        quint64 eventsLost = 0;
+        std::vector<JournalEvent> journal; // at most kJournalPerWindow
+        quint64 journalLost = 0;
+        std::array<quint64, InputCount> inputs{}; // inputs noted in the window (OSC messages that changed something, cues)
+    };
+    // Any thread: one entry of the journal (kept only for the endurance logger's window, bounded)
+    void noteEvent(const QString &kind, const QString &detail);
+    Window takeWindow();
     void reset();
     static qint64 nowNs(); // the steady clock
 
 private:
     mutable std::mutex m_mutex; // the totals (short: copied out by stats())
     Stats m_stats;
+    Window m_window;
     qint64 m_lastStart = -1;
     // The earliest input not yet in a frame, per kind (-1: none): the frame started after it takes it (the latency of
     // the earliest is the one counted: the worst of that frame's)
     std::array<std::atomic<qint64>, InputCount> m_pending{{std::atomic<qint64>{-1}, std::atomic<qint64>{-1}}};
+    std::array<std::atomic<quint64>, InputCount> m_inputCount{{std::atomic<quint64>{0}, std::atomic<quint64>{0}}};
 };

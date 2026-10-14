@@ -261,6 +261,9 @@ void Engine::removeAnimation(int i)
 
 void Engine::controlAnimation(quint64 id, AnimAction action, double time, AnimLoop loop, int repeat)
 {
+    static const char *const actions[] = {"play", "pause", "stop", "rewind", "seek", "loop_mode", "speed"};
+    journal(QStringLiteral("timeline"),
+            QStringLiteral("%1 %2").arg(id).arg(QLatin1String(actions[std::clamp(int(action), 0, 6)])));
     {
         Lock lk(&m_mutex);
         Animation *a = nullptr;

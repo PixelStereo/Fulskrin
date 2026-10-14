@@ -1122,6 +1122,7 @@ void Engine::seekLayer(int i, double t)
     Lock lk(&m_mutex);
     Layer *l = layer(i);
     if (!l || !l->hasTransport()) return;
+    journal(QStringLiteral("seek"), QStringLiteral("%1 @ %2 s").arg(l->name).arg(t, 0, 'f', 3));
     reposition(*l, t, l->dir);
 }
 

@@ -572,6 +572,8 @@ public:
     // on its own thread; elsewhere (or without Metal) through OpenGL
     static bool metalOutput() { return MetalOutput::available(); }
     QString glRenderer() const { return m_glRenderer; } // the OpenGL renderer's name
+    QString glVersion() const { return m_glVersion; }
+    QString glVendor() const { return m_glVendor; }
     quint64 windowFrames(quint64 viewport); // pictures the viewport's window was given (tests)
     void setViewportWindow(quint64 viewport, QWindow *w);
     // refreshHz: its screen's (0: not known). The render keeps that pace while the window is shown, and counts its
@@ -587,9 +589,12 @@ public:
     double fps() const { return m_fps.load(); }
     // Frame timing (FrameTiming.h): intervals, missed deadlines, compute and present times, OSC / cue to frame
     FrameTiming::Stats frameTiming() const { return m_frameTiming.stats(); }
+    FrameTiming::Window takeFrameTimingWindow() { return m_frameTiming.takeWindow(); }
     QJsonObject frameTimingJson() const; // the same, with the outputs' dropped frames (OSC /composition/timing)
     void resetFrameTiming();
     void noteInput(FrameTiming::Input kind) { m_frameTiming.noteInput(kind); } // any thread
+    // Any thread: what the show did (snapshot recalled, timeline driven, layer sought), for the endurance journal
+    void journal(const QString &kind, const QString &detail) { m_frameTiming.noteEvent(kind, detail); }
     // What the show holds against its budgets (any thread): decoded frames, upload buffers, decoders' threads,
     // graphics memory free (when the driver says: NVIDIA, AMD), and which budget is exceeded now ("warnings").
     // OSC /composition/budget. Sampled by the render thread once a second; a budget newly exceeded is logged.
@@ -836,7 +841,7 @@ private:
     std::vector<Preset> m_presets;
     quint64 m_nextPresetId = 1;
     std::vector<std::shared_ptr<FadeJob>> m_fades;
-    QString m_glRenderer;
+    QString m_glRenderer, m_glVersion, m_glVendor;
     // A snapshot gives a layer another source: the outgoing one keeps playing, invisible, and the two pictures
     // are mixed by an ISF transition into the layer's picture (before its mapping) until it is over
     struct SourceTransition {
