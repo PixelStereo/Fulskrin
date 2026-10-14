@@ -34,10 +34,13 @@ public:
     explicit MainWindow(Engine *engine, QWidget *parent = nullptr);
     ~MainWindow() override;
 
-    bool openProject(const QString &path);
+    // autoplay: its startup sequence (Composition) sends GO — not when the project opened is the one already playing
+    // under another path (Collect Files)
+    bool openProject(const QString &path, bool autoplay = true);
     // Offers to restore the session if the application did not exit normally.
     bool offerRecovery(); // true: the autosaved session was restored
     void openStartupProject(); // at launch: the startup project of the settings, as a template (none: stays empty)
+    void playStartupSequence(); // the project's startup sequence (Composition), if it has one: GO on its first step
     bool maybeSave();     // unsaved changes: save, discard, or cancel (false)
     void setAutosaveEnabled(bool on) { m_autosaveEnabled = on; }
     void setQuiet(bool on) { m_quiet = on; } // tests: warnings in the status bar, no dialog
