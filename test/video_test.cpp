@@ -16,6 +16,7 @@ extern "C" {
 }
 
 #include <QElapsedTimer>
+#include <QtEndian>
 #include <QJsonObject>
 #include <QFile>
 #include <QImage>
@@ -827,6 +828,44 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         decs.clear();
         VCHECK(decodedBudget::used() == 0);
         decodedBudget::setLimit(size_t(512) << 20);
+    }
+    // Corrupt every HAP frame payload while keeping a valid MOV container. In
+    // Loop mode zero valid frames must end the leg instead of spinning forever.
+    {
+        QFile src(root + "/media/hap1.mov");
+        VCHECK(src.open(QIODevice::ReadOnly));
+        QByteArray bytes = src.readAll();
+        const qsizetype tag = bytes.indexOf("mdat");
+        VCHECK(tag >= 4);
+        if (tag >= 4) {
+            const quint32 atomSize = qFromBigEndian<quint32>(
+                reinterpret_cast<const uchar *>(bytes.constData() + tag - 4));
+            const qsizetype payloadStart = tag + 4;
+            const qsizetype payloadEnd = std::min<qsizetype>(bytes.size(), tag - 4 + qsizetype(atomSize));
+            VCHECK(atomSize > 8 && payloadEnd > payloadStart);
+            if (atomSize > 8 && payloadEnd > payloadStart) {
+                std::memset(bytes.data() + payloadStart, 0, size_t(payloadEnd - payloadStart));
+                const QString bad = tmp + "/fully_corrupt_hap.mov";
+                QFile out(bad);
+                VCHECK(out.open(QIODevice::WriteOnly | QIODevice::Truncate));
+                VCHECK(out.write(bytes) == bytes.size());
+                out.close();
+                VideoDecoder d;
+                QString err;
+                VCHECK(d.open(bad, &err));
+                if (d.width() > 0) {
+                    Timeline loop;
+                    loop.mode = Timeline::Loop;
+                    d.setTimeline(loop);
+                    d.seek(0);
+                    QElapsedTimer timeout;
+                    timeout.start();
+                    while (!d.finished() && timeout.elapsed() < 2000) QThread::msleep(10);
+                    VCHECK(d.finished());
+                    VCHECK(d.metrics().emptyLoopStops >= 1);
+                }
+            }
+        }
     }
     // Decode-time percentiles: bucket bounds, never above the longest measured; the long tail beyond 2 s is given
     // as the longest, and decodes longer than one frame are counted
