@@ -10,6 +10,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <QStringList>
 #include <QJsonObject>
 #include <QSysInfo>
 #include <QDebug>
@@ -71,7 +73,7 @@ private:
     static QByteArray csvValue(QString value)
     {
         value.replace('"', "\"\"");
-        return ('"' + value + '"').toUtf8();
+        return (QStringLiteral("\"") + value + QStringLiteral("\"")).toUtf8();
     }
 
     static void jsonLine(QFile &f, const QJsonObject &obj)
