@@ -14,7 +14,11 @@ int VideoDecoder::decodeHap(VideoFrame &f, double skipBefore)
 {
     for (;;) {
         const int r = readVideoPacket();
-        if (r < 0) return 0;
+        if (r < 0) {
+            if (r == AVERROR_EOF) return 0;
+            markDecodeError(r, true);
+            return -1;
+        }
         int64_t ts = m_packet->pts != AV_NOPTS_VALUE ? m_packet->pts : m_packet->dts;
         const double local = ts != AV_NOPTS_VALUE ? ts * m_timeBase - m_startTime : m_lastPts + 1.0 / m_fps;
         m_lastPts = local;
