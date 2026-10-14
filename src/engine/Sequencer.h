@@ -1,7 +1,8 @@
 #pragma once
 // Sequences: ordered steps, each recalling a snapshot or driving a timeline (and carrying a text for the operator),
-// played by GO / GO BACK — the cue list of a show. Several sequences; one is current. Saved with the project; the
-// position is not. Owned by the Engine (Engine::sequencer()), it goes through the Engine's public API only, and
+// played by GO / GO BACK — the cue list of a show. Several sequences may execute concurrently;
+// the selected sequence determines which one GO / STOP edits, not which running cues survive.
+// Sequence steps are saved with the project; runtime playhead positions are not. Owned by the Engine (Engine::sequencer()), it goes through the Engine's public API only, and
 // shares its lock.
 //
 // A step waits its pre-wait after its GO, then recalls its snapshot, whose fade is the step's action (its duration:
@@ -60,6 +61,7 @@ public:
     // A step on its way: since its GO, through its pre-wait, its action, and until the next step's GO
     struct Run {
         int step = -1;
+        quint64 sequenceId = 0; // stable runtime owner even when sequences are inserted or reordered
         Step target; // what it does (its snapshot, or its timeline and action)
         quint64 snapshot = 0;
         double elapsed = 0; // since its GO
@@ -117,7 +119,7 @@ public:
     int add(const Sequence &s, int at = -1);
     void remove(int i);
     int current() const;           // -1: none
-    void setCurrent(int i);        // its position goes back to before the first step
+    void setCurrent(int i);        // select only; other sequences' pre-waits / follows keep running
     // Project-specific automatic GO when the project opens; -1 disables it.
     // Index tracks sequence insertions/deletions and survives renaming.
     int startupSequence() const;
@@ -131,8 +133,8 @@ public:
     bool go();
     bool back();
     bool goTo(int step, bool chain = true);
-    void stop();                   // the waits still running: no step comes from them any more
-    std::vector<Run> runs() const; // the steps of the current sequence on their way
+    void stop();                   // cancel pending waits in the selected sequence only
+    std::vector<Run> runs() const; // the steps of the selected sequence on their way
     bool running() const;
     void advance(double dt);       // moves the waits on (a timer does, except with Engine::setFadesManual)
     // The snapshot a step recalls goes through this (the interface: its undo stack); Engine::recallSnapshot by default
@@ -158,6 +160,8 @@ signals:
     void positionChanged(); // current sequence or step
 
 private:
+    int sequenceIndexLocked(quint64 id) const; // under m_mutex; stable identity for queued GO
+    bool goToSequence(quint64 id, int step, bool chain);
     void startTimer();
     void runClock(); // clock thread
     void tick();     // clock thread
@@ -167,9 +171,12 @@ private:
     Engine &m_engine;
     Annotated<QRecursiveMutex> &m_mutex;
     std::vector<Sequence> m_sequences;
-    int m_current = -1, m_position = -1;
+    int m_current = -1; // UI selection only, never the owner of all active runs
+    std::vector<int> m_positions; // playhead per sequence (not persisted)
+    std::vector<quint64> m_sequenceIds; // runtime identity, aligned with m_sequences
+    quint64 m_nextSequenceId = 1;
     int m_startupSequence = -1; // none by default; adjusted on insert/remove
-    std::vector<Run> m_runs; // of the current sequence
+    std::vector<Run> m_runs; // all active sequences; each run owns a stable sequenceId
     std::function<void(int)> m_recaller;                         // under m_mutex
     std::function<void(int, const RecallBefore &)> m_recorder;   // under m_mutex
     std::unique_ptr<QThread> m_clockThread;
