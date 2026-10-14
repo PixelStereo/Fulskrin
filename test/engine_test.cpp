@@ -1834,6 +1834,128 @@ void main(){ gl_FragColor = definitely_not_defined; }
             e.sequencer().remove(0);
             CHECK(e.sequencer().count() == 0 && e.sequencer().current() == -1 && !e.sequencer().go());
         }
+        // Independent sequences: editing/selecting B must not cancel A's pending
+        // pre-wait or auto-follow. Each retains a separate playhead and Stop
+        // only affects the currently selected sequence.
+        {
+            e.setFadesManual(true);
+            std::vector<int> fired;
+            e.sequencer().setRecaller([&](int mi) { fired.push_back(mi); });
+            Sequencer::Sequence a, b, inserted;
+            a.name = "Background A";
+            Sequencer::Step a0, a1;
+            a0.snapshot = e.snapshot(0).id;
+            a0.preWait = 1.0;
+            a0.postWait = 0.5;
+            a0.next = Sequencer::StepContinue::Follow;
+            a1.snapshot = e.snapshot(1).id;
+            a.steps = {a0, a1};
+            b.name = "Editing B";
+            Sequencer::Step b0;
+            b0.snapshot = e.snapshot(1).id;
+            b0.preWait = 0.25;
+            b.steps = {b0};
+            const int ia = e.sequencer().add(a);
+            e.sequencer().setCurrent(ia);
+            CHECK(e.sequencer().go() && e.sequencer().running());
+            // The "new sequence" UI does add + setCurrent; no callback is cancelled.
+            const int ib = e.sequencer().add(b);
+            e.sequencer().setCurrent(ib);
+            CHECK(e.sequencer().position() == -1 && !e.sequencer().running() &&
+                  e.sequencer().runs().empty() && fired.empty());
+            CHECK(e.sequencer().active(ia) && !e.sequencer().active(ib));
+            CHECK(e.sequencer().go() && e.sequencer().position() == 0);
+            e.sequencer().advance(0.25);
+            CHECK(fired == (std::vector<int>{1})); // B fired, A still pending
+            e.sequencer().advance(0.75);
+            CHECK(fired == (std::vector<int>{1, 0})); // A recalled while B selected
+            e.sequencer().advance(0.5);
+            CHECK(fired == (std::vector<int>{1, 0, 1})); // A followed autonomously
+            CHECK(e.sequencer().position() == 0); // B's playhead has not moved
+            e.sequencer().setCurrent(ia);
+            CHECK(e.sequencer().position() == 1 && e.sequencer().next() == -1);
+            // Insertion before the running owner must not redirect its pending GO.
+            CHECK(e.sequencer().goTo(0));
+            inserted.name = "New first";
+            e.sequencer().add(inserted, 0);
+            e.sequencer().setCurrent(0);
+            e.sequencer().advance(1.0);
+            CHECK(fired == (std::vector<int>{1, 0, 1, 0}));
+            // Stop B only: A's next pre-wait is untouched.
+            e.sequencer().setCurrent(1); // A shifted to index 1
+            e.sequencer().stop(); // clear the prior test's unfinished follow first
+            CHECK(e.sequencer().goTo(0));
+            e.sequencer().setCurrent(2); // B shifted to index 2
+            CHECK(e.sequencer().goTo(0));
+            e.sequencer().stop();
+            e.sequencer().advance(1.0);
+            CHECK(fired.back() == 0); // A still fired; B's cancelled wait did not
+            // Removing the selected unrelated sequence leaves the remaining
+            // sequence's pending pre-wait alive, even if the indices shift.
+            e.sequencer().setCurrent(1);
+            e.sequencer().stop();
+            CHECK(e.sequencer().goTo(0));
+            const size_t beforeRemove = fired.size();
+            e.sequencer().remove(0);
+            e.sequencer().advance(1.0);
+            CHECK(fired.size() == beforeRemove + 1 && fired.back() == 0);
+            // AutoFollow also belongs to its originating sequence, not the UI
+            // selection. Changing the selection during its action must preserve
+            // the delayed second GO and update that sequence's own playhead.
+            e.sequencer().setCurrent(0);
+            e.sequencer().stop();
+            Sequencer::Sequence autoSequence;
+            autoSequence.name = "Auto background";
+            Sequencer::Step autoFirst, autoSecond;
+            autoFirst.snapshot = e.snapshot(0).id;
+            autoFirst.preWait = 0.1;
+            autoFirst.postWait = 0.1;
+            autoFirst.next = Sequencer::StepContinue::AutoFollow;
+            autoSecond.snapshot = e.snapshot(1).id;
+            autoSequence.steps = {autoFirst, autoSecond};
+            const int autoIndex = e.sequencer().add(autoSequence);
+            e.sequencer().setCurrent(autoIndex);
+            const size_t beforeAuto = fired.size();
+            CHECK(e.sequencer().go());
+            e.sequencer().setCurrent(1); // edit another sequence meanwhile
+            e.sequencer().advance(0.1 + e.sequencer().stepDuration(autoFirst) + 0.1 + 0.05);
+            CHECK(fired.size() == beforeAuto + 2 && fired[beforeAuto] == 0 && fired[beforeAuto + 1] == 1);
+            e.sequencer().setCurrent(autoIndex);
+            CHECK(e.sequencer().position() == 1);
+            e.sequencer().stop();
+            // A given sequence, whatever is selected (OSC /sequence/<n>/go, step, stop), and Stop all: the operator's
+            // panic button must reach the sequences playing in the background too
+            {
+                Sequencer::Sequence p, q;
+                Sequencer::Step w;
+                w.snapshot = e.snapshot(0).id;
+                w.preWait = 0.5;
+                p.name = "Panel P";
+                p.steps = {w, w};
+                q.name = "Panel Q";
+                q.steps = {w};
+                const int ip = e.sequencer().add(p), iq = e.sequencer().add(q);
+                e.sequencer().setCurrent(iq);
+                CHECK(e.sequencer().goSequence(ip) && e.sequencer().positionOf(ip) == 0);
+                CHECK(e.sequencer().positionOf(iq) == -1 && e.sequencer().position() == -1); // the selected one untouched
+                CHECK(e.sequencer().active(ip) && !e.sequencer().running() && e.sequencer().anyActive());
+                CHECK(e.sequencer().goToStepOf(ip, 1) && e.sequencer().positionOf(ip) == 1);
+                CHECK(e.sequencer().go()); // the selected one: Q
+                const size_t before = fired.size();
+                e.sequencer().stopSequence(ip); // only P
+                CHECK(!e.sequencer().active(ip) && e.sequencer().active(iq));
+                CHECK(e.sequencer().goSequence(ip) || e.sequencer().positionOf(ip) == 1); // P at its end: nothing next
+                CHECK(e.sequencer().goToStepOf(ip, 0));
+                e.sequencer().stopAll();
+                CHECK(!e.sequencer().anyActive() && !e.sequencer().active(ip) && !e.sequencer().active(iq));
+                e.sequencer().advance(1.0);
+                CHECK(fired.size() == before); // nothing fired after Stop all, in either sequence
+                CHECK(!e.sequencer().goSequence(-1) && !e.sequencer().goSequence(e.sequencer().count()));
+            }
+            e.sequencer().setRecaller(nullptr);
+            e.sequencer().clear();
+            e.setFadesManual(false);
+        }
         // Snapshots run side by side: a recall takes over only the values it holds, from where they are
         {
             e.setFadesManual(true);

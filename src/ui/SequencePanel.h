@@ -52,6 +52,7 @@ signals:
     void goRequested();     // GO: the next step
     void backRequested();   // GO BACK: the previous step
     void stopRequested();   // the pre-waits and follows still to come
+    void stopAllRequested(); // those of every sequence, the ones playing in the background too
     void windowRequested(); // the floating window
     void timelinesRequested(); // the timelines' window
     void edited();
@@ -59,7 +60,7 @@ signals:
 private:
     Engine *m_engine;
     QComboBox *m_sequence;
-    QPushButton *m_go, *m_back, *m_stop, *m_open;
+    QPushButton *m_go, *m_back, *m_stop, *m_stopAll, *m_open;
     QLabel *m_wait; // what is waiting, and in how long
     void pollWaits();
     QLabel *m_prev, *m_current, *m_next;
@@ -79,6 +80,7 @@ signals:
     void goToRequested(int step); // play that step of the current sequence
     void timelinesRequested();    // the timelines' window
     void stopRequested();         // the pre-waits and follows still to come
+    void stopAllRequested();      // those of every sequence, the ones playing in the background too
     void edited();                // the sequences changed: the project is modified
 
 protected:
@@ -97,7 +99,7 @@ private:
     QTableWidget *m_steps;
     QLabel *m_status; // the step played, and whether something changed since
     bool m_modified = false;
-    QPushButton *m_add, *m_dup, *m_del, *m_stepAdd, *m_stepDel, *m_up, *m_down, *m_stop;
+    QPushButton *m_add, *m_dup, *m_del, *m_stepAdd, *m_stepDel, *m_up, *m_down, *m_stop, *m_stopAll;
     bool m_filling = false;
     std::vector<Sequencer::Run> m_runs; // the steps on their way, drawn in their time columns
     void pollRuns();
