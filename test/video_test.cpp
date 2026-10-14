@@ -19,6 +19,7 @@ extern "C" {
 #include <QJsonObject>
 #include <QFile>
 #include <QImage>
+#include <QImageReader>
 #include <QThread>
 #include <cmath>
 #include <cstdio>
@@ -355,6 +356,16 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
                d.sourceInfo().transfer == info.transfer &&
                d.sourceInfo().range == info.range);
         d.close();
+    }
+    // Still images: the declared depth, as Qt decodes them (a 16-bit PNG stays 16-bit until its upload)
+    {
+        VCHECK(imageSourceDepth(QImage::Format_RGBA64) == "16-bit" && imageSourceDepth(QImage::Format_A2RGB30_Premultiplied) == "10-bit");
+        VCHECK(imageSourceDepth(QImage::Format_RGBA32FPx4) == "float" && imageSourceDepth(QImage::Format_ARGB32) == "8-bit or less");
+        QImage deep(4, 4, QImage::Format_RGBA64);
+        deep.fill(QColor(10, 20, 30));
+        const QString deepPath = tmp + "/depth16.png";
+        VCHECK(deep.save(deepPath));
+        VCHECK(imageSourceDepth(QImageReader(deepPath).imageFormat()) == "16-bit");
     }
     // --- Snappy: literals, the three kinds of copy (overlapping too), malformed streams
     {

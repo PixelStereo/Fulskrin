@@ -999,12 +999,9 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
         if (err) *err = QStringLiteral("Unreadable image: ") + path;
         return false;
     }
-    const QImage::Format originalFormat = img.format();
-    const bool high = originalFormat == QImage::Format_RGBA64 || originalFormat == QImage::Format_RGBX64 ||
-                      originalFormat == QImage::Format_RGBA64_Premultiplied || originalFormat == QImage::Format_Grayscale16;
     const QColorSpace profile = img.colorSpace();
-    const QString colorInfo = QStringLiteral("%1 · %2").arg(
-        high ? QStringLiteral("16-bit source") : QStringLiteral("8-bit or less"),
+    const QString colorInfo = QStringLiteral("%1 source · %2").arg(
+        imageSourceDepth(img.format()),
         profile.isValid() ? QStringLiteral("ICC: ") +
             (profile.description().isEmpty() ? QStringLiteral("embedded profile") : profile.description())
                           : QStringLiteral("color profile: untagged/unknown"));

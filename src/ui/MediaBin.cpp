@@ -523,13 +523,11 @@ void MediaBin::probe(const QString &path)
             info = s.isValid() ? QStringLiteral("%1×%2 · %3").arg(s.width()).arg(s.height()).arg(QString::fromLatin1(r.format()))
                                : QStringLiteral("unreadable");
             if (s.isValid()) {
-                // Probe at 1px; never allocate a full decoded 8K+ bitmap just
-                // to display metadata for an unused Media Bin item.
+                // Its profile from a 1-pixel read (JPEG decodes scaled; other formats may decode in full before
+                // scaling, hence the size limit below)
                 const QImage::Format fmt = r.imageFormat();
-                const bool high = fmt == QImage::Format_RGBA64 || fmt == QImage::Format_RGBX64 ||
-                                  fmt == QImage::Format_RGBA64_Premultiplied || fmt == QImage::Format_Grayscale16;
                 QStringList tags;
-                if (fmt != QImage::Format_Invalid) tags << (high ? QStringLiteral("16-bit") : QStringLiteral("8-bit or less"));
+                if (fmt != QImage::Format_Invalid) tags << imageSourceDepth(fmt);
                 if (qint64(s.width()) * s.height() <= 64LL * 1024 * 1024) {
                     r.setScaledSize(QSize(1, 1));
                     const QImage sample = r.read();
