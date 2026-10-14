@@ -852,6 +852,10 @@ void VideoDecoder::produceBackwardWindow()
         }
         if (r == 1) recordDecodeTime(decodeNs);
         if (r == 2) continue;
+        if (r < 0) {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            m_eof = true; // fatal decode/demux errors must not spin in reverse playback
+        }
         if (r != 1) break;
         ++m_metricDecoded;
         accountFrame(f);
@@ -910,6 +914,7 @@ void VideoDecoder::run()
                 std::lock_guard<std::mutex> lk(m_mutex);
                 if (gen != m_generation) recycleLocked(std::move(f));
                 else {
+                    ++m_legFrames;
                     m_queue.push_back(std::move(f));
                     recordQueueDepth(m_queue.size());
                 }
@@ -944,6 +949,7 @@ void VideoDecoder::run()
                 continue;
             }
             f.pts = m_leg.clockStart + local - m_leg.from;
+            ++m_legFrames;
             std::lock_guard<std::mutex> lk(m_mutex);
             if (gen != m_generation) recycleLocked(std::move(f));
             else {
@@ -953,7 +959,12 @@ void VideoDecoder::run()
             continue;
         }
         if (r == 2) continue;
-        finishLeg(); // end of file (or error)
+        if (r < 0) {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            m_eof = true; // fatal error; wait for a user seek instead of looping forever
+            continue;
+        }
+        finishLeg(); // clean end of file
     }
 }
 
