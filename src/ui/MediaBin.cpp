@@ -14,6 +14,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QColorSpace>
 #include <QImageReader>
 #include <QLabel>
 #include <QMap>
@@ -510,7 +511,10 @@ void MediaBin::probe(const QString &path)
                 QStringList more;
                 if (vi.fps > 0) more << QStringLiteral("%1 fps").arg(vi.fps, 0, 'g', 4);
                 if (!vi.codec.isEmpty()) more << vi.codec;
+                more << vi.colorDescription();
                 more << (sound ? QStringLiteral("sound: ") + soundText : QStringLiteral("no sound"));
+                if (vi.bitDepth > 0) info += QStringLiteral(" · %1-bit").arg(vi.bitDepth);
+                if (!vi.matrix.isEmpty()) info += QStringLiteral(" · ") + vi.matrix;
                 info += QStringLiteral("\t") + more.join(QStringLiteral(" · "));
             }
         } else {
@@ -518,6 +522,26 @@ void MediaBin::probe(const QString &path)
             const QSize s = r.size();
             info = s.isValid() ? QStringLiteral("%1×%2 · %3").arg(s.width()).arg(s.height()).arg(QString::fromLatin1(r.format()))
                                : QStringLiteral("unreadable");
+            if (s.isValid()) {
+                // Probe at 1px; never allocate a full decoded 8K+ bitmap just
+                // to display metadata for an unused Media Bin item.
+                const QImage::Format fmt = r.imageFormat();
+                const bool high = fmt == QImage::Format_RGBA64 || fmt == QImage::Format_RGBX64 ||
+                                  fmt == QImage::Format_RGBA64_Premultiplied || fmt == QImage::Format_Grayscale16;
+                QStringList tags;
+                if (fmt != QImage::Format_Invalid) tags << (high ? QStringLiteral("16-bit") : QStringLiteral("8-bit or less"));
+                if (qint64(s.width()) * s.height() <= 64LL * 1024 * 1024) {
+                    r.setScaledSize(QSize(1, 1));
+                    const QImage sample = r.read();
+                    const QColorSpace space = sample.colorSpace();
+                    tags << (space.isValid() ? QStringLiteral("ICC: ") +
+                                (space.description().isEmpty() ? QStringLiteral("embedded profile") : space.description())
+                                             : QStringLiteral("color profile: untagged/unknown"));
+                } else {
+                    tags << QStringLiteral("color profile: not probed (large image)");
+                }
+                info += QStringLiteral("\t") + tags.join(QStringLiteral(" · "));
+            }
         }
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),
