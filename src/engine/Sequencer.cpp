@@ -33,6 +33,7 @@ void Sequencer::shutdownClock()
     if (!m_clockThread) return;
     m_clockThread->quit();
     m_clockThread->wait();
+    tsanAcquire(this); // QThread::wait uses Qt futexes, invisible to TSan.
     m_clockContext = nullptr;
     m_timer = nullptr;
     m_clockThread.reset();
@@ -469,6 +470,7 @@ void Sequencer::startTimer()
         m_clockThread = std::make_unique<QThread>();
         m_clockThread->setObjectName(QStringLiteral("Pinol cue clock"));
         m_clockContext = new CueClockContext([this] { runClock(); });
+        connect(m_clockThread.get(), &QThread::finished, m_clockContext, [this] { tsanRelease(this); }, Qt::DirectConnection);
         connect(m_clockThread.get(), &QThread::finished, m_clockContext, &QObject::deleteLater);
         m_clockContext->moveToThread(m_clockThread.get());
         m_clockThread->start(QThread::TimeCriticalPriority);
