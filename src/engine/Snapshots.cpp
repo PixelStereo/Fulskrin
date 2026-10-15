@@ -72,6 +72,12 @@ static double timeOf(const QJsonObject &timing, const QString &path, double fade
     return v.isDouble() ? std::clamp(v.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
 }
 
+static double delayOf(const QJsonObject &delays, const QString &path)
+{
+    const QJsonValue v = delays.value(Engine::timingKeyOf(delays, path));
+    return v.isDouble() ? std::clamp(v.toDouble(), 0.0, 600.0) : 0.0;
+}
+
 static EasingCurve easingOf(const QJsonObject &easing, const QString &path)
 {
     const QString k = Engine::timingKeyOf(easing, path);
@@ -272,7 +278,7 @@ void Engine::takeOverFades(quint64 id, const QSet<QString> &paths, bool all)
 // Values of a layer on their way to a recall's (lock held): its parameters, in their order — the numbers fade (their
 // ramp), a text is typed in, the rest is set at once. showing / hiding: its opacity from 0, or to 0 then hidden
 void Engine::applyParams(Layer &layer, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,
-                         double fade, FadeJob &job, bool showing, bool hiding, bool chain)
+                         double fade, FadeJob &job, bool showing, bool hiding, bool chain, const QJsonObject &delays)
 {
     Layer *l = &layer;
     auto fadeTo = [&](Parameter &p, double from, double to) {
@@ -290,6 +296,14 @@ void Engine::applyParams(Layer &layer, const QJsonObject &params, const QJsonObj
             if (it == params.constEnd() || !p->isStored()) continue;
             const ParamInfo info = p->info();
             const QString &path = info.path;
+            const double delay = delayOf(delays, path);
+            if (delay > 0) {
+                const QString ek = Engine::timingKeyOf(easing, path);
+                scheduleRecall(l->id, path, it.value(), timeOf(timing, path, fade),
+                               ek.isEmpty() ? QString() : easing.value(ek).toString(), delay);
+                continue;
+            }
+            cancelScheduledRecall(l->id, path);
             if (info.ramp == ParamInfo::Ramp::Typed) { // a text typed in over its time
                 TextSource &t = l->text;
                 const QString target = it.value().toString();
@@ -341,14 +355,15 @@ void Engine::recallPreset(int i)
     for (const PresetValue &v : p.values)
         if (!v.value.isUndefined() && !v.value.isNull()) byLayer[v.layer].push_back(&v);
     for (const auto &[layerId, values] : byLayer) {
-        QJsonObject params, timing, easing;
+        QJsonObject params, timing, easing, delays;
         for (const PresetValue *v : values) {
             params.insert(v->path, v->value);
             if (v->time >= 0) timing.insert(v->path, v->time);
             if (!v->easing.isEmpty()) easing.insert(v->path, v->easing);
+            if (v->delay > 0) delays.insert(v->path, v->delay);
         }
         if (!layerId) { // the composition
-            QJsonObject c{{"timing", timing}, {"easing", easing}};
+            QJsonObject c{{"timing", timing}, {"easing", easing}, {"delay", delays}};
             for (const char *k : {"opacity", "volume"})
                 if (params.contains(k)) c.insert(k, params.value(k));
             applyComposition(c, fade);
@@ -359,20 +374,28 @@ void Engine::recallPreset(int i)
                     byInteraction[it.key().section('/', 1, 1).toULongLong()].insert(it.key(), it.value());
                     continue;
                 }
-                if (it.key() != "opacity" && it.key() != "volume") setParameter(0, it.key(), it.value());
+                if (it.key() == "opacity" || it.key() == "volume") continue;
+                const double delay = delayOf(delays, it.key());
+                if (delay > 0) scheduleRecall(0, it.key(), it.value(), timeOf(timing, it.key(), fade),
+                                              easing.value(it.key()).toString(), delay);
+                else {
+                    cancelScheduledRecall(0, it.key());
+                    setParameter(0, it.key(), it.value());
+                }
             }
             if (!byInteraction.empty()) {
                 {
                     Lock lk(&m_mutex);
                     for (const auto &[id, vals] : byInteraction) {
-                        QJsonObject t, ez;
+                        QJsonObject t, ez, de;
                         const QString prefix = QStringLiteral("interaction/%1/").arg(id);
                         for (auto x = vals.begin(); x != vals.end(); ++x) { // their times under their short keys
                             const QString key = x.key().mid(prefix.size());
                             if (timing.contains(x.key())) t.insert(key, timing.value(x.key()));
                             if (easing.contains(x.key())) ez.insert(key, easing.value(x.key()));
+                            if (delays.contains(x.key())) de.insert(key, delays.value(x.key()));
                         }
-                        applyInteractionValues(id, vals, t, ez, fade);
+                        applyInteractionValues(id, vals, t, ez, fade, de);
                     }
                 }
                 interactionValuesTouched();
@@ -389,7 +412,7 @@ void Engine::recallPreset(int i)
         if (!l) continue;
         auto job = std::make_shared<FadeJob>();
         job->id = layerId;
-        applyParams(*l, params, timing, easing, fade, *job, false, false, false);
+        applyParams(*l, params, timing, easing, fade, *job, false, false, false, delays);
         if (!job->done()) m_fades.push_back(std::move(job));
     }
     // Restore the captured modulation definitions after writing static values.
@@ -702,6 +725,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             continue;
         }
         const QJsonObject timing = o.value("timing").toObject(), easing = o.value("easing").toObject();
+        const QJsonObject delays = o.value("delay").toObject();
         const QJsonObject params = o.value("params").toObject();
         const QJsonObject cur = layerJson(idx);
         const QJsonObject curSrc = cur.value("source").toObject(), src = o.value("source").toObject();
@@ -806,7 +830,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         const bool visible = o.value("enable").toBool(true);
         const bool showing = visible && !l->enabled, hiding = !visible && l->enabled;
         if (showing) l->enabled = true;
-        applyParams(*l, params, timing, easing, fade, *job, showing, hiding, chain);
+        applyParams(*l, params, timing, easing, fade, *job, showing, hiding, chain, delays);
         if (hiding && !params.contains("opacity")) { // no level of its own: faded out from where it is
             job->hideAtEnd = true;
             job->finalOpacity = l->opacity;
