@@ -49,10 +49,12 @@ class SnapshotPanel : public QWidget
 public:
     SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent = nullptr);
     void refresh(); // snapshots changed (project opened…)
+    void setMode(int mode); // 0 Snapshots, 1 Presets; the main bottom tab controls which list/inspector is shown
     void recall(int i);
     int activeSnapshot() const { return m_active; } // last recalled (-1: none)
 
 signals:
+    void modeChanged(int mode); // if selection changes from an inspector/preset editor
     void edited();   // snapshots changed: the project is modified
     void recalled(); // the layers changed
 
@@ -99,6 +101,7 @@ private:
     QDoubleSpinBox *m_fade;
     QTreeWidget *m_layers;
     QPushButton *m_go, *m_update, *m_delete, *m_store, *m_newGroup;
+    class QStackedWidget *m_modeListStack = nullptr; // snap/preset lists share the same left slot
     class QStackedWidget *m_middle;                  // the snapshot's contents, or the preset's
     QTreeWidget *m_presets, *m_presetValues;
     QPushButton *m_presetEdit, *m_presetNew, *m_presetGo, *m_presetUpdate, *m_presetDelete;
