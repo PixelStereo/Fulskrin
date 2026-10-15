@@ -91,6 +91,32 @@ jobs:
           name: Pinol-linux
           path: Pinol-linux-x86_64*.tar.gz
 
+  workspace-memory:
+    name: Workspace memory safety (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config qt6-base-dev libqt6opengl6-dev qt6-multimedia-dev \
+            libgl1-mesa-dev libgl1-mesa-dri libavformat-dev libavcodec-dev libswscale-dev libswresample-dev \
+            libavutil-dev libasound2-dev xvfb
+      - name: Build with AddressSanitizer
+        run: |
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
+          cmake --build build-asan --target pinol_workspace_ui_test -j4
+      - name: Exercise workspace lifetime
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          LP_NUM_THREADS: '1'
+        run: xvfb-run -a ctest --test-dir build-asan --output-on-failure -R '^workspace_ui$'
+
   # The threads that share data (decoders, sound callback, OSC) under ThreadSanitizer: a race in Pinol's code
   # fails the job. Libraries not built with it (Qt, Mesa, FFmpeg) are suppressed in test/tsan.supp; the engine's
   # Qt mutexes and the render thread's join are annotated (src/engine/AnnotatedMutex.h).
@@ -359,10 +385,10 @@ jobs:
     runs-on: windows-2022
     needs: media
     env:
-      FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1
-      # BtbN's release to take it from. "latest" moves every day: set a dated tag (autobuild-…) here to rebuild the same
-      # binaries; the version and checksum used are written into the package (DEPENDENCIES.txt) either way
-      FFMPEG_RELEASE: latest
+      # Avoid the daily deletion/re-upload window of BtbN's mutable "latest" assets.
+      FFMPEG_ZIP: ffmpeg-n8.1.3-18-g46d899d7a0-win64-lgpl-shared-8.1
+      FFMPEG_RELEASE: autobuild-2026-10-15-13-03
+      FFMPEG_SHA256: 4acd82323c2cad9c7ffea5b8e335ebcda39beae83a3138d729545e5a7666a3fd
     steps:
       - uses: actions/checkout@v4
         with:
@@ -377,7 +403,10 @@ jobs:
       - name: FFmpeg
         shell: pwsh
         run: |
-          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/$env:FFMPEG_RELEASE/$env:FFMPEG_ZIP.zip" -OutFile ffmpeg.zip
+          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/$env:FFMPEG_RELEASE/$env:FFMPEG_ZIP.zip" -OutFile ffmpeg.zip -MaximumRetryCount 3 -RetryIntervalSec 5
+          if ((Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash -ne $env:FFMPEG_SHA256) {
+            throw "FFmpeg archive checksum mismatch"
+          }
           Expand-Archive ffmpeg.zip -DestinationPath C:\ffmpeg
       - name: Build
         shell: pwsh

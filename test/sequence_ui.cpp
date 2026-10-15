@@ -37,6 +37,11 @@ int main(int argc, char **argv)
     check(engine.sequencer().toJson()[0].toObject()["steps"].toArray()[1].toObject()["description"].toString() == second.description, "description serialized independently of comment");
     engine.sequencer().go(); poll();
     check(label->text().contains("PRE-WAIT") && label->text().contains("0%"), "pre-wait starts at zero");
+    const double elapsedBeforeEdit = engine.sequencer().stepElapsed(0);
+    auto editedSequence = engine.sequencer().sequence(0);
+    editedSequence.steps[0].description = "Edited while running";
+    engine.sequencer().setSequence(0, editedSequence);
+    check(engine.sequencer().stepElapsed(0) >= elapsedBeforeEdit, "editing a cue preserves its elapsed clock");
     engine.sequencer().advance(1); poll();
     check(label->text().contains("PRE-WAIT") && label->text().contains("50%"), "pre-wait progress halfway");
     engine.sequencer().advance(1); poll();

@@ -111,7 +111,6 @@ void Sequencer::setSequence(int i, const Sequence &s)
         m_sequences[size_t(i)] = s;
         if (m_positions[size_t(i)] >= int(s.steps.size())) m_positions[size_t(i)] = int(s.steps.size()) - 1;
         const quint64 owner = m_sequenceIds[size_t(i)];
-        m_stepStartedNs.erase(owner);
         m_runs.erase(std::remove_if(m_runs.begin(), m_runs.end(), [&](const Run &r) {
             return r.sequenceId == owner && r.step >= int(s.steps.size());
         }), m_runs.end());
@@ -142,6 +141,7 @@ void Sequencer::remove(int i)
         QMutexLocker lk(&m_mutex);
         if (i < 0 || i >= int(m_sequences.size())) return;
         const quint64 owner = m_sequenceIds[size_t(i)];
+        m_stepStartedNs.erase(owner);
         m_runs.erase(std::remove_if(m_runs.begin(), m_runs.end(),
             [owner](const Run &r) { return r.sequenceId == owner; }), m_runs.end());
         m_sequences.erase(m_sequences.begin() + i);
