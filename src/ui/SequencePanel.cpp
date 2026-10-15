@@ -219,6 +219,7 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     m_stopAll->setFixedWidth(40);
     m_stopAll->setStyleSheet("QPushButton:enabled { background:#a01e18; color:white; font-weight:bold; }");
     m_wait = new QLabel;
+    m_wait->setObjectName(QStringLiteral("sequenceWaitProgress"));
     m_wait->setTextFormat(Qt::RichText);
     m_wait->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     row->addWidget(m_sequence);
@@ -253,6 +254,7 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     connect(m_stop, &QPushButton::clicked, this, &SequenceBar::stopRequested);
     connect(m_stopAll, &QPushButton::clicked, this, &SequenceBar::stopAllRequested);
     auto *waits = new QTimer(this);
+    waits->setObjectName(QStringLiteral("sequenceWaitPoller"));
     waits->setInterval(50);
     connect(waits, &QTimer::timeout, this, &SequenceBar::pollWaits);
     waits->start();
