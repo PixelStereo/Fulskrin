@@ -259,6 +259,13 @@ static QStringList effectPaths(const QJsonArray &a)
 void Engine::takeOverFades(quint64 id, const QSet<QString> &paths, bool all)
 {
     Lock lk(&m_mutex);
+    // A deliberate new recall releases a picture held by the emergency stop.
+    const auto frozen = m_transitions.find(id);
+    if (frozen != m_transitions.end() && frozen->second->frozen) {
+        if (Layer *l = layer(indexOfId(id))) l->transitionGain = 1.0f;
+        retireTransition(std::move(frozen->second));
+        m_transitions.erase(frozen);
+    }
     for (auto it = m_fades.begin(); it != m_fades.end();) {
         FadeJob &j = **it;
         if (j.id == id) {
@@ -636,7 +643,7 @@ void Engine::recallSnapshot(int i)
         double total = 0;
         for (const auto &job : m_fades)
             if (job->elapsed <= 0) total = std::max(total, job->longest()); // this recall's, not the older ones
-        for (const auto &[id, t] : m_transitions) total = std::max(total, t->duration - t->elapsed);
+        for (const auto &[id, t] : m_transitions) if (!t->frozen) total = std::max(total, t->duration - t->elapsed);
         if (m_compFade.opacity && m_compFade.opacityElapsed <= 0) total = std::max(total, m_compFade.opacityDur);
         if (m_compFade.volume && m_compFade.volumeElapsed <= 0) total = std::max(total, m_compFade.volumeDur);
         for (const InteractionFade &f : m_interactionFades)
@@ -881,6 +888,7 @@ void Engine::stopShowPlayback()
     m_compFade.opacity = false;
     m_compFade.volume = false;
     m_fadeElapsed = m_recallTotal;
+    m_compositionOpacityTarget = m_compositionOpacity.load();
     m_compositionOpacitySpeed = 0; // hold the current fader value
     m_blackTarget = m_blackLevel;  // freeze a running blackout transition
     m_blackSpeed = 0;
