@@ -176,10 +176,12 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     auto *workspaceLayout = new QVBoxLayout(workspace);
     workspaceLayout->setContentsMargins(0, 0, 0, 0);
     m_workspaceTabs = new QTabBar;
+    m_workspaceTabs->setObjectName(QStringLiteral("showWorkspaceTabs"));
     m_workspaceTabs->addTab(QStringLiteral("Snapshots"));
     m_workspaceTabs->addTab(QStringLiteral("Presets"));
     m_workspaceTabs->addTab(QStringLiteral("Timelines"));
     auto *workspacePages = new QStackedWidget;
+    workspacePages->setObjectName(QStringLiteral("showWorkspacePages"));
     workspacePages->addWidget(m_snapshots);
     workspacePages->addWidget(m_timelineWindow);
     workspaceLayout->addWidget(m_workspaceTabs);

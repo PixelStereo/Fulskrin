@@ -352,6 +352,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     lv->addWidget(m_list, 1);
     left->setMinimumWidth(220);
     m_modeListStack = new QStackedWidget;
+    m_modeListStack->setObjectName(QStringLiteral("snapshotPresetLists"));
     m_modeListStack->addWidget(left);
     split->addWidget(m_modeListStack);
 
@@ -450,6 +451,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     iv->addWidget(m_layers, 1);
     m_inspector->setMinimumWidth(340);
     m_middle = new QStackedWidget;
+    m_middle->setObjectName(QStringLiteral("snapshotPresetInspector"));
     m_middle->addWidget(m_inspector);
     m_middle->addWidget(buildPresetView());
     split->addWidget(m_middle);
@@ -717,8 +719,11 @@ void SnapshotPanel::setMode(int mode)
     m_modeListStack->setCurrentIndex(mode);
     m_middle->setCurrentIndex(mode);
     m_detail->setVisible(mode == 0); // preset values are edited in their own middle pane
-    if (mode == 0) showInspector(selected());
-    else showPreset();
+    if (mode == 0) {
+        showInspector(selected());
+    } else {
+        showPreset();
+    }
     emit modeChanged(mode);
 }
 

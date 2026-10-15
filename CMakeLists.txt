@@ -423,6 +423,15 @@ if(PINOL_TESTS)
   # others once, these with retries (ctest -L timing --repeat until-pass:3) — their thresholds stay as they are; a CI
   # runner without a sound card or a GPU is late now and then, a real regression fails every attempt
   set_tests_properties(sound playback thread publishing timecode snapshots media PROPERTIES LABELS timing)
+  set(WORKSPACE_TEST_SOURCES ${APP_SOURCES})
+  list(REMOVE_ITEM WORKSPACE_TEST_SOURCES src/main.cpp)
+  add_executable(pinol_workspace_ui_test test/workspace_ui.cpp ${WORKSPACE_TEST_SOURCES})
+  target_include_directories(pinol_workspace_ui_test PRIVATE src src/ui "${CMAKE_BINARY_DIR}/generated")
+  target_link_libraries(pinol_workspace_ui_test PRIVATE pinol_engine Qt6::Widgets Qt6::OpenGLWidgets)
+  if(APPLE)
+    target_link_libraries(pinol_workspace_ui_test PRIVATE "-framework AppKit")
+  endif()
+  add_test(NAME workspace_ui COMMAND pinol_workspace_ui_test)
   add_test(NAME isf COMMAND pinol_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
   if(NOT WIN32) # the application's exit codes in --render mode (Windows: its Qt libraries are deployed separately)
     add_test(NAME render_cli COMMAND ${CMAKE_COMMAND} -DPINOL=$<TARGET_FILE:Pinol> -DOUT=${CMAKE_BINARY_DIR}/render_cli
