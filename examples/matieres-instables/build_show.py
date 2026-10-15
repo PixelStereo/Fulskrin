@@ -74,7 +74,7 @@ def build(out,audio=None,duration=BASE_DURATION,timeline_count=18):
     for timeline in timelines:steps.append({"timeline":timeline["id"],"action":"stop","continue":"follow","text":"Fin des mouvements"})
     # Fade the picture and sound together across the recording's final tail.
     snapshots[-1]["composition"]["volume"]=0
-    project={"app":"Pinol","format_version":1,"composition":{"width":1280,"height":720,"fps":60,"speed":1},"audio":{"volume":1},"layers":layers,"interactions":interactions,"timelines":timelines,"snapshots":snapshots,"snapshot_tree":[{"snapshot":snap["id"]} for snap in snapshots],"sequences":[{"name":"Calculated Rupture · Matières instables","loop":False,"steps":steps}],"current_sequence":0,"startup_sequence":-1,"ui":{"selected_layer":0}}
+    project={"app":"Pinol","format_version":1,"composition":{"width":1280,"height":720,"fps":60,"speed":1},"audio":{"volume":1},"layers":layers,"interactions":interactions,"timelines":timelines,"snapshots":snapshots,"snapshot_tree":[snap["id"] for snap in snapshots],"sequences":[{"name":"Calculated Rupture · Matières instables","loop":False,"steps":steps}],"current_sequence":0,"startup_sequence":-1,"ui":{"selected_layer":0}}
     (out/"Matieres_instables.pinol").write_text(json.dumps(project,ensure_ascii=False,indent=2)+"\n")
     (out/"cuebook.json").write_text(json.dumps({"audio":audio_path,"duration":duration,"cues":cuebook},ensure_ascii=False,indent=2)+"\n")
     return project, cuebook
