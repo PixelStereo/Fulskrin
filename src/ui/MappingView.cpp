@@ -1337,23 +1337,7 @@ void MappingView::alignMaskNodes(int edge)
         if (!k || !l || m_engine->isLocked(m_layer)) return;
         id = l->id;
         before = after = l->masks;
-        Mask &target = after[size_t(m_maskIndex)];
-        double v = edge == 0 || edge == 2 ? std::numeric_limits<double>::infinity()
-                                          : -std::numeric_limits<double>::infinity();
-        for (int i : m_maskSelection) {
-            if (i < 0 || i >= int(target.nodes.size())) return;
-            const QPointF p = target.nodes[size_t(i)].p;
-            const double x = edge <= 1 ? p.x() : p.y();
-            if (edge == 0 || edge == 2) v = std::min(v, x);
-            else v = std::max(v, x);
-        }
-        for (int i : m_maskSelection) {
-            MaskNode &n = target.nodes[size_t(i)];
-            const QPointF delta = edge <= 1 ? QPointF(v - n.p.x(), 0) : QPointF(0, v - n.p.y());
-            n.p += delta;
-            n.in += delta;
-            n.out += delta;
-        }
+        masks::alignNodes(after[size_t(m_maskIndex)], m_maskSelection, masks::AlignEdge(edge));
     }
     if (before != after) {
         if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after,
