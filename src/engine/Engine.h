@@ -370,8 +370,8 @@ public:
         QString path;
         QJsonValue value;
         double time = -1;
-        double delay = 0; // seconds before the value begins to execute
         QString easing;
+        double delay = 0; // seconds before the value begins to execute
     };
     struct Preset {
         quint64 id = 0;
@@ -379,7 +379,7 @@ public:
         double fade = 1.0;
         std::vector<PresetValue> values;
         // Definitions captured with the selected values, not merely their current output.
-        std::vector<Animation> animations;
+        std::vector<::Animation> animations;
         std::vector<Interaction> interactions;
         int indexOf(quint64 layer, const QString &path) const; // -1: not in it
     };
