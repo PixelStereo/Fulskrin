@@ -273,11 +273,19 @@ void Engine::stepInteractions(double dt)
         events.swap(m_interactionEvents);
     }
     if (m_interactions.empty()) return;
+    const bool needsSpectrum=std::any_of(m_interactions.begin(),m_interactions.end(),[](const Interaction &it){return it.enabled && it.source==InteractionSource::Audio && it.audioFeature==Interaction::AudioFeature::Band;});
+    const auto spectrum=needsSpectrum?m_audio->spectrum():AudioAnalysis::Spectrum{};
+    const auto audio=m_audio->analysis();
     for (const Interaction &it : m_interactions) {
         if (!it.enabled || it.param.isEmpty()) continue;
         InteractionRun &run = m_interactionRun[it.id];
         bool fresh = false;
-        if (it.source == InteractionSource::Internal) {
+        if (it.source == InteractionSource::Audio) {
+            const double x=it.audioFeature==Interaction::AudioFeature::Band?spectrum.band(float(it.audioLow),float(it.audioHigh)):
+                it.audioFeature==Interaction::AudioFeature::Level?audio.level:audio.onset;
+            run.proc.input(it,x);
+            fresh=true;
+        } else if (it.source == InteractionSource::Internal) {
             if (const Parameter *src = findParameter(it.sourceLayer, it.sourceParam)) {
                 const QVariant v = src->value();
                 const double x = v.typeId() == QMetaType::Bool ? (v.toBool() ? 1.0 : 0.0) : v.toDouble();
@@ -605,7 +613,7 @@ void Engine::makeInteractionParams()
                  if (!v.trimmed().isEmpty()) x.name = v.trimmed();
              });
         choice(QStringLiteral("source/kind"), QStringLiteral("Source"),
-               {QStringLiteral("keyboard"), QStringLiteral("midi"), QStringLiteral("osc"), QStringLiteral("internal")},
+               {QStringLiteral("keyboard"), QStringLiteral("midi"), QStringLiteral("osc"), QStringLiteral("internal"), QStringLiteral("audio")},
                [](const Interaction &x) { return int(x.source); },
                [](Interaction &x, int k) { x.source = InteractionSource(k); });
         text(QStringLiteral("source/key"), QStringLiteral("Key"), [](const Interaction &x) { return x.key; },
@@ -624,6 +632,10 @@ void Engine::makeInteractionParams()
         text(QStringLiteral("source/internal"), QStringLiteral("Follows"),
              [valueRef](const Interaction &x) { return valueRef(x.sourceLayer, x.sourceParam); },
              [parseRef](Interaction &x, const QString &v) { parseRef(v, &x.sourceLayer, &x.sourceParam); });
+        number(QStringLiteral("source/audio/low"),QStringLiteral("Audio Low Hz"),20,20000,20,[](Interaction &x)->double &{return x.audioLow;}).limits(20,20000);
+        number(QStringLiteral("source/audio/high"),QStringLiteral("Audio High Hz"),20,20000,20000,[](Interaction &x)->double &{return x.audioHigh;}).limits(20,20000);
+        choice(QStringLiteral("source/audio/feature"),QStringLiteral("Audio Measure"),{QStringLiteral("band"),QStringLiteral("level"),QStringLiteral("onset")},
+            [](const Interaction &x){return int(x.audioFeature);},[](Interaction &x,int k){x.audioFeature=Interaction::AudioFeature(k);});
         text(QStringLiteral("target"), QStringLiteral("Target"), [valueRef](const Interaction &x) { return valueRef(x.layer, x.param); },
              [parseRef](Interaction &x, const QString &v) { parseRef(v, &x.layer, &x.param); });
         text(QStringLiteral("curve"), QStringLiteral("Curve Keys"),

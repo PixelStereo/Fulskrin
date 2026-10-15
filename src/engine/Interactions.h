@@ -33,8 +33,8 @@
 #include <deque>
 #include <optional>
 
-enum class InteractionSource { Keyboard = 0, Midi, Osc, Internal };
-inline constexpr int kInteractionSourceCount = 4;
+enum class InteractionSource { Keyboard = 0, Midi, Osc, Internal, Audio };
+inline constexpr int kInteractionSourceCount = 5;
 enum class InteractionFilter { Average = 0, WeightedAverage, PulseDetection, AttackRelease, Damper };
 inline constexpr int kInteractionFilterCount = 5;
 enum class MidiMessageKind { ControlChange = 0, Note, PitchBend, ProgramChange };
@@ -83,6 +83,10 @@ struct Interaction {
     int oscArgument = 0;
     quint64 sourceLayer = 0; // Internal: a value of the show (a layer's id, 0: the composition) and its address
     QString sourceParam;
+    // Audio is the program mix before the master fader; band limits in Hz.
+    double audioLow = 20, audioHigh = 20000;
+    enum class AudioFeature { Band = 0, Level, Onset };
+    AudioFeature audioFeature = AudioFeature::Band;
 
     // The target: a value of the show (a layer's id, 0: the composition) and its address
     quint64 layer = 0;

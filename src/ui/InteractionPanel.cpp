@@ -1,4 +1,6 @@
 #include "InteractionPanel.h"
+#include "AudioSpectrum.h"
+#include <QDoubleSpinBox>
 #include "AnimEditor.h"
 #include "PresetEditor.h"
 #include "Osc.h"
@@ -72,7 +74,7 @@ private:
 
 constexpr char kMime[] = "application/x-pinol-interaction-settings";
 const InteractionSource kKinds[] = {InteractionSource::Keyboard, InteractionSource::Midi, InteractionSource::Osc,
-                                    InteractionSource::Internal};
+                                    InteractionSource::Internal, InteractionSource::Audio};
 
 QLabel *note(const QString &t)
 {
@@ -136,7 +138,7 @@ QJsonObject chainJson(const Interaction &it)
 {
     QJsonObject o = it.toJson();
     for (const char *k : {"id", "name", "enabled", "source", "key", "port", "channel", "message", "number", "address",
-                          "argument", "source_layer", "source_param", "layer", "param"})
+                          "argument", "source_layer", "source_param", "audio_low", "audio_high", "audio_feature", "layer", "param"})
         o.remove(QLatin1String(k));
     return o;
 }
@@ -246,7 +248,12 @@ InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *pa
     split->setSizes({180, 540}); // the settings get the room
     v->addWidget(split, 1);
 
-    connect(m_kinds, &QTabBar::currentChanged, this, [this] { rebuildList(); });
+    connect(m_kinds, &QTabBar::currentChanged, this, [this] {
+        const bool audio=shownKind()==InteractionSource::Audio;
+        if(audio)m_learn->setChecked(false);
+        m_learn->setEnabled(!audio);
+        rebuildList();
+    });
     connect(m_search, &QLineEdit::textChanged, this, [this] { rebuildList(); });
     connect(addButton, &QPushButton::clicked, this, [this, addButton] {
         if (const std::optional<InteractionSource> k = shownKind()) {
@@ -420,6 +427,7 @@ QString InteractionPanel::describe(const Interaction &it) const
         return it.oscAddress.isEmpty() ? QStringLiteral("OSC (no address)")
                                        : QStringLiteral("OSC %1").arg(it.oscAddress) + (it.oscArgument ? QStringLiteral(" [%1]").arg(it.oscArgument) : QString());
     case InteractionSource::Internal: return targetLabel(it.sourceLayer, it.sourceParam);
+    case InteractionSource::Audio: {Interaction named=it;named.name.clear();return named.label();}
     }
     return QString();
 }
@@ -577,6 +585,7 @@ void InteractionPanel::applyLearned(const InteractionEvent &ev)
         it.oscAddress = e->address;
         it.oscArgument = e->argument;
         break;
+    case InteractionSource::Audio:
     case InteractionSource::Internal: break;
     }
     if (sel) {
@@ -629,7 +638,7 @@ void InteractionPanel::learnFor(quint64 layer, const QString &path, InteractionS
     rebuildList();
     select(id);
     rebuildSettings();
-    if (kind != InteractionSource::Internal) {
+    if (kind != InteractionSource::Internal && kind != InteractionSource::Audio) {
         m_learnKind = kind;
         m_learn->setChecked(true); // the next source of that kind becomes its
     }
@@ -706,12 +715,12 @@ void InteractionPanel::rebuildSettings()
     m_inMeter = m_outMeter = nullptr;
     m_lane = nullptr;
     while (QLayoutItem *item = m_settingsLayout->takeAt(0)) {
-        if (QWidget *w = item->widget()) w->deleteLater();
+        if (QWidget *w = item->widget()) { w->hide(); w->deleteLater(); }
         delete item;
     }
     if (!cur) {
         m_settingsTitle->setText(QStringLiteral("Settings"));
-        m_settingsLayout->addWidget(note(QStringLiteral("Add an interaction (+), or press Learn and move a controller, "
+        m_settingsLayout->addWidget(note(shownKind()==InteractionSource::Audio ? QStringLiteral("Add Audio (+), select a frequency band, then choose the parameter to drive.") : QStringLiteral("Add an interaction (+), or press Learn and move a controller, "
                                                         "press a key or send an OSC message.")));
         m_settingsLayout->addStretch();
         return;
@@ -863,6 +872,35 @@ void InteractionPanel::rebuildSettings()
         });
         break;
     }
+    case InteractionSource::Audio: {
+        form->addRow(note(QStringLiteral("1 · Select the sound, then 2 · Map it to a parameter below")));
+        form->addRow(QStringLiteral("Audio input"),note(QStringLiteral("Program mix · all playing audio layers, before master volume")));
+        auto *feature=new QComboBox;feature->setObjectName("audioFeature");
+        feature->addItems({QStringLiteral("Selected frequency band"),QStringLiteral("Overall level"),QStringLiteral("Attacks / onset")});feature->setCurrentIndex(int(it.audioFeature));
+        form->addRow(QStringLiteral("Measure"),feature);
+        connect(feature,qOverload<int>(&QComboBox::activated),this,[this,edit](int k){edit(QStringLiteral("Change Audio Measure"),[k](Interaction &x){x.audioFeature=Interaction::AudioFeature(k);});rebuildSettings();});
+        attachPreset({feature},{QStringLiteral("source/audio/feature")});
+        if(it.audioFeature==Interaction::AudioFeature::Band){
+            auto *spectrum=new AudioSpectrum(&m_engine->audioOutput());spectrum->setBand(it.audioLow,it.audioHigh);
+            form->addRow(spectrum);
+            auto *band=new QWidget;auto *row=new QHBoxLayout(band);row->setContentsMargins(0,0,0,0);
+            auto *low=new QDoubleSpinBox;auto *high=new QDoubleSpinBox;
+            low->setObjectName("audioLowHz");high->setObjectName("audioHighHz");
+            for(auto *f:{low,high}){f->setRange(20,20000);f->setDecimals(0);f->setSuffix(QStringLiteral(" Hz"));f->setKeyboardTracking(false);}
+            low->setValue(it.audioLow);high->setValue(it.audioHigh);row->addWidget(low);row->addWidget(new QLabel(QStringLiteral("to")));row->addWidget(high);
+            form->addRow(QStringLiteral("Frequency band"),band);
+            auto setBand=[edit,low,high,spectrum](double lo,double hi){lo=std::clamp(lo,20.,19999.);hi=std::clamp(hi,lo+1.,20000.);QSignalBlocker a(low),b(high);low->setValue(lo);high->setValue(hi);spectrum->setBand(lo,hi);edit(QStringLiteral("Change Audio Band"),[lo,hi](Interaction &x){x.audioLow=lo;x.audioHigh=hi;},QStringLiteral("audio_band"));};
+            connect(spectrum,&AudioSpectrum::bandEdited,this,setBand);
+            connect(low,qOverload<double>(&QDoubleSpinBox::valueChanged),this,[setBand,high](double v){setBand(v,std::max(v+1.,high->value()));});
+            connect(high,qOverload<double>(&QDoubleSpinBox::valueChanged),this,[setBand,low](double v){setBand(std::min(low->value(),v-1.),v);});
+            attachPreset({low},{QStringLiteral("source/audio/low")});attachPreset({high},{QStringLiteral("source/audio/high")});
+            auto *regions=new QComboBox;regions->addItem(QStringLiteral("Choose a region…"));
+            regions->addItems({QStringLiteral("Sub · 20–80 Hz"),QStringLiteral("Bass · 80–250 Hz"),QStringLiteral("Body · 250–2000 Hz"),QStringLiteral("Presence · 2000–6000 Hz"),QStringLiteral("Air · 6000–20000 Hz"),QStringLiteral("Full spectrum")});
+            form->addRow(QStringLiteral("Regions"),regions);
+            connect(regions,qOverload<int>(&QComboBox::activated),this,[setBand](int k){const double bands[][2]={{20,20000},{20,80},{80,250},{250,2000},{2000,6000},{6000,20000},{20,20000}};if(k>=0&&k<7)setBand(bands[k][0],bands[k][1]);});
+        }
+        break;
+    }
     case InteractionSource::Internal: {
         auto *source = new QToolButton;
         source->setText(targetLabel(it.sourceLayer, it.sourceParam));
@@ -877,7 +915,7 @@ void InteractionPanel::rebuildSettings()
             auto fill = [&](QMenu *into, quint64 layer) {
                 std::vector<ParamInfo> params;
                 for (const ParamInfo &p : m_engine->parameters(layer))
-                    if ((p.access & ParamInfo::Read) && (p.isNumber() || p.type == ParamInfo::Type::Bool)) params.push_back(p);
+                    if (!p.path.startsWith(QStringLiteral("audio/")) && (p.access & ParamInfo::Read) && (p.isNumber() || p.type == ParamInfo::Type::Bool)) params.push_back(p);
                 addParamMenu(into, params, [this, edit, layer](QMenu *m, const ParamInfo &p, const QString &text) {
                     m->addAction(text, this, [this, edit, layer, p] {
                         edit(QStringLiteral("Change Interaction Source"), [layer, p](Interaction &x) {

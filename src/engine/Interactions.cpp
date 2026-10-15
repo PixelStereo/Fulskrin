@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 // Names
 // ---------------------------------------------------------------------------
-static const char *const kSources[] = {"keyboard", "midi", "osc", "internal"};
+static const char *const kSources[] = {"keyboard", "midi", "osc", "internal", "audio"};
 static const char *const kFilters[] = {"average", "weighted_average", "pulse_detection", "attack_release", "damper"};
 static const char *const kMidi[] = {"cc", "note", "pitch_bend", "program"};
 
@@ -18,6 +18,7 @@ QString interactionSourceName(InteractionSource s)
     case InteractionSource::Midi: return QStringLiteral("MIDI");
     case InteractionSource::Osc: return QStringLiteral("OSC");
     case InteractionSource::Internal: return QStringLiteral("Internal");
+    case InteractionSource::Audio: return QStringLiteral("Audio");
     }
     return QString();
 }
@@ -72,6 +73,7 @@ QString InteractionEvent::describe() const
     }
     case InteractionSource::Osc: return QStringLiteral("OSC %1").arg(address) + (argument ? QStringLiteral(" [%1]").arg(argument) : QString());
     case InteractionSource::Internal: return QStringLiteral("Internal");
+    case InteractionSource::Audio: return QStringLiteral("Audio");
     }
     return QString();
 }
@@ -90,6 +92,7 @@ bool Interaction::matches(const InteractionEvent &e) const
         if (e.message != midiMessage) return false;
         return midiMessage == MidiMessageKind::PitchBend || e.number == midiNumber;
     case InteractionSource::Osc: return !oscAddress.isEmpty() && e.address == oscAddress && e.argument == oscArgument;
+    case InteractionSource::Audio:
     case InteractionSource::Internal: return false; // read from the show each frame, not sent
     }
     return false;
@@ -106,12 +109,13 @@ QString Interaction::label() const
                  midiMessage == MidiMessageKind::PitchBend ? QString() : QStringLiteral(" %1").arg(midiNumber));
     case InteractionSource::Osc: return oscAddress.isEmpty() ? QStringLiteral("OSC") : QStringLiteral("OSC %1").arg(oscAddress);
     case InteractionSource::Internal: return QStringLiteral("Internal %1").arg(id);
+    case InteractionSource::Audio: return audioFeature==AudioFeature::Band ? QStringLiteral("Audio %1–%2 Hz").arg(audioLow,0,'f',0).arg(audioHigh,0,'f',0) : audioFeature==AudioFeature::Level ? QStringLiteral("Audio level") : QStringLiteral("Audio attacks");
     }
     return QString();
 }
 
 static const char *const kNotState[] = {"id", "name", "source", "key", "port", "channel", "message", "number", "address",
-                                        "argument", "source_layer", "source_param", "layer", "param"};
+                                        "argument", "source_layer", "source_param", "audio_low", "audio_high", "audio_feature", "layer", "param"};
 
 QJsonObject Interaction::stateJson() const
 {
@@ -148,6 +152,7 @@ Interaction Interaction::made(InteractionSource s)
     Interaction it;
     it.source = s;
     it.curve = straightCurve();
+    if(s==InteractionSource::Audio){it.filterOn=true;it.filter=InteractionFilter::AttackRelease;it.filterA=.012;it.filterB=.2;}
     // A fader or a knob: it waits to meet the value (pick-up); a key, a link: it sets it
     it.takeover = s == InteractionSource::Midi || s == InteractionSource::Osc ? Takeover::PickUp : Takeover::Jump;
     return it;
@@ -175,6 +180,11 @@ QJsonObject Interaction::toJson() const
     case InteractionSource::Internal:
         o["source_layer"] = QString::number(sourceLayer);
         o["source_param"] = sourceParam;
+        break;
+    case InteractionSource::Audio:
+        o["audio_low"] = audioLow;
+        o["audio_high"] = audioHigh;
+        o["audio_feature"] = int(audioFeature);
         break;
     }
     o["layer"] = QString::number(layer);
@@ -223,6 +233,23 @@ Interaction Interaction::fromJson(const QJsonObject &o)
     it.oscArgument = std::max(0, o.value("argument").toInt(0));
     it.sourceLayer = o.value("source_layer").toString().toULongLong();
     it.sourceParam = o.value("source_param").toString();
+    auto bounded=[](double v,double fallback){return std::isfinite(v)?std::clamp(v,20.,20000.):fallback;};
+    it.audioLow=bounded(o.value("audio_low").toDouble(20),20);
+    it.audioHigh=bounded(o.value("audio_high").toDouble(20000),20000);
+    if(it.audioLow>it.audioHigh)std::swap(it.audioLow,it.audioHigh);
+    it.audioFeature=AudioFeature(std::clamp(o.value("audio_feature").toInt(),0,2));
+    // Older shows exposed these program-audio values through Internal.
+    if(it.source==InteractionSource::Internal && !it.sourceLayer && it.sourceParam.startsWith("audio/")){
+        const QString part=it.sourceParam.mid(6);
+        if(part=="level"||part=="onset"||part=="bass"||part=="mid"||part=="high"){
+            it.source=InteractionSource::Audio;
+            if(part=="level")it.audioFeature=AudioFeature::Level;
+            else if(part=="onset")it.audioFeature=AudioFeature::Onset;
+            else if(part=="bass")it.audioHigh=180;
+            else if(part=="mid"){it.audioLow=180;it.audioHigh=2500;}
+            else it.audioLow=2500;
+        }
+    }
     it.layer = o.value("layer").toString().toULongLong();
     it.param = o.value("param").toString();
     it.colorMapAlpha = o.value("color_map_alpha").toBool(false);

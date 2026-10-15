@@ -4544,6 +4544,18 @@ void main(){ gl_FragColor = definitely_not_defined; }
         CHECK(e.setLayerAudio(a, root + "/media/tone.wav", &err));
         CHECK(e.layer(a)->type == SourceType::Audio && e.layer(a)->audio && std::abs(e.layer(a)->duration() - 4.0) < 0.05);
         CHECK(tone(440, 15));
+        CHECK(waitFor([&]{return e.audioOutput().spectrum().band(400,480)>.15f;}));
+        CHECK(e.audioOutput().spectrum().band(6000,16000)<.01f);
+        Interaction audioBand=Interaction::made(InteractionSource::Audio);
+        audioBand.audioLow=400;audioBand.audioHigh=480;audioBand.param="opacity";
+        audioBand.dstMin=.2;audioBand.dstMax=.8;
+        const auto audioMapping=e.addInteraction(audioBand);
+        e.advanceFades(.02);
+        CHECK(e.parameterValue(0,"opacity").toDouble()>.28);
+        for(auto it:e.interactions())if(it.id==audioMapping){it.audioLow=6000;it.audioHigh=16000;e.setInteraction(it);}
+        e.advanceFades(.02);
+        CHECK(e.parameterValue(0,"opacity").toDouble()<.22);
+        e.setInteractions({});e.setParameter(0,"opacity",1.);
         settle(400); // let the stream settle before measuring the synchronization
         double worst = 0;
         for (int k = 0; k < 20; ++k) {
