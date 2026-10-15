@@ -96,6 +96,7 @@ private:
     void pasteLayerParams(int parts, const QString &what);     // Engine::LayerParts, onto the selected layers
     void togglePlayCurrent();
     // Sequences: GO plays the next step of the current sequence, GO BACK the previous one (Space, Shift+Space)
+    void emergencyStop(); // Escape from the interface or any output window
     void sequenceGo();
     void sequenceBack();
     void sequenceGoTo(int step);
@@ -128,6 +129,7 @@ private:
     SequenceBar *m_seqBar = nullptr;
     SequenceWindow *m_seqWindow = nullptr;
     TimelineWindow *m_timelineWindow = nullptr;
+    class QTabBar *m_workspaceTabs = nullptr;
     void openTimelines();
     int m_cueUndoIndex = -1; // undo index when the current step was played: anything since is a change
     QTabWidget *m_leftTabs = nullptr;

@@ -177,6 +177,7 @@ QJsonObject presetToJson(const Engine::Preset &p)
     for (const Engine::PresetValue &v : p.values) {
         QJsonObject o{{"layer", QString::number(v.layer)}, {"path", v.path}, {"value", v.value}};
         if (v.time >= 0) o["time"] = v.time;
+        if (v.delay > 0) o["delay"] = v.delay;
         if (!v.easing.isEmpty()) o["easing"] = v.easing;
         values.append(o);
     }
@@ -205,6 +206,7 @@ Engine::Preset presetFromJson(const QJsonObject &o)
         v.path = vo.value("path").toString();
         v.value = vo.value("value");
         v.time = vo.contains("time") ? std::clamp(vo.value("time").toDouble(), 0.0, 600.0) : -1.0;
+        v.delay = std::clamp(vo.value("delay").toDouble(0), 0.0, 600.0);
         v.easing = vo.value("easing").toString();
         if (!v.path.isEmpty()) p.values.push_back(v);
     }

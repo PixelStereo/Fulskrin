@@ -49,10 +49,12 @@ class SnapshotPanel : public QWidget
 public:
     SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent = nullptr);
     void refresh(); // snapshots changed (project opened…)
+    void setMode(int mode); // 0 Snapshots, 1 Presets; the main bottom tab controls which list/inspector is shown
     void recall(int i);
     int activeSnapshot() const { return m_active; } // last recalled (-1: none)
 
 signals:
+    void modeChanged(int mode); // if selection changes from an inspector/preset editor
     void edited();   // snapshots changed: the project is modified
     void recalled(); // the layers changed
 
@@ -65,8 +67,10 @@ private:
     void fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject &layer);
     QTreeWidgetItem *addField(QTreeWidgetItem *parent, const MemField &f, const QJsonValue &value);
     void showTime(QTreeWidgetItem *it, const MemField &f); // its time in the time column
+    void showDelay(QTreeWidgetItem *it, const MemField &f); // parameter's delayed start (0 by default)
     void applyField(const MemField &f, const QJsonValue &value); // writes it into the selected snapshot
     void applyTime(int row, const QString &key, double seconds); // < 0: FOLLOW (the snapshot's fade)
+    void applyDelay(int row, const QString &key, double seconds); // per-value delay (0: immediately)
     void applyEasingCurve(int row, const QString &paramKey, const QString &curveKey); // easing curve of a parameter
     void setInclusion(int i, quint64 layerId, bool included);
     void setCompositionIncluded(int i, bool included);
@@ -99,6 +103,7 @@ private:
     QDoubleSpinBox *m_fade;
     QTreeWidget *m_layers;
     QPushButton *m_go, *m_update, *m_delete, *m_store, *m_newGroup;
+    class QStackedWidget *m_modeListStack = nullptr; // snap/preset lists share the same left slot
     class QStackedWidget *m_middle;                  // the snapshot's contents, or the preset's
     QTreeWidget *m_presets, *m_presetValues;
     QPushButton *m_presetEdit, *m_presetNew, *m_presetGo, *m_presetUpdate, *m_presetDelete;

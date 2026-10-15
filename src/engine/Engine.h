@@ -72,6 +72,9 @@ public:
     bool initialize(QString *err);
     bool start();          // starts the render thread (returns false if the platform does not support it)
     void stop();
+    // Emergency stop: cancel every sequence/WAIT, fade, running animation and media transport;
+    // retain the currently visible parameter values (no snap back to an earlier cue).
+    void stopShowPlayback();
     bool isThreaded() const { return m_threaded; }
     // The render thread could not make its OpenGL context current: nothing is rendered (start() again to retry)
     bool renderFailed() const
@@ -327,7 +330,7 @@ public:
     // Values of one interaction (keys: "master", "enable"… — or their whole address "interaction/<id>/master"), faded
     // as a snapshot's (lock held)
     void applyInteractionValues(quint64 id, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,
-                                double fade);
+                                double fade, const QJsonObject &delays = {});
     static QStringList interactionKeys(); // the keys of an interaction's values, in their order
     int snapshotCount() const;
     Snapshot snapshot(int i) const;
@@ -372,6 +375,7 @@ public:
         QJsonValue value;
         double time = -1;
         QString easing;
+        double delay = 0; // seconds before the value begins to execute
     };
     struct Preset {
         quint64 id = 0;
@@ -379,7 +383,7 @@ public:
         double fade = 1.0;
         std::vector<PresetValue> values;
         // Definitions captured with the selected values, not merely their current output.
-        std::vector<Animation> animations;
+        std::vector<::Animation> animations;
         std::vector<Interaction> interactions;
         int indexOf(quint64 layer, const QString &path) const; // -1: not in it
     };
@@ -678,7 +682,7 @@ public:
 private:
     void takeOverFades(quint64 id, const QSet<QString> &paths, bool all = false);
     void applyParams(Layer &l, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing, double fade,
-                     FadeJob &job, bool showing, bool hiding, bool chain);
+                     FadeJob &job, bool showing, bool hiding, bool chain, const QJsonObject &delays = {});
     friend class RenderThread;
     friend struct ScopedCurrent;
 
@@ -710,6 +714,26 @@ private:
     void composite();
     void readSourcePreview();
     void stepFade(double dt); // snapshot fades (render thread, lock held)
+    // Nonblocking per-parameter delayed recall. The show/render clock executes
+    // these actions even while the Qt user interface is blocked.
+    struct DeferredRecall {
+        quint64 layer = 0; // 0: composition or interaction address
+        QString path;
+        QJsonValue value;
+        double duration = 0, dueAt = 0;
+        QString easing;
+        bool showing = false, hiding = false;
+    };
+    using DeferredRecalls = std::multimap<double, DeferredRecall>;
+    DeferredRecalls m_deferredRecall;
+    std::map<std::pair<quint64, QString>, DeferredRecalls::iterator> m_deferredRecallIndex;
+    double m_recallClock = 0;
+    void scheduleRecall(quint64 layer, const QString &path, const QJsonValue &value, double seconds,
+                        const QString &easing, double delay, bool showing = false, bool hiding = false);
+    void cancelScheduledRecall(quint64 layer, const QString &path);
+    void stepShowRecalls(double dt, double compositionDt);
+    void stepScheduledRecall(double dt); // under engine mutex: execute due recalls only
+
     QJsonObject snapshotToJson(const Snapshot &m, const QString &projectDir) const;
     Snapshot snapshotFromJson(const QJsonObject &o, const QString &projectDir) const;
     void normalizeLocked(); // restores the structure invariants (lock held)
@@ -862,6 +886,7 @@ private:
         QString shaderPath;
         std::unique_ptr<IsfInstance> shader; // loaded by the render thread (none: a crossfade)
         bool loaded = false;
+        bool frozen = false; // emergency stop retains the last mixed picture
         bool crossfadeOnly = false; // a sound on either side: no shader, the levels cross (tests: transitionUsesShader)
         RenderTarget target;
         double elapsed = 0, duration = 1;

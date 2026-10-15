@@ -368,6 +368,12 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
 // layer's picture; the layer's mapping, opacity and blend then apply to the mix.
 void Engine::renderTransition(Layer &l, SourceTransition &t, const IsfRenderContext &rc)
 {
+    if (t.frozen && t.target.tex) {
+        l.finalTex = t.target.tex;
+        l.finalW = t.target.w;
+        l.finalH = t.target.h;
+        return;
+    }
     renderLayer(*t.from, rc);
     const GLuint a = t.from->finalTex, b = l.finalTex;
     const int w = b ? l.finalW : t.from->finalW, h = b ? l.finalH : t.from->finalH;
@@ -922,12 +928,7 @@ void Engine::frame(double dt)
     }
     if (!m_fadesManual) {
         const double k = timeScale(); // paused or slowed: the fades, transitions and timelines move at that pace
-        stepFade(m_realDt * k);
-        stepInteractionFades(m_realDt * k);
-        stepTransitions(m_realDt * k);
-        stepTypewriters(m_realDt * k);
-        stepCompositionFade(m_realDt); // the output level keeps its real time: a blackout works while paused
-        stepAnimations(m_realDt * k); // after the fades: a timeline playing wins over them
+        stepShowRecalls(m_realDt * k, m_realDt);
     }
     stepInteractions(m_realDt); // after the animations: a controller moved wins (its own time: it follows the hand)
     markNeeded();
