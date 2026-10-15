@@ -40,7 +40,7 @@ static const QSize kThumb(160, 90);
 enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, KeyRole = Qt::UserRole + 3, SnapshotRole = Qt::UserRole + 6,
        GroupRole = Qt::UserRole + 7, PresetRole = Qt::UserRole + 8 };
 // Columns of the tree of what a snapshot holds
-enum Column { ColName, ColValue, ColTime };
+enum Column { ColName, ColValue, ColTime, ColDelay };
 
 // How a value gets there at the recall: the time the snapshot gives it, or gives a group it is in (`from`: the key that
 // gives it; none: it follows the snapshot's fade)
@@ -431,8 +431,8 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     head->addLayout(fields, 1);
     iv->addLayout(head);
     m_layers = new QTreeWidget;
-    m_layers->setColumnCount(3);
-    m_layers->setHeaderLabels({QStringLiteral("Layer / value"), QStringLiteral("Value"), QStringLiteral("Time")});
+    m_layers->setColumnCount(4);
+    m_layers->setHeaderLabels({QStringLiteral("Layer / value"), QStringLiteral("Value"), QStringLiteral("Time"), QStringLiteral("Delay")});
     m_layers->setRootIsDecorated(true);
     m_layers->setIndentation(12);
     m_layers->setUniformRowHeights(true);
@@ -441,6 +441,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_layers->header()->setStretchLastSection(false);
     m_layers->setColumnWidth(ColValue, 96);
     m_layers->setColumnWidth(ColTime, 64);
+    m_layers->setColumnWidth(ColDelay, 64);
     m_layers->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_layers->setToolTip(QStringLiteral("Unchecked layers are left alone when the snapshot is recalled; layers the snapshot "
                                         "does not know are hidden.\nClick a value to see it, change it and choose how it "
@@ -830,10 +831,31 @@ QTreeWidgetItem *SnapshotPanel::addField(QTreeWidgetItem *parent, const MemField
     if (f.kind == MemField::Info) it->setForeground(ColValue, QColor(140, 140, 146));
     m_fields.push_back(f);
     if (!f.timeKey.isEmpty()) showTime(it, f);
+    showDelay(it, f);
     return it;
 }
 
 // The time of a value in its row: its own (bright), its group's (↑), or the snapshot's fade (Follow)
+// Only the values actually dispatched through a Parameter can have a delayed
+// start. Other structural fields (source/FX chain/visibility) must not pretend
+// to have a delay until their state-transition schedulers support it.
+static QString delayAddress(const MemField &f)
+{
+    if (f.path.size() >= 2 && f.path[0] == QLatin1String("params")) return f.path[1];
+    if (f.row < 0 && !f.timeKey.isEmpty()) return f.timeKey; // composition / interactions
+    return {};
+}
+
+void SnapshotPanel::showDelay(QTreeWidgetItem *it, const MemField &f)
+{
+    const QString address = delayAddress(f);
+    if (address.isEmpty()) return;
+    const Engine::Snapshot m = m_engine->snapshot(selected());
+    const QJsonObject delays = rowObject(m, f.row).value("delay").toObject();
+    const double seconds = delays.value(Engine::timingKeyOf(delays, address)).toDouble(0);
+    it->setText(ColDelay, seconds > 0 ? QStringLiteral("%1 s").arg(seconds, 0, 'f', 1) : QStringLiteral("0 s"));
+}
+
 void SnapshotPanel::showTime(QTreeWidgetItem *it, const MemField &f)
 {
     const Engine::Snapshot m = m_engine->snapshot(selected());
@@ -858,6 +880,7 @@ void SnapshotPanel::refreshRows()
                 const QJsonObject o = rowObject(m, f.row);
                 c->setText(ColValue, f.kind == MemField::Info ? c->text(ColValue) : valueText(f, jsonAt(o, f.path)));
                 if (!f.timeKey.isEmpty()) showTime(c, f);
+                showDelay(c, f);
             }
             walk(c);
         }
@@ -966,6 +989,26 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
     }
     }
     hint(QStringLiteral("The snapshot changes, the composition does not, until the snapshot is recalled."));
+    const QString delayKey = delayAddress(f);
+    if (!delayKey.isEmpty()) {
+        const QJsonObject storedDelays = o.value("delay").toObject();
+        const auto *label = new QLabel(QStringLiteral("Delay before execution"));
+        auto *delay = new NumberBox;
+        delay->setRange(0.0, 600.0);
+        delay->setDecimals(2);
+        delay->setSingleStep(0.1);
+        delay->setSuffix(QStringLiteral(" s"));
+        delay->setKeyboardTracking(false);
+        delay->setToolTip(QStringLiteral("0: executes with the snapshot; otherwise begins after this delay."));
+        delay->setValue(storedDelays.value(delayKey).toDouble(0));
+        auto *r = new QHBoxLayout;
+        r->addWidget(const_cast<QLabel *>(label));
+        r->addWidget(delay);
+        m_detailLayout->addLayout(r);
+        connect(delay, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [this, row = f.row, delayKey](double v) { applyDelay(row, delayKey, v); });
+    }
+
 
     // How it gets there
     if (!f.timeKey.isEmpty()) {
@@ -1304,6 +1347,27 @@ void SnapshotPanel::applyTime(int row, const QString &key, double seconds)
     if (timing.isEmpty()) o.remove("timing");
     else o["timing"] = timing;
     setRowObject(m, row, o);
+    m_applying = true;
+    m_engine->setSnapshot(i, m);
+    m_applying = false;
+    emit edited();
+    refreshRows();
+}
+
+void SnapshotPanel::applyDelay(int row, const QString &key, double seconds)
+{
+    const int i = selected();
+    if (i < 0 || key.isEmpty()) return;
+    Engine::Snapshot m = m_engine->snapshot(i);
+    if (row >= m.layers.size()) return;
+    QJsonObject o = rowObject(m, row);
+    QJsonObject delays = o.value("delay").toObject();
+    const double d = std::clamp(seconds, 0.0, 600.0);
+    if (d == 0) delays.remove(key);
+    else delays.insert(key, d);
+    if (delays.isEmpty()) o.remove("delay");
+    else o.insert("delay", delays);
+    if (!setRowObject(m, row, o)) return;
     m_applying = true;
     m_engine->setSnapshot(i, m);
     m_applying = false;
@@ -1685,8 +1749,8 @@ QWidget *SnapshotPanel::buildPresetView()
     buttons->addWidget(m_presetDelete);
     v->addLayout(buttons);
     m_presetValues = new QTreeWidget;
-    m_presetValues->setColumnCount(3);
-    m_presetValues->setHeaderLabels({QStringLiteral("Layer / value"), QStringLiteral("Value"), QStringLiteral("Time")});
+    m_presetValues->setColumnCount(4);
+    m_presetValues->setHeaderLabels({QStringLiteral("Layer / value"), QStringLiteral("Value"), QStringLiteral("Time"), QStringLiteral("Delay")});
     m_presetValues->setRootIsDecorated(true);
     m_presetValues->setIndentation(12);
     m_presetValues->setAlternatingRowColors(true);
@@ -1694,6 +1758,7 @@ QWidget *SnapshotPanel::buildPresetView()
     m_presetValues->header()->setStretchLastSection(false);
     m_presetValues->setColumnWidth(1, 96);
     m_presetValues->setColumnWidth(2, 84);
+    m_presetValues->setColumnWidth(3, 84);
     m_presetValues->setContextMenuPolicy(Qt::CustomContextMenu);
     m_presetValues->setToolTip(QStringLiteral("What the preset holds. Time: Follow (the preset's fade), 0 (a cut) or seconds "
                                               "of its own. Delete: takes the value out."));
@@ -1975,6 +2040,26 @@ void SnapshotPanel::showPreset()
             emit edited();
         });
         m_presetValues->setItemWidget(it, 2, time);
+        auto *delay = new NumberBox;
+        delay->setRange(0, 600);
+        delay->setDecimals(2);
+        delay->setSingleStep(0.1);
+        delay->setSuffix(QStringLiteral(" s"));
+        delay->setKeyboardTracking(false);
+        delay->setValue(v.delay);
+        delay->setToolTip(QStringLiteral("Delay before this preset value starts changing (0 = immediately)"));
+        connect(delay, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, layer, id, path](double d) {
+            cmd::editPresets(m_undo, m_engine, QStringLiteral("Preset Value Delay"),
+                [&](std::vector<Engine::Preset> &all) {
+                    for (Engine::Preset &x : all) {
+                        if (x.id != id) continue;
+                        const int k = x.indexOf(layer, path);
+                        if (k >= 0) x.values[size_t(k)].delay = d;
+                    }
+                }, QStringLiteral("presetDelay:%1:%2").arg(layer).arg(path));
+            emit edited();
+        });
+        m_presetValues->setItemWidget(it, 3, delay);
     }
     m_filling = false;
 }
