@@ -71,6 +71,9 @@ public:
     bool initialize(QString *err);
     bool start();          // starts the render thread (returns false if the platform does not support it)
     void stop();
+    // Emergency stop: cancel every sequence/WAIT, fade, running animation and media transport;
+    // retain the currently visible parameter values (no snap back to an earlier cue).
+    void stopShowPlayback();
     bool isThreaded() const { return m_threaded; }
     // The render thread could not make its OpenGL context current: nothing is rendered (start() again to retry)
     bool renderFailed() const
@@ -851,6 +854,7 @@ private:
         QString shaderPath;
         std::unique_ptr<IsfInstance> shader; // loaded by the render thread (none: a crossfade)
         bool loaded = false;
+        bool frozen = false; // emergency stop retains the last mixed picture
         bool crossfadeOnly = false; // a sound on either side: no shader, the levels cross (tests: transitionUsesShader)
         RenderTarget target;
         double elapsed = 0, duration = 1;
