@@ -18,9 +18,17 @@ Delay and transition time are independent: hold the existing parameter for 2 s; 
 
 ## Engine design
 
-Delayed values are ordered by due timestamp in the same **show clock** that drives fades and timelines. The rendering loop only examines due actions, no sleeping, file I/O, or UI timers. A newer recall of the same parameter cancels its prior scheduled action. Loading a new project clears all pending actions.
+Delayed values are ordered by due timestamp in the same **show clock** that drives fades and timelines. The rendering loop only examines due actions, no sleeping, file I/O, or UI timers. A newer recall of the same parameter cancels its prior scheduled action. Address lookup uses an ordered index instead of scanning the queue for each value. Each render tick is split at execution deadlines: a long frame advances a newly started fade only by the time actually remaining after its delay. Loading a new project clears all pending actions.
 
 Supported by this initial PR: ordinary layer **Parameter** addresses (including boolean/choice and typed paths), preset composition opacity/volume/other Parameter addresses, snapshot composition opacity/volume, and interaction parameters. Structural snapshot operations (source replacement, mesh topology, mask topology, visibility, creation/deletion) are *not* yet independently delayed; they remain tied to the snapshot's established source/structure transition semantics. Their timing still works as before. No artificial delay control is shown for those unsupported structural fields.
+
+## Precise ownership and source-transition behavior
+
+A layer parameter recalled again takes ownership immediately and freezes any older snapshot fade of that address during the delay. Manual edits remain possible; the delayed fade samples the live value at execution. A running timeline continues to take precedence over snapshot fades as before. Composition and interaction ramps already running may continue until the delayed command executes.
+
+A simultaneous source cut or crossfade does not install the delayed target early. An address common to both sources retains its current value. An address new to the incoming source retains that source's default until execution. Structural operations still execute on their established snapshot timeline; the independently delayed values are the Parameter addresses shown in the Delay column.
+
+Escape discards both the deadline queue and its address index while holding the current values. It also cancels every sequence wait, fade and timeline through the engine's emergency-stop method. This PR is stacked on #173 to make that integration explicit.
 
 ## Verification
 
@@ -30,6 +38,9 @@ Supported by this initial PR: ordinary layer **Parameter** addresses (including 
 - old delayed recall canceled by a newer immediate recall;
 - delay plus subsequent fade starts from the live value, finishes later;
 - snapshot JSON address delay and duration calculation;
-- composition fade/cut dispatch.
+- composition fade/cut dispatch;
+- coarse ticks crossing a delay plus fade;
+- Escape cancels deferred actions permanently;
+- delayed opacity during both source cuts and source crossfades.
 
-The test uses explicit synthetic show-clock advancement. A physical stress test should additionally measure cue timing p95/p99 under GPU load. Pressing Esc must also discard the queue before this is merged with the separate emergency-stop PR: add `m_deferredRecall.clear()` in `stopShowPlayback()` after merging those branches. **Do not merge both independently without resolving this integration requirement.**
+The test uses explicit synthetic show-clock advancement. A physical stress test should additionally measure cue timing p95/p99 under GPU load. Cross-platform CI remains a merge gate.

@@ -3,6 +3,7 @@
 #include <QJsonObject>
 #include <cmath>
 #include <cstdio>
+#include <QTemporaryDir>
 
 int runRecallDelayTests(Engine &e)
 {
@@ -107,6 +108,60 @@ int runRecallDelayTests(Engine &e)
     check(near(e.compositionOpacityTarget(), 1), "composition delay holds current value");
     e.advanceFades(0.3);
     check(near(e.compositionOpacityTarget(), 0.2), "composition executes after deadline");
+
+    // A coarse render tick crossing a deadline advances only the remainder of the fade.
+    e.setParameter(id, "opacity", 0.0);
+    p.values[0].value = 1.0; p.values[0].time = 1; p.values[0].delay = 0.5;
+    e.setPreset(pi, p); e.recallPreset(pi);
+    e.advanceFades(1.0);
+    check(opacity() > 0.45 && opacity() < 0.55, "coarse tick includes fade time after deadline");
+    e.advanceFades(0.5);
+    check(near(opacity(), 1), "coarse tick finishes at delay plus duration");
+
+    // Escape clears queued values too; a later tick cannot restart their fades.
+    p.values[0].value = 0.1; p.values[0].delay = 0.5;
+    e.setPreset(pi, p); e.recallPreset(pi);
+    e.stopShowPlayback();
+    const double stopped = opacity();
+    e.advanceFades(5);
+    check(near(opacity(), stopped), "Escape cancels deferred parameter actions");
+
+    // Parameter delays are independent of simultaneous source transitions and source cuts.
+    QTemporaryDir fixtures;
+    QImage red(32, 32, QImage::Format_RGBA8888), blue = red;
+    red.fill(Qt::red); blue.fill(Qt::blue);
+    const QString redPath = fixtures.path() + "/red.png", bluePath = fixtures.path() + "/blue.png";
+    check(red.save(redPath) && blue.save(bluePath), "save transition images");
+    QString error;
+    for (double sourceTime : {0.0, 1.0}) {
+        e.newProject();
+        const int layerIndex = e.addLayer("Delayed across source switch");
+        check(e.setLayerImage(layerIndex, bluePath, &error), "load blue destination");
+        const quint64 imageId = e.layerId(layerIndex);
+        e.setParameter(imageId, "opacity", 0.8);
+        Engine::Snapshot transition;
+        transition.fade = 0;
+        transition.layers = e.captureLayers(true);
+        for (int k = 0; k < transition.layers.size(); ++k) {
+            auto state = transition.layers[k].toObject();
+            if (state.value("id").toString().toULongLong() != imageId) continue;
+            state["delay"] = QJsonObject{{"opacity", 0.5}};
+            state["timing"] = QJsonObject{{"opacity", 1.0}, {"file", sourceTime}};
+            transition.layers[k] = state;
+        }
+        const int snapshotIndex = e.addSnapshot(transition);
+        check(e.setLayerImage(layerIndex, redPath, &error), "load outgoing red");
+        e.setParameter(imageId, "opacity", 0.2);
+        e.recallSnapshot(snapshotIndex);
+        check(near(e.parameterValue(imageId, "opacity").toDouble(), 0.2), "source switch does not install delayed target early");
+        e.advanceFades(0.49);
+        check(near(e.parameterValue(imageId, "opacity").toDouble(), 0.2), "parameter holds during source transition");
+        e.advanceFades(0.51);
+        const double middle = e.parameterValue(imageId, "opacity").toDouble();
+        check(middle > 0.45 && middle < 0.55, "parameter fade advances from live value after its deadline");
+        e.advanceFades(0.5);
+        check(near(e.parameterValue(imageId, "opacity").toDouble(), 0.8), "parameter reaches target across source cut/fade");
+    }
 
     e.setFadesManual(false);
     e.newProject();

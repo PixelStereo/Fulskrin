@@ -71,6 +71,9 @@ public:
     bool initialize(QString *err);
     bool start();          // starts the render thread (returns false if the platform does not support it)
     void stop();
+    // Emergency stop: cancel every sequence/WAIT, fade, running animation and media transport;
+    // retain the currently visible parameter values (no snap back to an earlier cue).
+    void stopShowPlayback();
     bool isThreaded() const { return m_threaded; }
     // The render thread could not make its OpenGL context current: nothing is rendered (start() again to retry)
     bool renderFailed() const
@@ -716,11 +719,14 @@ private:
         double duration = 0, dueAt = 0;
         QString easing;
     };
-    std::multimap<double, DeferredRecall> m_deferredRecall;
+    using DeferredRecalls = std::multimap<double, DeferredRecall>;
+    DeferredRecalls m_deferredRecall;
+    std::map<std::pair<quint64, QString>, DeferredRecalls::iterator> m_deferredRecallIndex;
     double m_recallClock = 0;
     void scheduleRecall(quint64 layer, const QString &path, const QJsonValue &value, double seconds,
                         const QString &easing, double delay);
     void cancelScheduledRecall(quint64 layer, const QString &path);
+    void stepShowRecalls(double dt, double compositionDt);
     void stepScheduledRecall(double dt); // under engine mutex: execute due recalls only
 
     QJsonObject snapshotToJson(const Snapshot &m, const QString &projectDir) const;
@@ -868,6 +874,7 @@ private:
         QString shaderPath;
         std::unique_ptr<IsfInstance> shader; // loaded by the render thread (none: a crossfade)
         bool loaded = false;
+        bool frozen = false; // emergency stop retains the last mixed picture
         bool crossfadeOnly = false; // a sound on either side: no shader, the levels cross (tests: transitionUsesShader)
         RenderTarget target;
         double elapsed = 0, duration = 1;
