@@ -44,6 +44,7 @@ public:
     float fadeLevel() const { return m_fadeLevel.load(); }
 
     // Peak levels of the mix (0..1+), with decay
+    AudioAnalysis::Spectrum spectrum() const { return m_analysis.spectrum(); }
     AudioAnalysis::Values analysis() const { return m_analysis.values(); }
     float peak(int channel) const { return m_peak[channel & 1].load(); }
 

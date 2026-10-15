@@ -317,6 +317,7 @@ set(APP_SOURCES
   src/ui/ColorPicker.cpp
   src/ui/ColorPicker.h
   src/ui/InteractionPanel.cpp
+  src/ui/AudioSpectrum.cpp
 )
 
 if(APPLE)
@@ -426,6 +427,11 @@ if(PINOL_TESTS)
   find_package(Python3 QUIET COMPONENTS Interpreter)
   if(Python3_Interpreter_FOUND)
     add_test(NAME ci_scope COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_SOURCE_DIR}/.github/scripts -p test_ci_scope.py)
+    add_test(NAME champ_score COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_SOURCE_DIR}/examples/champ-de-rupture -p test_show.py)
+    add_test(NAME champ_fixture COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/examples/champ-de-rupture/build_show.py --out ${CMAKE_BINARY_DIR}/champ-fixture)
+    set_tests_properties(champ_fixture PROPERTIES FIXTURES_SETUP champ)
+    add_test(NAME champ_render COMMAND $<TARGET_FILE:Pinol> --render ${CMAKE_BINARY_DIR}/champ-fixture/preview.png --frames 3 --strict ${CMAKE_BINARY_DIR}/champ-fixture/Champ_de_rupture.pinol)
+    set_tests_properties(champ_render PROPERTIES FIXTURES_REQUIRED champ TIMEOUT 30)
     add_test(NAME matieres_score COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_SOURCE_DIR}/examples/matieres-instables -p test_show.py)
     add_test(NAME matieres_fixture COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/examples/matieres-instables/build_show.py --out ${CMAKE_BINARY_DIR}/matieres-fixture)
     set_tests_properties(matieres_fixture PROPERTIES FIXTURES_SETUP matieres)
@@ -439,6 +445,10 @@ if(PINOL_TESTS)
   add_executable(pinol_audio_analysis_test test/audio_analysis.cpp)
   target_include_directories(pinol_audio_analysis_test PRIVATE src/engine)
   add_test(NAME audio_analysis COMMAND pinol_audio_analysis_test)
+  add_executable(pinol_audio_interaction_ui_test test/audio_interaction_ui.cpp src/ui/InteractionPanel.cpp src/ui/AudioSpectrum.cpp src/ui/PresetEditor.cpp src/ui/Commands.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp src/ui/AnimEditor.cpp)
+  target_include_directories(pinol_audio_interaction_ui_test PRIVATE src/ui)
+  target_link_libraries(pinol_audio_interaction_ui_test PRIVATE pinol_engine Qt6::Widgets)
+  add_test(NAME audio_interaction_ui COMMAND pinol_audio_interaction_ui_test)
   add_executable(pinol_snapshot_update_ui_test test/snapshot_update_ui.cpp src/ui/PresetEditor.cpp src/ui/Commands.cpp)
   target_include_directories(pinol_snapshot_update_ui_test PRIVATE src/ui)
   target_link_libraries(pinol_snapshot_update_ui_test PRIVATE pinol_engine Qt6::Widgets)
