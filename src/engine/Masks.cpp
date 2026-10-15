@@ -624,3 +624,18 @@ std::vector<Mask> fromSvg(const QByteArray &svg, QString *err)
 }
 
 } // namespace masks
+
+
+bool masks::splitSegment(Mask &mask, int segment, double t)
+{
+    if (segment < 0 || segment >= int(mask.nodes.size()) || mask.nodes.size() < 2 || !(t > 0 && t < 1)) return false;
+    const size_t i = size_t(segment), j = (i + 1) % mask.nodes.size();
+    const MaskNode a = mask.nodes[i], b = mask.nodes[j];
+    auto mix = [t](QPointF x, QPointF y) { return x + (y - x)*t; };
+    const auto ab = mix(a.p, a.out), bc = mix(a.out, b.in), cd = mix(b.in, b.p);
+    const auto abc = mix(ab, bc), bcd = mix(bc, cd);
+    mask.nodes[i].out = ab; mask.nodes[j].in = cd;
+    mask.nodes.insert(mask.nodes.begin() + segment + 1, {mix(abc, bcd), abc, bcd});
+    mask.shape = Mask::Shape::Path;
+    return true;
+}

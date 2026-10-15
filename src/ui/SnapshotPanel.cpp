@@ -825,6 +825,7 @@ void SnapshotPanel::refresh()
 
 void SnapshotPanel::showInspector(int i)
 {
+    if (auto *editor = PresetEditor::instance()) editor->selectSnapshot(i >= 0 ? m_engine->snapshot(i).id : 0);
     m_filling = true;
     m_fields.clear();
     const bool valid = i >= 0 && i < m_engine->snapshotCount();

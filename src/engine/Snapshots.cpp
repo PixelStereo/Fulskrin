@@ -1539,7 +1539,7 @@ bool Engine::snapshotMatches(quint64 id, QString *reason) const
     auto paramsMatch = [&](quint64 layer, const QJsonObject &values, const QString &prefix = QString(), const QJsonObject *liveValues = nullptr) {
         for (auto value = values.begin(); value != values.end(); ++value) {
             const QString path = prefix + value.key();
-            if (path == QLatin1String("position") || path == QLatin1String("tc/position") || isDriven(layer, path)) continue;
+            if (path == QLatin1String("position") || path == QLatin1String("tc/position") || path == QLatin1String("restart") || isDriven(layer, path)) continue;
             const QJsonValue live = liveValues ? liveValues->value(value.key()) : parameterValue(layer, path);
             if (!equal(live, value.value())) return mismatch(path);
         }
@@ -1555,11 +1555,16 @@ bool Engine::snapshotMatches(quint64 id, QString *reason) const
         if (row < 0) return mismatch(QStringLiteral("Layer removed"));
         if (isLocked(row)) continue; // the recall itself leaves this layer alone
         const QJsonObject live = layerJson(row);
-        for (const char *field : {"source", "fx", "parent", "enable", "name", "viewports", "masks", "mask", "color_models"}) {
+        for (const char *field : {"source", "fx", "parent", "enable", "name", "viewports", "masks", "mask"}) {
             QJsonValue a = live.value(QLatin1String(field)), b = stored.value(QLatin1String(field));
             if (QLatin1String(field) == QLatin1String("source")) {
                 auto clean = [](QJsonValue value) { auto o = value.toObject(); o.remove("relative_path"); return QJsonValue(o); };
                 a = clean(a); b = clean(b);
+            }
+            // Older snapshots omit optional empty/default fields.
+            if (b.isUndefined()) {
+                if (a.isUndefined() || (a.isArray() && a.toArray().isEmpty()) ||
+                    (a.isObject() && a.toObject().isEmpty())) continue;
             }
             if (a != b) return mismatch(QString::fromLatin1(field));
         }
@@ -1571,6 +1576,7 @@ bool Engine::snapshotMatches(quint64 id, QString *reason) const
             for (const auto &value : animations) {
                 auto definition = value.toObject();
                 definition.remove("state"); definition.remove("clock");
+                definition.remove("pinned"); definition.remove("folded");
                 result.append(definition);
             }
             return result;

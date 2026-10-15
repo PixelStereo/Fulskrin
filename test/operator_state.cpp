@@ -13,6 +13,8 @@ int runOperatorStateTests(Engine &e)
  e.setParameter(id,"opacity",.4);
  Engine::Snapshot snap;snap.name="Reference";snap.layers=e.captureLayers();snap.fade=0;const int si=e.addSnapshot(snap);const auto sid=e.snapshot(si).id;
  QString reason;check(e.snapshotMatches(sid,&reason),qPrintable("captured state matches: "+reason));
+ e.layer(li)->colorModels = 7;
+ check(e.snapshotMatches(sid),"visible color controls are UI state, not a scene modification");
  e.setParameter(id,"opacity",.9);check(!e.snapshotMatches(sid),"static parameter edit changes concordance");e.setParameter(id,"opacity",.4);
  Animation animation;AnimTrack track;track.layer=id;track.param="opacity";track.oscillator=true;animation.tracks={track};const int ai=e.addAnimation(animation);e.controlAnimation(e.animation(ai).id,AnimAction::Play);e.advanceFades(.13);
  check(e.snapshotMatches(sid),"active animation output excluded from concordance");

@@ -369,7 +369,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
     // --- Media bin
     connect(m_bin, &MediaBin::relinkRequested, this, &MainWindow::relinkMedia);
-    connect(m_bin, &MediaBin::useAsSourceRequested, this, [this](const QString &p) { loadIntoLayer(currentLayer(), p); });
+    connect(m_bin, &MediaBin::useAsSourceRequested, this, [this](const QString &p) { loadIntoLayer(m_layerTable->currentRow(), p); });
     connect(m_bin, &MediaBin::loadIntoNewLayerRequested, this, &MainWindow::loadIntoNewLayer);
     connect(m_bin, &MediaBin::loadIntoLayerRequested, this, [this](int i, const QString &p) { loadIntoLayer(i, p); });
     connect(m_layerTable, &LayerTable::addClicked, this, &MainWindow::addEmptyLayer);
@@ -658,6 +658,16 @@ void MainWindow::setBlackout(bool on)
 
 void MainWindow::buildMenus()
 {
+    QMenu *help = menuBar()->addMenu(QStringLiteral("&Help"));
+    auto *about = help->addAction(QStringLiteral("About PINOL"), this, [this] {
+        QMessageBox box(this);
+        box.setWindowTitle(QStringLiteral("About PINOL"));
+        box.setText(QStringLiteral("<h2>PINOL</h2><p>Pixels In New Optical Languages</p><p>Version %1</p>")
+                    .arg(QCoreApplication::applicationVersion()));
+        box.setIconPixmap(QPixmap(QStringLiteral(":/branding/pinol.png")).scaled(256, 256, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        box.exec();
+    });
+    about->setMenuRole(QAction::AboutRole);
     QMenu *file = menuBar()->addMenu(QStringLiteral("&File"));
     file->addAction(QStringLiteral("New Project"), QKeySequence::New, this, &MainWindow::newProject);
     file->addAction(QStringLiteral("Open…"), QKeySequence::Open, this, &MainWindow::openProjectDialog);
@@ -1143,7 +1153,7 @@ void MainWindow::selectLayer(int index)
     m_layerTable->setCurrentRow(index);
     m_view->setLayer(index);
     m_inspector->setLayer(index);
-    if (index >= 0 && index != m_lastSelected) m_tabs->setCurrentIndex(0);
+    if (index >= 0) m_tabs->setCurrentIndex(0);
     m_lastSelected = index;
 }
 

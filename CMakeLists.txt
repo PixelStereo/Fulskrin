@@ -4,6 +4,7 @@ project(Pinol VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 if(MSVC)
   add_compile_options(/utf-8 /W3)   # UTF-8 sources (UI strings contain non-ASCII characters)
   add_compile_definitions(NOMINMAX _USE_MATH_DEFINES)
@@ -287,6 +288,7 @@ endif()
 # Application
 # ---------------------------------------------------------------------------
 set(APP_SOURCES
+  assets/branding.qrc
   src/main.cpp
   src/ui/MainWindow.cpp
   src/ui/LogPanel.cpp
@@ -319,7 +321,9 @@ set(APP_SOURCES
 if(APPLE)
   enable_language(OBJCXX)
   list(APPEND APP_SOURCES src/ui/MacPresentation.mm)
-  add_executable(Pinol MACOSX_BUNDLE ${APP_SOURCES})
+  set_source_files_properties(assets/Pinol.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  add_executable(Pinol MACOSX_BUNDLE ${APP_SOURCES} assets/Pinol.icns)
+  set_target_properties(Pinol PROPERTIES MACOSX_BUNDLE_ICON_FILE Pinol.icns)
   target_link_libraries(Pinol PRIVATE "-framework AppKit")
   # The camera permission plugin (static, from Qt): without it Qt refuses the camera before macOS is asked
   find_package(Qt6QDarwinCameraPermissionPlugin QUIET)
@@ -344,7 +348,8 @@ if(APPLE)
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in") # with the camera's usage text
   set(ISF_DEST "$<TARGET_FILE_DIR:Pinol>/../Resources/isf")
 elseif(WIN32)
-  add_executable(Pinol WIN32 ${APP_SOURCES})
+  add_executable(Pinol WIN32 ${APP_SOURCES} assets/Pinol.rc)
+  target_include_directories(Pinol PRIVATE "${CMAKE_SOURCE_DIR}/assets")
   set(ISF_DEST "$<TARGET_FILE_DIR:Pinol>/isf")
 else()
   add_executable(Pinol ${APP_SOURCES})
@@ -417,6 +422,14 @@ if(PINOL_TESTS)
   # CTest: each area in a process of its own (a new engine), then every bundled shader compiled and rendered.
   # Test media first: sh test/make_media.sh
   enable_testing()
+  add_executable(pinol_mask_geometry_test test/mask_geometry.cpp src/engine/Masks.cpp)
+  target_include_directories(pinol_mask_geometry_test PRIVATE src/engine)
+  target_link_libraries(pinol_mask_geometry_test PRIVATE Qt6::Gui)
+  add_test(NAME mask_geometry COMMAND pinol_mask_geometry_test)
+  add_executable(pinol_snapshot_update_ui_test test/snapshot_update_ui.cpp src/ui/PresetEditor.cpp src/ui/Commands.cpp)
+  target_include_directories(pinol_snapshot_update_ui_test PRIVATE src/ui)
+  target_link_libraries(pinol_snapshot_update_ui_test PRIVATE pinol_engine Qt6::Widgets)
+  add_test(NAME snapshot_update_ui COMMAND pinol_snapshot_update_ui_test)
   foreach(area operator_state preview_sources emergency_stop cue_capture gpu_targets golden timeline_repeat recall_delay isf_safe video project playback undo structure compositing osc snapshots masks rendering thread publishing
           media sound layersource timecode interactions)
     add_test(NAME ${area} COMMAND pinol_tests --area ${area})
