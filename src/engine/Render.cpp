@@ -926,6 +926,7 @@ void Engine::frame(double dt)
         stepTypewriters(m_realDt * k);
         stepCompositionFade(m_realDt); // the output level keeps its real time: a blackout works while paused
         stepAnimations(m_realDt * k); // after the fades: a timeline playing wins over them
+        stepScheduledRecall(m_realDt * k); // apply only actions whose per-parameter delay elapsed
     }
     stepInteractions(m_realDt); // after the animations: a controller moved wins (its own time: it follows the hand)
     markNeeded();
