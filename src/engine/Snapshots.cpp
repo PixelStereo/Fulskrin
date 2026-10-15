@@ -867,6 +867,46 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
     m_fadeElapsed = 0;
 }
 
+// Emergency stop for the operator (Escape in any Pinol window). Stop every pending
+// cue before touching the rendered state, to prevent the cue clock from issuing another
+// recall after the stop. The UI can be on a different thread from rendering; all
+// affected layer/transition/animation state is protected by the engine mutex.
+void Engine::stopShowPlayback()
+{
+    m_sequencer->stopAll();
+    Lock lk(&m_mutex);
+    // Keep the current picture and numbers rather than fast-forwarding a snapshot.
+    m_fades.clear();
+    m_interactionFades.clear();
+    m_compFade.opacity = false;
+    m_compFade.volume = false;
+    m_fadeElapsed = m_recallTotal;
+    for (Animation &a : m_animations) {
+        a.state = AnimState::Stopped;
+        a.clock = 0;
+        a.reversed = false;
+    }
+    for (auto &lp : m_layers) {
+        Layer &l = *lp;
+        for (Animation &a : l.anims) {
+            a.state = AnimState::Stopped;
+            a.clock = 0;
+            a.reversed = false;
+        }
+        if (l.hasTransport()) l.playing = false;
+    }
+    // Conclude transitions onto their incoming source; GPU resources are retired
+    // through the engine's existing deferred retirement path.
+    for (auto &[id, transition] : m_transitions) {
+        for (auto &lp : m_layers)
+            if (lp->id == id) lp->transitionGain = 1.0f;
+        retireTransition(std::move(transition));
+    }
+    m_transitions.clear();
+    // Halt an independent audio blackout/ramp at the current gain, too.
+    m_audio->fadeTo(m_audio->volume(), 0);
+}
+
 // Every number moves on its own time, each snapshot on its own clock; a layer that fades out is hidden once its
 // opacity got there
 void Engine::stepFade(double dt)
