@@ -38,6 +38,7 @@ public:
     // Masks (Masks.h): the current layer's mask edited here (its points, its handles, dragged whole), and a new one
     // drawn point by point (click; drag to curve; the first point, a double-click or Enter closes it; Esc cancels)
     void setMaskIndex(int index); // -1: none
+    void setMaskEditMode(bool on); // preview selects mask points or layer geometry explicitly
     void startMaskDrawing();
 
 signals:
@@ -88,6 +89,7 @@ private:
     void paintGuides();
     void refreshCoordinateBar(); // values of the point typed in, follows the selection and the mapping
     void typeCoordinate();       // a value typed: the point (and the selection) moves there
+    void alignMaskNodes(int edge); // 0 left, 1 right, 2 top, 3 bottom; selected nodes only
     QPointF outOf(int layer, QPointF canvas) const;
     QPointF canvasOf(int layer, QPointF out) const;
     QRectF fitRect() const;  // composition fitted in the widget (zoom 1)
@@ -137,6 +139,9 @@ private:
     QPointF m_guideAt;
     QToolButton *m_magnetButton = nullptr;
     QToolButton *m_autoSelectButton = nullptr;
+    QToolButton *m_maskModeButton = nullptr;
+    QToolButton *m_alignMask[4] = {};
+    bool m_maskEditMode = false;
 
     // Masks
     int m_maskIndex = -1;
@@ -145,6 +150,7 @@ private:
     QPointF m_cursor;
     enum class MaskDrag { None, Node, In, Out, Body } m_maskDrag = MaskDrag::None;
     int m_maskNode = -1;  // the point dragged, or last clicked
+    std::vector<int> m_maskSelection; // Ctrl/Command-click multiple points for alignment
     QPointF m_maskLast;   // the frame point of the last move (dragging it whole)
     std::vector<Mask> m_masksBefore;
     Mask *editedMask();   // lock held

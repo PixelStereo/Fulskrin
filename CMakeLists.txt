@@ -423,6 +423,11 @@ if(PINOL_TESTS)
   # others once, these with retries (ctest -L timing --repeat until-pass:3) — their thresholds stay as they are; a CI
   # runner without a sound card or a GPU is late now and then, a real regression fails every attempt
   set_tests_properties(sound playback thread publishing timecode snapshots media PROPERTIES LABELS timing)
+  add_executable(pinol_mask_ui_test test/mask_ui.cpp src/ui/MappingView.cpp src/ui/GlDraw.cpp
+                 src/ui/Commands.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
+  target_include_directories(pinol_mask_ui_test PRIVATE src/ui)
+  target_link_libraries(pinol_mask_ui_test PRIVATE pinol_engine Qt6::Widgets Qt6::OpenGLWidgets)
+  add_test(NAME mask_ui COMMAND pinol_mask_ui_test)
   add_executable(pinol_sequence_ui_test test/sequence_ui.cpp src/ui/SequencePanel.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
   target_include_directories(pinol_sequence_ui_test PRIVATE src/ui)
   target_link_libraries(pinol_sequence_ui_test PRIVATE pinol_engine Qt6::Widgets)

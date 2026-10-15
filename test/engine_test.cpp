@@ -3105,6 +3105,21 @@ void main(){ gl_FragColor = definitely_not_defined; }
         // Raster: a rectangle keeps its inside; inverted, it cuts it out; feathering softens the edge where asked
         Mask r = Mask::rectangle(QRectF(0.25, 0.25, 0.5, 0.5));
         r.name = "R";
+        // Selected mask points align on each axis; Bézier handles follow their node.
+        {
+            Mask smooth = Mask::ellipse(QRectF(0.15, 0.20, 0.6, 0.5));
+            const Mask beforeAlign = smooth;
+            CHECK(masks::alignNodes(smooth, {0, 1}, masks::AlignEdge::Left));
+            CHECK(std::abs(smooth.nodes[0].p.x() - smooth.nodes[1].p.x()) < 1e-12);
+            CHECK(smooth.nodes[1].in - smooth.nodes[1].p == beforeAlign.nodes[1].in - beforeAlign.nodes[1].p);
+            CHECK(smooth.nodes[1].out - smooth.nodes[1].p == beforeAlign.nodes[1].out - beforeAlign.nodes[1].p);
+            CHECK(smooth.nodes[2] == beforeAlign.nodes[2] && smooth.nodes[3] == beforeAlign.nodes[3]);
+            CHECK(smooth.shape == Mask::Shape::Path);
+            CHECK(masks::alignNodes(smooth, {1, 2}, masks::AlignEdge::Bottom));
+            CHECK(std::abs(smooth.nodes[1].p.y() - smooth.nodes[2].p.y()) < 1e-12);
+            CHECK(!masks::alignNodes(smooth, {0}, masks::AlignEdge::Right));
+            CHECK(!masks::alignNodes(smooth, {-1, 1}, masks::AlignEdge::Top));
+        }
         auto gray = [](const QImage &img, int x, int y) { return qGray(img.pixel(x, y)); };
         QImage a = masks::raster({r}, Mask::Attach::Surface, QSize(100, 100));
         CHECK(!a.isNull() && gray(a, 50, 50) == 255 && gray(a, 5, 5) == 0);
