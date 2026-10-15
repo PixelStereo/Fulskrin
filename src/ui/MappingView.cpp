@@ -230,7 +230,7 @@ void MappingView::typeCoordinate()
             n.out += delta;
         }
         if (before != after) {
-            if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after, QStringLiteral("Move Mask Node"), true));
+            if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after, QStringLiteral("Move Mask Node")));
             else m_engine->setLayerMasks(id, after);
             emit masksEdited();
             update();
