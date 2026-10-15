@@ -1,5 +1,5 @@
 #pragma once
-// Reusable Qt-only color control: channel sliders, HSV wheel and swatch palette.
+// Reusable Qt-only color control: RGB/HSL/HSV channels, wheel and swatch palette.
 // Does not depend on Engine, layers, undo history or parameter metadata.
 
 #include <QColor>
@@ -12,11 +12,18 @@ class QToolButton;
 class SliderField;
 class HueWheelWidget;
 
+class ColorPickerPreferences : public QObject
+{
+    Q_OBJECT
+signals:
+    void defaultViewChanged();
+};
+
 class ColorPicker : public QWidget
 {
     Q_OBJECT
 public:
-    enum View { RGB = 0, HSV = 1, Wheel = 2, Palette = 3 };
+    enum View { RGB = 0, HSV = 1, Wheel = 2, Palette = 3, HSL = 4 };
     explicit ColorPicker(bool withAlpha = true, QWidget *parent = nullptr);
 
     bool hasAlpha() const { return m_withAlpha; }
@@ -25,9 +32,12 @@ public:
 
     void setColor(const QColor &color); // programmatic updates never emit
     void setView(View view);
-    // Each instance can remember its own view. Optional legacy key migrates
-    // previous RGBA/HSVA/Palette indices (0/1/2) to the new four-view format.
-    void setSettingsKey(const QString &key, const QString &legacyKey = QString());
+    static View defaultView(); // application preference; HSL when unset
+    static void setDefaultView(View view);
+    // Only an explicit view choice is saved; opening a picker does not create an override.
+    void setSettingsKey(const QString &key);
+    static QColor getColor(const QColor &initial, QWidget *parent, const QString &title,
+                           const QString &settingsKey, bool withAlpha = true);
 
 signals:
     void colorEdited(const QColor &color);
@@ -35,17 +45,20 @@ signals:
 private:
     void editColor(const QColor &color);
     void editChannel(int channel, double value);
+    void applyView(View view);
     void updateControls();
     void updateGradients();
 
     bool m_withAlpha;
     bool m_syncing = false;
     int m_hue = 0; // preserved when saturation becomes zero
+    double m_hslSaturation = 0; // HSL saturation is undefined in RGB black/white
     QColor m_color = Qt::white;
-    View m_view = Wheel;
+    View m_view = HSL;
+    bool m_hasLocalView = false;
     QString m_settingsKey;
     QLabel *m_swatch = nullptr;
-    std::array<QToolButton *, 4> m_buttons{};
+    std::array<QToolButton *, 5> m_buttons{};
     std::array<QLabel *, 4> m_labels{};
     std::array<SliderField *, 4> m_fields{};
     SliderField *m_wheelAlpha = nullptr;

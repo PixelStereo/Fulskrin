@@ -212,8 +212,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, in
             // callbacks, and no signal is emitted during external refreshes.
             auto *editor = new ColorPicker(true);
             const QString id = QStringLiteral("%1/%2/%3").arg(m_layerId).arg(m_slot).arg(in.name);
-            editor->setSettingsKey(QStringLiteral("ui/colorPickerMode/") + id,
-                                   QStringLiteral("ui/colorMode/") + id);
+            editor->setSettingsKey(QStringLiteral("ui/colorPickerMode/") + id);
             editor->setColor(QColor::fromRgbF(in.cValue[0], in.cValue[1], in.cValue[2], in.cValue[3]));
             connect(editor, &ColorPicker::colorEdited, this, [this, idx, label](const QColor &c) {
                 const std::array<float, 4> rgba{float(c.redF()), float(c.greenF()),

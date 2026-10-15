@@ -468,7 +468,7 @@ void ColorEditor::build(const QString &title)
     head->addWidget(m_hex);
     layout->addLayout(head);
 
-    m_picker = new ColorPicker(false, this); // RGB only: no alpha for Add / Remove
+    m_picker = new ColorPicker(false, this); // no alpha for Add / Remove
     layout->addWidget(m_picker);
     connect(m_picker, &ColorPicker::colorEdited, this, [this](const QColor &c) { apply(c, true); });
     connect(m_hex, &QLineEdit::editingFinished, this, [this] {

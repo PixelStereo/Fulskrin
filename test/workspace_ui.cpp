@@ -5,6 +5,8 @@
 #include "TimelinePanel.h"
 #include "LayerInspector.h"
 #include "PresetEditor.h"
+#include "ColorPicker.h"
+#include <QComboBox>
 #include "Commands.h"
 #include <QMenu>
 #include <QUndoStack>
@@ -38,6 +40,16 @@ int main(int argc, char **argv)
     {
         MainWindow window(&engine); window.setAutosaveEnabled(false); window.setQuiet(true);
         window.show(); app.processEvents();
+        auto *defaultColorView = window.findChild<QComboBox *>("defaultColorPickerView");
+        check(defaultColorView && defaultColorView->currentData().toInt() == int(ColorPicker::HSL), "Settings defaults to HSL");
+        if (defaultColorView) {
+            ColorPicker unchosen, chosen;
+            chosen.setView(ColorPicker::Palette);
+            defaultColorView->setCurrentIndex(defaultColorView->findData(int(ColorPicker::RGB)));
+            check(unchosen.view() == ColorPicker::RGB && chosen.view() == ColorPicker::Palette,
+                  "Settings changes reach unchosen pickers and preserve local choices");
+            defaultColorView->setCurrentIndex(defaultColorView->findData(int(ColorPicker::HSL)));
+        }
         auto *tabs = window.findChild<QTabBar *>("showWorkspaceTabs");
         auto *pages = window.findChild<QStackedWidget *>("showWorkspacePages");
         auto *lists = window.findChild<QStackedWidget *>("snapshotPresetLists");
