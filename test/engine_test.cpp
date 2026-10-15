@@ -9,6 +9,7 @@
 #include "AudioStream.h"
 #include "LayerTree.h"
 #include "Osc.h"
+#include "SequenceFeedback.h"
 #include "Parameter.h"
 #include "Zeroconf.h"
 #include <QJsonArray>
@@ -977,6 +978,81 @@ void main(){ gl_FragColor = definitely_not_defined; }
     } // compositing
 
     if (area("osc")) {
+    // 4b. The sequence's state sent by OSC to the addresses of a remote interface (Companion, TouchOSC…)
+    {
+        QString host;
+        quint16 port = 0;
+        CHECK(SequenceFeedback::parseTarget(" localhost:11111 ", &host, &port) && host == "localhost" && port == 11111);
+        CHECK(SequenceFeedback::parseTarget("[::1]:9000", &host, &port) && host == "::1" && port == 9000);
+        CHECK(!SequenceFeedback::parseTarget("localhost", nullptr, nullptr) && !SequenceFeedback::parseTarget("a:0", nullptr, nullptr) &&
+              !SequenceFeedback::parseTarget("a:70000", nullptr, nullptr) && !SequenceFeedback::parseTarget(":9000", nullptr, nullptr));
+        CHECK(SequenceFeedback::defaultTargets() == QStringList{"127.0.0.1:11111"});
+
+        QUdpSocket rx;
+        CHECK(rx.bind(QHostAddress::LocalHost, 0));
+        const int seq = e.sequencer().add([] {
+            Sequencer::Sequence s;
+            s.name = "Feedback show";
+            Sequencer::Step a, b;
+            a.text = "Intro";
+            a.description = "Lights first";
+            a.preWait = 2;
+            b.text = "Second";
+            s.steps = {a, b};
+            return s;
+        }());
+        e.sequencer().setCurrent(seq);
+        SequenceFeedback fb(&e);
+        fb.setTargets({QStringLiteral("localhost:%1").arg(rx.localPort()), "not a target"});
+        // What arrives, by address (the last value of each)
+        std::map<QString, QVariant> got;
+        auto receive = [&] {
+            got.clear();
+            QElapsedTimer t;
+            t.start();
+            while (t.elapsed() < 500) {
+                QCoreApplication::processEvents();
+                if (!rx.hasPendingDatagrams() && !rx.waitForReadyRead(30) && !got.empty()) break;
+                while (rx.hasPendingDatagrams()) {
+                    QByteArray d(int(rx.pendingDatagramSize()), 0);
+                    rx.readDatagram(d.data(), d.size());
+                    std::vector<osc::Message> ms;
+                    if (osc::decode(d, ms))
+                        for (const osc::Message &m : ms) got[m.address] = m.args.value(0);
+                }
+            }
+        };
+        fb.sendNow(true);
+        receive();
+        CHECK(got.empty()); // off until enabled
+        fb.setEnabled(true);
+        e.sequencer().go();
+        fb.sendNow(true);
+        receive();
+        CHECK(got["/sequence/name"].toString() == "Feedback show" && got["/sequence/steps"].toInt() == 2 &&
+              got["/sequence/index"].toInt() == seq + 1);
+        CHECK(got["/sequence/cue/current/number"].toInt() == 1 && got["/sequence/cue/current/text"].toString() == "Intro" &&
+              got["/sequence/cue/current/description"].toString() == "Lights first" &&
+              got["/sequence/cue/current/label"].toString().startsWith("1 · "));
+        CHECK(got["/sequence/cue/current/phase"].toString() == "pre-wait" && got["/sequence/cue/current/phase_percent"].toInt() == 0 &&
+              std::abs(got["/sequence/cue/current/prewait"].toDouble() - 2) < 1e-6 &&
+              got["/sequence/cue/current/continue"].toString() == "wait");
+        CHECK(got["/sequence/cue/next/number"].toInt() == 2 && got["/sequence/cue/next/text"].toString() == "Second" &&
+              got["/sequence/cue/next/phase"].toString().isEmpty());
+        CHECK(got["/sequence/cue/previous/number"].toInt() == 0 && got["/sequence/running"].toInt() == 1);
+        // Halfway through its pre-wait: only what changed is sent again
+        e.sequencer().advance(1);
+        fb.sendNow(false);
+        receive();
+        // (the cue clock also counts the wall time the test takes)
+        const int half = got["/sequence/cue/current/phase_percent"].toInt();
+        CHECK(half >= 50 && half <= 60 && got["/sequence/cue/current/percent"].toInt() == half &&
+              got["/sequence/cue/current/remaining"].toDouble() <= 1.0 && got["/sequence/cue/current/remaining"].toDouble() > 0.7);
+        CHECK(!got.count("/sequence/name") && !got.count("/sequence/cue/next/text"));
+        e.sequencer().stopAll();
+        fb.setEnabled(false);
+        e.sequencer().remove(seq);
+    }
     // 4c. The Logs panel's events (audit P1): bounded in lines and in cost, whatever the traffic
     {
         EventLog log(8, 5); // 8 lines, 5 new lines a second

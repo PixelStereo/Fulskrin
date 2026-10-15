@@ -74,6 +74,7 @@ add_library(pinol_engine STATIC
   src/engine/EventLog.cpp
   src/engine/FrameTiming.cpp
   src/engine/OscCodec.cpp
+  src/engine/SequenceFeedback.cpp
   src/engine/Zeroconf.cpp
   src/engine/Snapshots.cpp
   src/engine/Sequencer.cpp
