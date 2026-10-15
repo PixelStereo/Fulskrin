@@ -71,6 +71,9 @@ public:
     bool initialize(QString *err);
     bool start();          // starts the render thread (returns false if the platform does not support it)
     void stop();
+    // Emergency stop: cancel every sequence/WAIT, fade, running animation and media transport;
+    // retain the currently visible parameter values (no snap back to an earlier cue).
+    void stopShowPlayback();
     bool isThreaded() const { return m_threaded; }
     // The render thread could not make its OpenGL context current: nothing is rendered (start() again to retry)
     bool renderFailed() const
