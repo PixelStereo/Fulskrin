@@ -26,6 +26,7 @@ signals:
     void useAsSourceRequested(const QString &path);              // load into the selected layer
     void loadIntoNewLayerRequested(const QString &path);          // a new layer above the selected one
     void loadIntoLayerRequested(int layer, const QString &path);  // load into that layer (right-click submenu)
+    void reloadIsfRequested(const QString &path);
     void binEdited(); // import / removal: the project is modified
 
 private:

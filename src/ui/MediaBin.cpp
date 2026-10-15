@@ -676,6 +676,7 @@ void MediaBin::contextMenu(const QPoint &pos)
         }
         into->setEnabled(!missing && !into->isEmpty());
         menu.addSeparator();
+        if (isf) menu.addAction(QStringLiteral("Reload ISF"), this, [this, p] { emit reloadIsfRequested(p); })->setEnabled(!missing);
         menu.addAction(QStringLiteral("Relink File…"), this, &MediaBin::relinkSelected)->setEnabled(!isf);
         menu.addAction(m_reveal->text(), this, &MediaBin::revealSelected)->setEnabled(!missing);
         menu.addAction(QStringLiteral("Remove from Media Bin"), this, &MediaBin::removeSelected)->setEnabled(!it->data(0, UsedRole).toBool());

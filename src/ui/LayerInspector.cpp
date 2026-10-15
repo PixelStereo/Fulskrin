@@ -1,4 +1,6 @@
 #include "LayerInspector.h"
+#include "PresetEditor.h"
+#include <QTabBar>
 #include "AudioOutput.h"
 #include "DeckLink.h"
 #include "LiveInput.h"
@@ -550,7 +552,19 @@ void LayerInspector::rebuild()
 
     // Below, in sub-tabs; the current one is kept from one layer to the next
     auto *tabs = new QTabWidget;
+    tabs->setObjectName(QStringLiteral("layerCategoryTabs"));
     tabs->setDocumentMode(true);
+    tabs->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tabs->tabBar(), &QWidget::customContextMenuRequested, this, [this, tabs, id = s.id](const QPoint &point) {
+        const int tab = tabs->tabBar()->tabAt(point);
+        if (tab < 0) return;
+        if (PresetEditor *editor = PresetEditor::instance()) {
+            QMenu menu(this);
+            const QString category = tabs->tabText(tab).section(' ', 0, 0);
+            editor->fillCategoryMenu(&menu, id, category);
+            if (!menu.isEmpty()) menu.exec(tabs->tabBar()->mapToGlobal(point));
+        }
+    });
     // Tabs that read as tabs (as the ones above): the current one lighter, underlined with the accent
     tabs->setStyleSheet(theme::tabStyle());
     const bool hasSource = !s.isGroup && !s.isViewport;

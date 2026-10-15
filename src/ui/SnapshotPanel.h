@@ -48,6 +48,7 @@ class SnapshotPanel : public QWidget
     Q_OBJECT
 public:
     SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent = nullptr);
+    QWidget *listPanel() const; // shared library column; inspection stays in this panel
     void refresh(); // snapshots changed (project opened…)
     void setMode(int mode); // 0 Snapshots, 1 Presets; the main bottom tab controls which list/inspector is shown
     void recall(int i);
@@ -98,7 +99,7 @@ private:
     QUndoStack *m_undo;
     QTreeWidget *m_list;
     bool m_wasRunning = false;
-    QLabel *m_thumb, *m_title;
+    QLabel *m_thumb, *m_title, *m_match;
     QLineEdit *m_name;
     QDoubleSpinBox *m_fade;
     QTreeWidget *m_layers;

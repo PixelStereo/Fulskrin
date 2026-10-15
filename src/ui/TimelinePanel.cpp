@@ -232,7 +232,9 @@ TimelineWindow::TimelineWindow(Engine *engine, QUndoStack *undo, QWidget *parent
     auto *h = new QHBoxLayout(this);
 
     // The list
-    auto *left = new QVBoxLayout;
+    m_listPanel = new QWidget;
+    auto *left = new QVBoxLayout(m_listPanel);
+    left->setContentsMargins(0, 0, 0, 0);
     left->addWidget(new QLabel(QStringLiteral("<b>Timelines</b>")));
     m_list = new TimelineList;
     m_list->setDragEnabled(true);
@@ -252,7 +254,7 @@ TimelineWindow::TimelineWindow(Engine *engine, QUndoStack *undo, QWidget *parent
     hint->setWordWrap(true);
     hint->setStyleSheet("color:#8a8a90; font-size:11px;");
     left->addWidget(hint);
-    h->addLayout(left, 1);
+    h->addWidget(m_listPanel, 1);
 
     // The one selected
     m_editor = new TimelineEditor(engine, undo);

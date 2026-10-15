@@ -324,7 +324,11 @@ private:
     Engine *m_e;
     quint64 m_preset;
     std::vector<Engine::PresetValue> m_before;
-    bool m_first = true;
+    std::map<quint64, int> m_parts;
+    std::map<quint64, QJsonObject> m_layers;
+    std::map<quint64, std::vector<Animation>> m_animations;
+    std::vector<Interaction> m_interactions;
+    bool m_hasInteractions = false;
 };
 
 // The snapshots rearranged (dragged, grouped, a group renamed or removed)

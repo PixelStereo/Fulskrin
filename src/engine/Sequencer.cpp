@@ -111,6 +111,7 @@ void Sequencer::setSequence(int i, const Sequence &s)
         m_sequences[size_t(i)] = s;
         if (m_positions[size_t(i)] >= int(s.steps.size())) m_positions[size_t(i)] = int(s.steps.size()) - 1;
         const quint64 owner = m_sequenceIds[size_t(i)];
+        m_stepStartedNs.erase(owner);
         m_runs.erase(std::remove_if(m_runs.begin(), m_runs.end(), [&](const Run &r) {
             return r.sequenceId == owner && r.step >= int(s.steps.size());
         }), m_runs.end());
@@ -242,6 +243,14 @@ int Sequencer::previousOfLocked(int index) const
     return s.loop ? n - 1 : -1;
 }
 
+double Sequencer::stepElapsed(int index) const
+{
+    QMutexLocker lock(&m_mutex);
+    if (index < 0 || index >= int(m_sequenceIds.size())) return 0;
+    const auto found = m_stepStartedNs.find(m_sequenceIds[size_t(index)]);
+    return found == m_stepStartedNs.end() ? 0 : std::max(0.0, (FrameTiming::nowNs() - found->second) * 1e-9);
+}
+
 int Sequencer::positionOf(int index) const
 {
     QMutexLocker lk(&m_mutex);
@@ -312,6 +321,7 @@ bool Sequencer::goToSequence(quint64 owner, int step, bool chain)
         r.duration = stepDuration(st);
         m_runs.push_back(r);
         m_positions[size_t(index)] = step;
+        m_stepStartedNs[owner] = FrameTiming::nowNs();
     }
     advance(0);
     emit positionChanged();
@@ -616,6 +626,7 @@ void Sequencer::advance(double dt)
                 if (x.step >= int(m_sequences[size_t(index)].steps.size())) continue;
                 m_runs.push_back(x);
                 m_positions[size_t(index)] = x.step;
+                m_stepStartedNs[x.sequenceId] = FrameTiming::nowNs() - qint64(x.elapsed / std::max(1e-9, timeScale().load()) * 1e9);
                 moved = true;
             }
         }
@@ -645,6 +656,7 @@ QJsonArray Sequencer::toJson() const
                 o["snapshot"] = QString::number(st.snapshot);
             }
             if (!st.text.isEmpty()) o["text"] = st.text;
+            if (!st.description.isEmpty()) o["description"] = st.description;
             if (st.preWait > 0) o["pre_wait"] = st.preWait;
             if (st.postWait > 0) o["post_wait"] = st.postWait;
             if (st.next != StepContinue::Wait) o["continue"] = st.next == StepContinue::Follow ? "follow" : "auto_follow";
@@ -658,6 +670,7 @@ QJsonArray Sequencer::toJson() const
 void Sequencer::fromJson(const QJsonArray &a, int current)
 {
     m_sequences.clear();
+    m_stepStartedNs.clear();
     for (const QJsonValue &v : a) {
         const QJsonObject o = v.toObject();
         Sequence s;
@@ -680,6 +693,7 @@ void Sequencer::fromJson(const QJsonArray &a, int current)
                 st.snapshot = 0;
             }
             st.text = so.value("text").toString();
+            st.description = so.value("description").toString();
             st.preWait = std::clamp(so.value("pre_wait").toDouble(0), 0.0, 3600.0);
             st.postWait = std::clamp(so.value("post_wait").toDouble(0), 0.0, 3600.0);
             const QString c = so.value("continue").toString();
@@ -700,6 +714,7 @@ void Sequencer::clear()
 {
     QMutexLocker lk(&m_mutex);
     m_sequences.clear();
+    m_stepStartedNs.clear();
     m_positions.clear();
     m_sequenceIds.clear();
     m_startupSequence = -1;
