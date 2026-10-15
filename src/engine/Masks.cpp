@@ -5,6 +5,7 @@
 #include <QXmlStreamReader>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 // ---------------------------------------------------------------------------
 // A mask
