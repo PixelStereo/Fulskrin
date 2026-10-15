@@ -58,6 +58,11 @@ struct Mask {
 
 namespace masks {
 
+// Align two or more selected mask nodes. Move their Bézier handles with the node.
+// Does not alter unselected nodes; returns false for invalid/degenerate selections.
+enum class AlignEdge { Left = 0, Right, Top, Bottom };
+bool alignNodes(Mask &mask, const std::vector<int> &selected, AlignEdge edge);
+
 QJsonArray toJson(const std::vector<Mask> &m);
 std::vector<Mask> fromJson(const QJsonArray &a);
 QString uniqueName(const std::vector<Mask> &m, const QString &base = QStringLiteral("Mask")); // "Mask-1", "Mask-2"…
