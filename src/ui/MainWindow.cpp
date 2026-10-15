@@ -551,6 +551,9 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
 MainWindow::~MainWindow()
 {
+    // The undo stack is a child, deleted after this window's members: it clears itself (indexChanged) when
+    // deleted, which must not reach this window's slots (they use members already destroyed, m_binTimer…)
+    m_undo->disconnect(this);
     m_engine->sequencer().setRecaller(nullptr);
     m_engine->sequencer().setRecallRecorder(nullptr);
     if (m_oscThread) {

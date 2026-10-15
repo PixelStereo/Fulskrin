@@ -1,0 +1,8 @@
+# Valgrind suppressions for the workspace allocation-lifetime job (--suppressions=test/valgrind.supp).
+# Only libraries outside Pinol. A report with a Pinol frame on the access fails the job.
+{
+   qt-core-simd-string-overread
+   # Qt's vectorized string routines read 16 bytes at a time, past the end of a string but inside its page
+   Memcheck:Addr16
+   obj:*/libQt6Core.so*
+}
