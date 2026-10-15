@@ -1008,6 +1008,7 @@ void Engine::advanceFades(double dt)
     stepTypewriters(dt);
     stepCompositionFade(dt);
     stepAnimations(dt);
+    stepScheduledRecall(dt);
 }
 
 void Engine::stepTypewriters(double dt)
