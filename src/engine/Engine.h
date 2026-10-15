@@ -718,13 +718,14 @@ private:
         QJsonValue value;
         double duration = 0, dueAt = 0;
         QString easing;
+        bool showing = false, hiding = false;
     };
     using DeferredRecalls = std::multimap<double, DeferredRecall>;
     DeferredRecalls m_deferredRecall;
     std::map<std::pair<quint64, QString>, DeferredRecalls::iterator> m_deferredRecallIndex;
     double m_recallClock = 0;
     void scheduleRecall(quint64 layer, const QString &path, const QJsonValue &value, double seconds,
-                        const QString &easing, double delay);
+                        const QString &easing, double delay, bool showing = false, bool hiding = false);
     void cancelScheduledRecall(quint64 layer, const QString &path);
     void stepShowRecalls(double dt, double compositionDt);
     void stepScheduledRecall(double dt); // under engine mutex: execute due recalls only

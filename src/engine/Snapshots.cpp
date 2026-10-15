@@ -307,7 +307,7 @@ void Engine::applyParams(Layer &layer, const QJsonObject &params, const QJsonObj
             if (delay > 0) {
                 const QString ek = Engine::timingKeyOf(easing, path);
                 scheduleRecall(l->id, path, it.value(), timeOf(timing, path, fade),
-                               ek.isEmpty() ? QString() : easing.value(ek).toString(), delay);
+                               ek.isEmpty() ? QString() : easing.value(ek).toString(), delay, path == "opacity" && showing, path == "opacity" && hiding);
                 continue;
             }
             cancelScheduledRecall(l->id, path);
@@ -360,13 +360,13 @@ void Engine::cancelScheduledRecall(quint64 layer, const QString &path)
 }
 
 void Engine::scheduleRecall(quint64 layer, const QString &path, const QJsonValue &value, double seconds,
-                            const QString &easing, double delay)
+                            const QString &easing, double delay, bool showing, bool hiding)
 {
     Lock lk(&m_mutex);
     cancelScheduledRecall(layer, path);
     const double due = m_recallClock + (std::isfinite(delay) ? std::clamp(delay, 0.0, 600.0) : 0.0);
     const double duration = std::isfinite(seconds) ? std::clamp(seconds, 0.0, 600.0) : 0.0;
-    auto entry = m_deferredRecall.emplace(due, DeferredRecall{layer, path, value, duration, due, easing});
+    auto entry = m_deferredRecall.emplace(due, DeferredRecall{layer, path, value, duration, due, easing, showing, hiding});
     m_deferredRecallIndex[{layer, path}] = entry;
 }
 
@@ -405,8 +405,9 @@ void Engine::stepScheduledRecall(double dt)
         if (Layer *l = layer(index)) {
             auto job = std::make_shared<FadeJob>();
             job->id = value.layer;
+            if (value.showing) l->enabled = true;
             applyParams(*l, QJsonObject{{value.path, value.value}}, timing, easing, value.duration,
-                        *job, false, false, false);
+                        *job, value.showing, value.hiding, false);
             if (!job->done()) m_fades.push_back(std::move(job));
         }
     }
@@ -642,7 +643,7 @@ Engine::RecallProgress Engine::recallProgress() const
     RecallProgress r;
     r.snapshot = m_recalledSnapshot;
     r.total = m_recallTotal;
-    r.elapsed = m_fades.empty() && m_transitions.empty() && !m_compFade.opacity && !m_compFade.volume ? m_recallTotal
+    r.elapsed = m_fades.empty() && m_deferredRecall.empty() && m_transitions.empty() && !m_compFade.opacity && !m_compFade.volume ? m_recallTotal
                                                                                                   : m_fadeElapsed;
     return r;
 }
@@ -650,7 +651,7 @@ Engine::RecallProgress Engine::recallProgress() const
 bool Engine::isFading() const
 {
     Lock lk(&m_mutex);
-    return !m_fades.empty();
+    return !m_fades.empty() || !m_deferredRecall.empty();
 }
 
 QJsonObject Engine::captureComposition() const
@@ -660,6 +661,7 @@ QJsonObject Engine::captureComposition() const
 
 void Engine::applyComposition(const QJsonObject &c, double fade)
 {
+    Lock lock(&m_mutex);
     if (c.isEmpty() || !c.value("included").toBool(true)) return;
     const QJsonObject timing = c.value("timing").toObject();
     const QJsonObject delays = c.value("delay").toObject();
@@ -673,6 +675,9 @@ void Engine::applyComposition(const QJsonObject &c, double fade)
     if (hasOpacity) {
         const double delay = delayOf(delays, QStringLiteral("opacity"));
         if (delay > 0) {
+            m_compFade.opacity = false;
+            m_compositionOpacityTarget = m_compositionOpacity.load();
+            m_compositionOpacitySpeed = 0;
             scheduleRecall(0, QStringLiteral("opacity"), c.value("opacity"), timeOf(timing, QStringLiteral("opacity"), fade),
                            easing.value(QStringLiteral("opacity")).toString(), delay);
             hasOpacity = false;
@@ -681,6 +686,7 @@ void Engine::applyComposition(const QJsonObject &c, double fade)
     if (hasVolume) {
         const double delay = delayOf(delays, QStringLiteral("volume"));
         if (delay > 0) {
+            m_compFade.volume = false;
             scheduleRecall(0, QStringLiteral("volume"), c.value("volume"), timeOf(timing, QStringLiteral("volume"), fade),
                            easing.value(QStringLiteral("volume")).toString(), delay);
             hasVolume = false;
@@ -817,14 +823,21 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                 else initial.remove(it.key());
             }
             state.insert("params", initial);
+            if (delayOf(delays, "opacity") > 0 && params.contains("opacity"))
+                state.insert("enable", live.value("enable").toBool(false));
             return state;
         };
         auto scheduleIncoming = [&] {
+            Lock lock(&m_mutex);
             for (auto it = params.begin(); it != params.end(); ++it) {
                 const double delay = delayOf(delays, it.key());
                 if (delay > 0) {
                     const QString ek = timingKeyOf(easing, it.key());
-                    scheduleRecall(id, it.key(), it.value(), timeOf(timing, it.key(), fade), easing.value(ek).toString(), delay);
+                    const Layer *live = layer(indexOfId(id));
+                    const bool visible = o.value("enable").toBool(true);
+                    scheduleRecall(id, it.key(), it.value(), timeOf(timing, it.key(), fade), easing.value(ek).toString(), delay,
+                                   it.key() == "opacity" && live && visible && !live->enabled,
+                                   it.key() == "opacity" && live && !visible && live->enabled);
                 } else cancelScheduledRecall(id, it.key());
             }
         };
@@ -943,7 +956,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         // Visibility: shown at once and faded in from 0, or faded out then hidden
         const bool visible = o.value("enable").toBool(true);
         const bool showing = visible && !l->enabled, hiding = !visible && l->enabled;
-        if (showing) l->enabled = true;
+        if (showing && !(params.contains("opacity") && delayOf(delays, "opacity") > 0)) l->enabled = true;
         applyParams(*l, params, timing, easing, fade, *job, showing, hiding, chain, delays);
         if (hiding && !params.contains("opacity")) { // no level of its own: faded out from where it is
             job->hideAtEnd = true;
@@ -1102,6 +1115,7 @@ void Engine::stepShowRecalls(double dt, double compositionDt)
     dt = std::isfinite(dt) ? std::max(0.0, dt) : 0.0;
     compositionDt = std::isfinite(compositionDt) ? std::max(0.0, compositionDt) : 0.0;
     const double end = m_recallClock + dt;
+    double remaining = dt;
     const double ratio = dt > 0 ? compositionDt / dt : 0;
     auto advance = [&](double delta) {
         stepFade(delta);
@@ -1113,10 +1127,12 @@ void Engine::stepShowRecalls(double dt, double compositionDt)
         m_recallClock += delta;
     };
     while (!m_deferredRecall.empty() && m_deferredRecall.begin()->first <= end + 1e-9) {
-        advance(std::max(0.0, m_deferredRecall.begin()->first - m_recallClock));
+        const double slice = std::min(remaining, std::max(0.0, m_deferredRecall.begin()->first - m_recallClock));
+        advance(slice);
+        remaining = std::max(0.0, remaining - slice);
         stepScheduledRecall(0);
     }
-    advance(std::max(0.0, end - m_recallClock));
+    advance(remaining);
     if (dt == 0) stepCompositionFade(compositionDt); // blackout still responds while paused
 }
 
@@ -1420,6 +1436,8 @@ void Engine::applyInteractionValues(quint64 id, const QJsonObject &params, const
         if (!p) continue;
         const double delay = delayOf(delays, key);
         if (delay > 0) {
+            m_interactionFades.erase(std::remove_if(m_interactionFades.begin(), m_interactionFades.end(),
+                [&](const InteractionFade &f) { return f.path == path; }), m_interactionFades.end());
             const QString ek = Engine::timingKeyOf(easing, key);
             scheduleRecall(0, path, value, timeOf(timing, key, fade),
                            ek.isEmpty() ? QString() : easing.value(ek).toString(), delay);

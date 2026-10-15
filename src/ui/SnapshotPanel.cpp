@@ -349,6 +349,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
         });
         t->start();
     }
+    m_list->setObjectName(QStringLiteral("snapshotList"));
     lv->addWidget(m_list, 1);
     left->setMinimumWidth(220);
     split->addWidget(left);
@@ -425,12 +426,14 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_delete = new QPushButton(QStringLiteral("Delete"));
     buttons->addWidget(m_update);
     buttons->addWidget(m_delete);
+    m_update->setObjectName(QStringLiteral("snapshotUpdate"));
     fields->addLayout(buttons);
     fields->addStretch();
     head->addWidget(m_thumb);
     head->addLayout(fields, 1);
     iv->addLayout(head);
     m_layers = new QTreeWidget;
+    m_layers->setObjectName(QStringLiteral("snapshotValues"));
     m_layers->setColumnCount(4);
     m_layers->setHeaderLabels({QStringLiteral("Layer / value"), QStringLiteral("Value"), QStringLiteral("Time"), QStringLiteral("Delay")});
     m_layers->setRootIsDecorated(true);
@@ -994,13 +997,14 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
         const QJsonObject storedDelays = o.value("delay").toObject();
         auto *label = new QLabel(QStringLiteral("Delay before execution"));
         auto *delay = new NumberBox;
+        delay->setObjectName(QStringLiteral("snapshotParameterDelay"));
         delay->setRange(0.0, 600.0);
         delay->setDecimals(2);
         delay->setSingleStep(0.1);
         delay->setSuffix(QStringLiteral(" s"));
         delay->setKeyboardTracking(false);
         delay->setToolTip(QStringLiteral("0: executes with the snapshot; otherwise begins after this delay."));
-        delay->setValue(storedDelays.value(delayKey).toDouble(0));
+        delay->setValue(storedDelays.value(Engine::timingKeyOf(storedDelays, delayKey)).toDouble(0));
         auto *r = new QHBoxLayout;
         r->addWidget(label);
         r->addWidget(delay);
@@ -1363,8 +1367,7 @@ void SnapshotPanel::applyDelay(int row, const QString &key, double seconds)
     QJsonObject o = rowObject(m, row);
     QJsonObject delays = o.value("delay").toObject();
     const double d = std::clamp(seconds, 0.0, 600.0);
-    if (d == 0) delays.remove(key);
-    else delays.insert(key, d);
+    delays.insert(key, d); // explicit zero overrides an inherited group delay
     if (delays.isEmpty()) o.remove("delay");
     else o.insert("delay", delays);
     if (!setRowObject(m, row, o)) return;
@@ -1424,13 +1427,14 @@ void SnapshotPanel::updateSnapshot(int i)
     Engine::Snapshot m = m_engine->snapshot(i);
     // Layers left out stay out; the times given to values are kept
     QSet<quint64> excluded;
-    QHash<quint64, QJsonValue> timing, easings;
+    QHash<quint64, QJsonValue> timing, easings, delays;
     for (const QJsonValue &v : m.layers) {
         const QJsonObject o = v.toObject();
         const quint64 id = o.value("id").toString().toULongLong();
         if (!o.value("included").toBool(true)) excluded.insert(id);
         if (o.contains("timing")) timing.insert(id, o.value("timing"));
         if (o.contains("easing")) easings.insert(id, o.value("easing"));
+        if (o.contains("delay")) delays.insert(id, o.value("delay"));
     }
     QJsonArray layers = m_engine->captureLayers();
     for (int k = 0; k < layers.size(); ++k) {
@@ -1439,6 +1443,7 @@ void SnapshotPanel::updateSnapshot(int i)
         if (excluded.contains(id)) o["included"] = false;
         if (timing.contains(id)) o["timing"] = timing.value(id);
         if (easings.contains(id)) o["easing"] = easings.value(id);
+        if (delays.contains(id)) o["delay"] = delays.value(id);
         layers[k] = o;
     }
     m.layers = layers;
@@ -1448,6 +1453,7 @@ void SnapshotPanel::updateSnapshot(int i)
         comp["included"] = m.composition.value("included").toBool(true);
         if (m.composition.contains("timing")) comp["timing"] = m.composition.value("timing");
         if (m.composition.contains("easing")) comp["easing"] = m.composition.value("easing");
+        if (m.composition.contains("delay")) comp["delay"] = m.composition.value("delay");
     }
     m.composition = comp;
     // The interactions: those left out stay out, the times given to their values are kept
@@ -1462,6 +1468,7 @@ void SnapshotPanel::updateSnapshot(int i)
                 o["included"] = b->value("included").toBool(true);
                 if (b->contains("timing")) o["timing"] = b->value("timing");
                 if (b->contains("easing")) o["easing"] = b->value("easing");
+                if (b->contains("delay")) o["delay"] = b->value("delay");
             }
             now[k] = o;
         }

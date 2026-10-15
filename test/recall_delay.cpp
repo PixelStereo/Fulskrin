@@ -86,6 +86,7 @@ int runRecallDelayTests(Engine &e)
     check(e.snapshotDuration(e.snapshot(si).id) >= 0.399, "snapshot duration accounts for delay");
     e.recallSnapshot(si);
     check(near(opacity(), 0.3), "snapshot param not recalled early");
+    check(e.recallProgress().running(), "snapshot progress remains active while its parameters are delayed");
     e.advanceFades(0.39);
     check(near(opacity(), 0.3), "snapshot still pending");
     e.advanceFades(0.02);
@@ -162,6 +163,36 @@ int runRecallDelayTests(Engine &e)
         e.advanceFades(0.5);
         check(near(e.parameterValue(imageId, "opacity").toDouble(), 0.8), "parameter reaches target across source cut/fade");
     }
+
+    // Delayed opacity must preserve snapshot visibility semantics: no early appearance,
+    // no delayed hide forgotten when its opacity is queued.
+    e.newProject();
+    const int visibleIndex = e.addLayer("Visibility");
+    const quint64 visibleId = e.layerId(visibleIndex);
+    Engine::Snapshot visibility;
+    visibility.fade = 0;
+    visibility.layers = e.captureLayers(true);
+    auto configureVisibility = [&](bool enabled) {
+        for (int k = 0; k < visibility.layers.size(); ++k) {
+            auto state = visibility.layers[k].toObject();
+            if (state.value("id").toString().toULongLong() != visibleId) continue;
+            state["enable"] = enabled;
+            state["delay"] = QJsonObject{{"opacity", 0.5}};
+            state["timing"] = QJsonObject{{"opacity", 0.5}};
+            visibility.layers[k] = state;
+        }
+    };
+    configureVisibility(false);
+    const int vi = e.addSnapshot(visibility);
+    e.recallSnapshot(vi); e.advanceFades(0.49);
+    check(e.layer(visibleIndex)->enabled, "delayed hide leaves layer visible before its deadline");
+    e.advanceFades(0.76);
+    check(!e.layer(visibleIndex)->enabled, "delayed opacity fade hides layer at its end");
+    configureVisibility(true); e.setSnapshot(vi, visibility);
+    e.recallSnapshot(vi); e.advanceFades(0.49);
+    check(!e.layer(visibleIndex)->enabled, "delayed show leaves layer hidden before its deadline");
+    e.advanceFades(0.76);
+    check(e.layer(visibleIndex)->enabled && e.layer(visibleIndex)->opacity > 0.99, "delayed show fades in at execution");
 
     e.setFadesManual(false);
     e.newProject();

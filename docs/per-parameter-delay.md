@@ -24,7 +24,7 @@ Supported by this initial PR: ordinary layer **Parameter** addresses (including 
 
 ## Precise ownership and source-transition behavior
 
-A layer parameter recalled again takes ownership immediately and freezes any older snapshot fade of that address during the delay. Manual edits remain possible; the delayed fade samples the live value at execution. A running timeline continues to take precedence over snapshot fades as before. Composition and interaction ramps already running may continue until the delayed command executes.
+A layer parameter recalled again takes ownership immediately and freezes any older snapshot fade of that address during the delay. Manual edits remain possible; the delayed fade samples the live value at execution. A running timeline continues to take precedence over snapshot fades as before. Composition and interaction snapshot ramps also relinquish the recalled address immediately. Other addresses continue normally. A delayed opacity preserves a snapshot’s visibility semantics: a hidden layer stays hidden until its fade-in starts; a fade-out hides the layer only after its delay and fade.
 
 A simultaneous source cut or crossfade does not install the delayed target early. An address common to both sources retains its current value. An address new to the incoming source retains that source's default until execution. Structural operations still execute on their established snapshot timeline; the independently delayed values are the Parameter addresses shown in the Delay column.
 

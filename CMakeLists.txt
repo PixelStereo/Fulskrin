@@ -423,6 +423,11 @@ if(PINOL_TESTS)
   # others once, these with retries (ctest -L timing --repeat until-pass:3) — their thresholds stay as they are; a CI
   # runner without a sound card or a GPU is late now and then, a real regression fails every attempt
   set_tests_properties(sound playback thread publishing timecode snapshots media PROPERTIES LABELS timing)
+  add_executable(pinol_recall_delay_ui_test test/recall_delay_ui.cpp src/ui/SnapshotPanel.cpp src/ui/PresetEditor.cpp
+                 src/ui/SequencePanel.cpp src/ui/Commands.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
+  target_include_directories(pinol_recall_delay_ui_test PRIVATE src/ui)
+  target_link_libraries(pinol_recall_delay_ui_test PRIVATE pinol_engine Qt6::Widgets)
+  add_test(NAME recall_delay_ui COMMAND pinol_recall_delay_ui_test)
   add_test(NAME isf COMMAND pinol_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
   if(NOT WIN32) # the application's exit codes in --render mode (Windows: its Qt libraries are deployed separately)
     add_test(NAME render_cli COMMAND ${CMAKE_COMMAND} -DPINOL=$<TARGET_FILE:Pinol> -DOUT=${CMAKE_BINARY_DIR}/render_cli
