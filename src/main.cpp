@@ -41,7 +41,11 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName("Pinol");
     QApplication::setOrganizationName("Pinol");
     QApplication::setApplicationVersion("0.1.0");
+#ifdef Q_OS_MACOS
+    app.setWindowIcon(QIcon(QStringLiteral(":/branding/pinol-app.png")));
+#else
     app.setWindowIcon(QIcon(QStringLiteral(":/branding/pinol.png")));
+#endif
     theme::applyToApplication(app);
 
     QCommandLineParser cli;
