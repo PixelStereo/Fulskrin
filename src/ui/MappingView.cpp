@@ -14,6 +14,8 @@
 #include <QSignalBlocker>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QContextMenuEvent>
+#include <QMenu>
 #include <QNativeGestureEvent>
 #include <QToolButton>
 #include <QPainter>
@@ -93,7 +95,8 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     // The same canvas supports two deliberate tools: layer mapping or mask node editing.
     // Mask nodes never accidentally move while the layer tool is active.
     m_maskModeButton = button(QStringLiteral("Layer"), QStringLiteral("Layer mode: select and move layers. "
-                                                      "Press to switch to Mask mode. Hold Shift while dragging a node to align it with another point."));
+                                                      "Press to switch to Mask mode. Hold Shift while dragging a node to align it with another point. "
+                                                      "In Mask mode: double-click the contour to add a point; right-click a point for Bézier, corner or deletion."));
     m_maskModeButton->setObjectName(QStringLiteral("mappingSelectionMode"));
     m_maskModeButton->setCheckable(true);
     connect(m_maskModeButton, &QToolButton::toggled, this, &MappingView::setMaskEditMode);
@@ -1285,8 +1288,8 @@ void MappingView::keyPressEvent(QKeyEvent *e)
         }
         return;
     }
-    // A mask's point clicked last: Delete removes it (a mask keeps three)
-    if (m_maskIndex >= 0 && m_maskNode >= 0 && (e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace)) {
+    // Mask deletion is confined to Mask mode.
+    if (m_maskEditMode && m_maskIndex >= 0 && m_maskNode >= 0 && (e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace)) {
         quint64 id = 0;
         std::vector<Mask> before, after;
         {
@@ -1301,9 +1304,11 @@ void MappingView::keyPressEvent(QKeyEvent *e)
                 a.shape = Mask::Shape::Path;
             }
         }
-        if (id && m_undo) {
+        if (id) {
             m_maskNode = -1;
-            m_undo->push(new cmd::SetMasks(m_engine, id, before, after, QStringLiteral("Delete Mask Point")));
+            m_maskSelection.clear();
+            if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after, QStringLiteral("Delete Mask Point")));
+            else m_engine->setLayerMasks(id, after);
             emit masksEdited();
             update();
             return;
@@ -1604,5 +1609,83 @@ void MappingView::mouseDoubleClickEvent(QMouseEvent *e)
         finishDrawing();
         return;
     }
+    if (m_maskEditMode && e->button() == Qt::LeftButton) {
+        Engine::Lock lock(&m_engine->mutex());
+        Layer *layer = m_engine->layer(m_layer);
+        Mask *mask = editedMask();
+        if (!layer || !mask || !mask->enabled || m_engine->isLocked(m_layer)) return;
+        const bool comp = maskInComposition(mask);
+        double best = 9.0, tBest = 0;
+        int segment = -1;
+        for (int i = 0; i < int(mask->nodes.size()); ++i) {
+            const auto &a = mask->nodes[size_t(i)];
+            const auto &b = mask->nodes[(size_t(i) + 1) % mask->nodes.size()];
+            for (int step = 1; step < 128; ++step) {
+                const double t = step / 128.0, u = 1 - t;
+                const QPointF q = a.p*u*u*u + a.out*3*u*u*t + b.in*3*u*t*t + b.p*t*t*t;
+                const double distance = QLineF(frameToWidget(comp, q), e->position()).length();
+                if (distance < best) { best = distance; segment = i; tBest = t; }
+            }
+        }
+        if (segment >= 0) {
+            const auto before = layer->masks;
+            auto after = before;
+            masks::splitSegment(after[size_t(m_maskIndex)], segment, tBest);
+            const auto id = layer->id;
+            lock.unlock();
+            if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after, QStringLiteral("Add Mask Point")));
+            else m_engine->setLayerMasks(id, after);
+            m_maskNode = segment + 1;
+            m_maskSelection = {m_maskNode};
+            m_maskDrag = MaskDrag::None;
+            emit masksEdited(); update();
+        }
+        return;
+    }
     QOpenGLWidget::mouseDoubleClickEvent(e);
+}
+
+
+void MappingView::contextMenuEvent(QContextMenuEvent *event)
+{
+    if (!m_maskEditMode || m_drawing) { QOpenGLWidget::contextMenuEvent(event); return; }
+    Engine::Lock lock(&m_engine->mutex());
+    Layer *layer = m_engine->layer(m_layer);
+    Mask *mask = editedMask();
+    if (!layer || !mask || !mask->enabled || m_engine->isLocked(m_layer)) return;
+    int node = -1;
+    for (int i = 0; i < int(mask->nodes.size()); ++i)
+        if (QLineF(frameToWidget(maskInComposition(mask), mask->nodes[size_t(i)].p), event->pos()).length() <= 8) { node = i; break; }
+    if (node < 0) return;
+    const auto before = layer->masks;
+    const auto id = layer->id;
+    const int maskIndex = m_maskIndex;
+    lock.unlock(); // menu runs a nested event loop
+    QMenu menu(this);
+    auto *smooth = menu.addAction(QStringLiteral("Smooth Point (Bézier)"));
+    auto *corner = menu.addAction(QStringLiteral("Corner Point"));
+    auto *remove = menu.addAction(QStringLiteral("Delete Point"));
+    remove->setEnabled(before[size_t(maskIndex)].nodes.size() > 3);
+    const auto *chosen = menu.exec(event->globalPos());
+    if (!chosen) return;
+    // A recall may have replaced the geometry while the menu was open.
+    lock.relock();
+    layer = m_engine->layer(m_engine->indexOfId(id));
+    if (!layer || m_engine->isLocked(m_engine->indexOfId(id)) || layer->masks != before) return;
+    auto after = before;
+    auto &edited = after[size_t(maskIndex)];
+    auto &point = edited.nodes[size_t(node)];
+    if (chosen == smooth) {
+        const auto prev = edited.nodes[(size_t(node) + edited.nodes.size() - 1) % edited.nodes.size()].p;
+        const auto next = edited.nodes[(size_t(node) + 1) % edited.nodes.size()].p;
+        const QPointF tangent = (next - prev) / 6;
+        point.in = point.p - tangent; point.out = point.p + tangent;
+    } else if (chosen == corner) { point.in = point.out = point.p; }
+    else if (chosen == remove) edited.nodes.erase(edited.nodes.begin() + node);
+    edited.shape = Mask::Shape::Path;
+    lock.unlock();
+    if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after, chosen->text()));
+    else m_engine->setLayerMasks(id, after);
+    m_maskNode = -1; m_maskSelection.clear();
+    emit masksEdited(); update();
 }

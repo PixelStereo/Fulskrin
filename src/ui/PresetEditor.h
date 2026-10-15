@@ -36,6 +36,8 @@ public:
     void track(QWidget *w, quint64 layer, const QStringList &paths);
     // The preset actions for those values, at the end of a right-click menu
     void fillMenu(QMenu *menu, quint64 layer, const QStringList &paths);
+    void selectSnapshot(quint64 id) { m_selectedSnapshot = id; }
+    void updateSnapshot(quint64 snapshot, quint64 layer, const QStringList &paths);
     // Every stored value of `layer`, by category, in an "Add to Preset" sub-menu (the selected preset, else a new
     // one): whatever the inspector shows or not, any value can go in a preset
     void fillLayerMenu(QMenu *menu, quint64 layer);
@@ -75,6 +77,7 @@ private:
     Engine *m_engine;
     QUndoStack *m_undo;
     bool m_editing = false;
+    quint64 m_selectedSnapshot = 0;
     quint64 m_selected = 0;
     std::vector<Tracked> m_tracked;
     QTimer m_timer;

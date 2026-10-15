@@ -100,6 +100,24 @@ int main(int argc, char **argv)
         check(guidePixels() <= freePixels + 10, "mouse release clears the guides");
         undo.undo(); check(close(anchor().x(), .35) && close(anchor().y(), .25), "whole snapped gesture is one undo step");
         undo.redo(); check(close(anchor().x(), .75) && close(anchor().y(), .75), "snapped gesture can be redone");
+        // Insert on an existing contour, then undo/redo and delete the inserted node.
+        engine.setLayerMasks(id, {mask});
+        view.setMaskIndex(0);
+        const auto count = engine.layer(index)->masks[0].nodes.size();
+        const QPointF edge = at(.5, .25);
+        send(QEvent::MouseButtonDblClick, edge, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        send(QEvent::MouseButtonRelease, edge, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        check(engine.layer(index)->masks[0].nodes.size() == count + 1, "double-click contour inserts a point");
+        undo.undo(); check(engine.layer(index)->masks[0] == mask, "point insertion undo restores exact original geometry");
+        undo.redo(); check(engine.layer(index)->masks[0].nodes.size() == count + 1, "point insertion redo");
+        click(point(1));
+        QKeyEvent removePoint(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+        QApplication::sendEvent(&view, &removePoint);
+        check(engine.layer(index)->masks[0].nodes.size() == count, "Delete removes selected point");
+        undo.undo(); check(engine.layer(index)->masks[0].nodes.size() == count + 1, "point deletion is undoable");
+        mode->setChecked(false);
+        QApplication::sendEvent(&view, &removePoint);
+        check(engine.layer(index)->masks[0].nodes.size() == count + 1, "Layer mode never deletes mask points");
         view.hide();
     }
     engine.shutdown();

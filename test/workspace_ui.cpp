@@ -1,4 +1,6 @@
 #include "Engine.h"
+#include "MediaBin.h"
+#include <QFile>
 #include "MainWindow.h"
 #include "SequencePanel.h"
 #include "SnapshotPanel.h"
@@ -81,11 +83,69 @@ int main(int argc, char **argv)
             check(update && lists->isAncestorOf(update), "snapshot Update is in library toolbar");
             auto *remove = window.findChild<QPushButton *>("presetDelete");
             check(remove && lists->isAncestorOf(remove) && remove->text() == "−", "preset minus is in library toolbar");
+            // Media Bin commands must target a source layer even after inspecting a viewport.
+            auto *bin = window.findChild<MediaBin *>();
+            QTemporaryDir shaderDir;
+            const auto shaderPath = shaderDir.filePath("generator.fs");
+            QFile shader(shaderPath);
+            check(shader.open(QIODevice::WriteOnly), "create ISF fixture");
+            shader.write("/*{\"ISFVSN\":\"2\",\"INPUTS\":[]}*/\nvoid main(){gl_FragColor=vec4(1.0);}"); shader.close();
+            if (bin && mainTabs) {
+                const int before = engine.layerCount();
+                mainTabs->setCurrentIndex(1);
+                bin->loadIntoNewLayerRequested(shaderPath);
+                check(engine.layerCount() == before + 1, "ISF new-layer action creates a layer from Viewports tab");
+                int loaded = -1;
+                for (int i = 0; i < engine.layerCount(); ++i)
+                    if (engine.layer(i)->sourcePath == shaderPath) loaded = i;
+                check(loaded >= 0 && engine.layer(loaded)->type == SourceType::Isf, "new layer loads ISF generator");
+                check(mainTabs->currentIndex() == 0, "source layer becomes selected");
+                if (loaded >= 0) {
+                    engine.setLayerText(loaded);
+                    mainTabs->setCurrentIndex(1);
+                    bin->useAsSourceRequested(shaderPath);
+                    check(engine.layer(loaded)->type == SourceType::Isf, "selected-layer action replaces source with ISF");
+                }
+            }
             // A complete Spatial tab captures corner values and mesh in one undoable edit.
             auto *presets = PresetEditor::instance();
             auto *undo = window.findChild<QUndoStack *>();
             const int surface = engine.addLayer("Geometry surface");
             const quint64 surfaceId = engine.layerId(surface);
+            Engine::Snapshot reference; reference.name = "Target cue"; reference.layers = engine.captureLayers();
+            reference.composition = engine.captureComposition();
+            const int snapshotIndex = engine.addSnapshot(reference);
+            const quint64 snapshotId = engine.snapshot(snapshotIndex).id;
+            auto *snapshotEditor = PresetEditor::instance();
+            snapshotEditor->selectSnapshot(snapshotId);
+            engine.setParameter(surfaceId, "opacity", .37);
+            QMenu valueMenu;
+            snapshotEditor->fillMenu(&valueMenu, surfaceId, {"opacity"});
+            QAction *selectedUpdate = nullptr;
+            QMenu *snapshotChoices = nullptr;
+            for (auto *action : valueMenu.actions()) {
+                if (action->text() == "Update in Selected Snapshot (Target cue)") selectedUpdate = action;
+                if (action->text() == "Update in Snapshot") snapshotChoices = action->menu();
+            }
+            check(selectedUpdate && snapshotChoices && !snapshotChoices->actions().empty(), "snapshot update actions include selected name and target list");
+            if (selectedUpdate) {
+                const auto original = engine.snapshot(snapshotIndex).layers;
+                selectedUpdate->trigger();
+                const auto updated = engine.snapshot(snapshotIndex).layers;
+                bool changed = false;
+                for (int i = 0; i < updated.size(); ++i) {
+                    auto a = original[i].toObject(), b = updated[i].toObject();
+                    if (b.value("id").toString().toULongLong() != surfaceId) { check(a == b, "snapshot update preserves other layers"); continue; }
+                    auto params = b.value("params").toObject();
+                    check(std::abs(params.value("opacity").toDouble() - .37) < 1e-6, "selected snapshot receives live parameter value");
+                    auto oldParams = a.value("params").toObject(); oldParams["opacity"] = params.value("opacity"); a["params"] = oldParams;
+                    check(a == b, "snapshot update preserves every unrelated field"); changed = true;
+                }
+                check(changed, "target layer found in updated snapshot");
+                window.findChild<QUndoStack *>()->undo();
+                check(engine.snapshot(snapshotIndex).layers == original, "partial snapshot update is undoable");
+            }
+
             engine.layer(surface)->mapping.resetMesh(5, 3);
             engine.layer(surface)->mapping.offsets[2] = QPointF(.1, -.2);
             ++engine.layer(surface)->mapping.revision;

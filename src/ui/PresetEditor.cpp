@@ -195,6 +195,25 @@ void PresetEditor::fillMenu(QMenu *menu, quint64 layer, const QStringList &paths
     if (keep.isEmpty()) return;
     if (!menu->isEmpty()) menu->addSeparator();
     menu->addAction(QStringLiteral("Add to New Preset"), this, [this, layer, keep] { addToNew(layer, keep); });
+    const int selectedSnapshot = m_engine->indexOfSnapshot(m_selectedSnapshot);
+    auto *update = menu->addAction(selectedSnapshot >= 0
+        ? QStringLiteral("Update in Selected Snapshot (%1)").arg(m_engine->snapshot(selectedSnapshot).name)
+        : QStringLiteral("Update in Selected Snapshot"), this,
+        [this, target = m_selectedSnapshot, layer, keep] { updateSnapshot(target, layer, keep); });
+    auto containsLayer = [layer](const Engine::Snapshot &snapshot) {
+        if (!layer) return true;
+        for (const auto &value : snapshot.layers)
+            if (value.toObject().value("id").toString().toULongLong() == layer) return true;
+        return false;
+    };
+    update->setEnabled(selectedSnapshot >= 0 && containsLayer(m_engine->snapshot(selectedSnapshot)));
+    auto *snapshots = menu->addMenu(QStringLiteral("Update in Snapshot"));
+    for (int row = 0; row < m_engine->snapshotCount(); ++row) {
+        const auto snapshot = m_engine->snapshot(row);
+        auto *action = snapshots->addAction(snapshot.name, this, [this, target = snapshot.id, layer, keep] { updateSnapshot(target, layer, keep); });
+        action->setEnabled(containsLayer(snapshot));
+    }
+    snapshots->setEnabled(!snapshots->isEmpty());
     const int i = m_engine->indexOfPreset(m_selected);
     const QString name = i >= 0 ? m_engine->preset(i).name : QString();
     QAction *add = menu->addAction(i >= 0 ? QStringLiteral("Add to Preset \"%1\"").arg(name) : QStringLiteral("Add to Selected Preset"),
@@ -408,6 +427,7 @@ void PresetEditor::fillCategoryMenu(QMenu *menu, quint64 layer, const QString &c
             for (const auto &path : group.second) if (Engine::partOf(path) & (Engine::PartSource | Engine::PartTransport)) paths << path;
     if (category == QLatin1String("Anim")) {
         paths.clear();
+        paths << QStringLiteral("category/%1").arg(Engine::PartAnimations);
         for (const auto &animation : m_engine->layerAnims(layer)) if (!animation.tracks.empty()) paths << animation.tracks.front().param;
     }
     paths.removeDuplicates();
@@ -457,4 +477,67 @@ void PresetEditor::captureCategory(Engine::Preset &preset, quint64 layer, const 
     if (part == Engine::PartMasks) category["masks"] = state.value("masks");
     if (part == Engine::PartViewports) category["viewports"] = state.value("viewports");
     preset.categories[QStringLiteral("%1:%2").arg(layer).arg(part)] = category;
+}
+
+
+namespace {
+class UpdateSnapshotValues : public QUndoCommand {
+public:
+    UpdateSnapshotValues(Engine *engine, Engine::Snapshot before, Engine::Snapshot after)
+        : m_engine(engine), m_before(std::move(before)), m_after(std::move(after)) { setText(QStringLiteral("Update in Snapshot")); }
+    void undo() override { apply(m_before); }
+    void redo() override { apply(m_after); }
+private:
+    void apply(const Engine::Snapshot &value) { const int row = m_engine->indexOfSnapshot(value.id); if (row >= 0) m_engine->setSnapshot(row, value); }
+    Engine *m_engine;
+    Engine::Snapshot m_before, m_after;
+};
+}
+
+void PresetEditor::updateSnapshot(quint64 target, quint64 layer, const QStringList &paths)
+{
+    const int index = m_engine->indexOfSnapshot(target);
+    if (index < 0) return;
+    const auto before = m_engine->snapshot(index);
+    auto after = before;
+    const auto keep = stored(layer, paths);
+    if (keep.isEmpty()) return;
+    if (layer) {
+        const int row = m_engine->indexOfId(layer);
+        if (row < 0) return;
+        const auto live = m_engine->layerJson(row);
+        int at = -1;
+        for (int i = 0; i < after.layers.size(); ++i)
+            if (after.layers[i].toObject().value("id").toString().toULongLong() == layer) { at = i; break; }
+        if (at < 0) return; // Update never captures unrelated state from a new layer.
+        QJsonObject state = after.layers[at].toObject();
+        auto params = state.value("params").toObject();
+        const auto liveParams = live.value("params").toObject();
+        for (const auto &path : keep) {
+            if (path == QLatin1String("geometry/mesh")) state["mesh"] = live.value("mesh");
+            else if (path.startsWith(QLatin1String("category/"))) {
+                const int part = path.section('/', 1).toInt();
+                const QString key = part == Engine::PartSource ? "source" : part == Engine::PartEffects ? "fx" : part == Engine::PartMasks ? "masks" : part == Engine::PartViewports ? "viewports" : part == Engine::PartAnimations ? "anims" : "";
+                if (!key.isEmpty()) { if (live.contains(key)) state[key] = live.value(key); else state.remove(key); }
+            } else if (liveParams.contains(path)) params[path] = liveParams.value(path);
+        }
+        state["params"] = params;
+        after.layers[at] = state;
+    } else {
+        for (const auto &path : keep) {
+            if (path.startsWith(QLatin1String("interaction/"))) {
+                const auto id = path.section('/', 1, 1);
+                const auto key = path.section('/', 2);
+                for (int i = 0; i < after.interactions.size(); ++i) {
+                    auto state = after.interactions[i].toObject();
+                    if (state.value("id").toString() != id) continue;
+                    auto params = state.value("params").toObject(); params[key] = m_engine->parameterValue(0, path);
+                    state["params"] = params; after.interactions[i] = state;
+                }
+            } else if (m_engine->captureComposition().contains(path)) after.composition[path] = m_engine->parameterValue(0, path);
+        }
+    }
+    if (after.layers == before.layers && after.composition == before.composition && after.interactions == before.interactions) return;
+    if (m_undo) m_undo->push(new UpdateSnapshotValues(m_engine, before, after));
+    else m_engine->setSnapshot(index, after);
 }

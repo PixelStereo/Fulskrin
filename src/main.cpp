@@ -6,6 +6,7 @@
 
 #include <QFileInfo>
 #include <QApplication>
+#include <QIcon>
 #include <QCommandLineParser>
 #include <QMessageBox>
 #include <QSurfaceFormat>
@@ -40,6 +41,7 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName("Pinol");
     QApplication::setOrganizationName("Pinol");
     QApplication::setApplicationVersion("0.1.0");
+    app.setWindowIcon(QIcon(QStringLiteral(":/branding/pinol.png")));
     theme::applyToApplication(app);
 
     QCommandLineParser cli;

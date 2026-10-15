@@ -10,6 +10,20 @@
 #include <cmath>
 #include <QTimer>
 
+// A named slot avoids publishing a newly allocated functor through an
+// uninstrumented Qt event queue on every GO. The callback is constructed before
+// QThread::start, whose thread creation establishes its publication ordering.
+class CueClockContext : public QObject
+{
+    Q_OBJECT
+public:
+    explicit CueClockContext(std::function<void()> wake) : m_wake(std::move(wake)) {}
+public slots:
+    void wake() { m_wake(); }
+private:
+    std::function<void()> m_wake;
+};
+
 Sequencer::Sequencer(Engine &engine, Annotated<QRecursiveMutex> &mutex) : QObject(&engine), m_engine(engine), m_mutex(mutex) {}
 
 Sequencer::~Sequencer() { shutdownClock(); }
@@ -17,17 +31,11 @@ Sequencer::~Sequencer() { shutdownClock(); }
 void Sequencer::shutdownClock()
 {
     if (!m_clockThread) return;
-    if (m_clockContext) {
-        // Its timer and context go in their own thread, which then stops: nothing fires any more
-        QObject *ctx = m_clockContext;
-        m_clockContext = nullptr;
-        QMetaObject::invokeMethod(ctx, [this, ctx] {
-            m_timer = nullptr;
-            delete ctx; // the timer with it
-        }, Qt::BlockingQueuedConnection);
-    }
     m_clockThread->quit();
     m_clockThread->wait();
+    tsanAcquire(this); // QThread::wait uses Qt futexes, invisible to TSan.
+    m_clockContext = nullptr;
+    m_timer = nullptr;
     m_clockThread.reset();
     m_ticking = false;
 }
@@ -461,11 +469,13 @@ void Sequencer::startTimer()
     if (!m_clockThread) {
         m_clockThread = std::make_unique<QThread>();
         m_clockThread->setObjectName(QStringLiteral("Pinol cue clock"));
-        m_clockContext = new QObject;
+        m_clockContext = new CueClockContext([this] { runClock(); });
+        connect(m_clockThread.get(), &QThread::finished, m_clockContext, [this] { tsanRelease(this); }, Qt::DirectConnection);
+        connect(m_clockThread.get(), &QThread::finished, m_clockContext, &QObject::deleteLater);
         m_clockContext->moveToThread(m_clockThread.get());
         m_clockThread->start(QThread::TimeCriticalPriority);
     }
-    if (m_clockContext) QMetaObject::invokeMethod(m_clockContext, [this] { runClock(); }, Qt::QueuedConnection);
+    if (m_clockContext) QMetaObject::invokeMethod(m_clockContext, "wake", Qt::QueuedConnection);
 }
 
 void Sequencer::runClock()
@@ -727,3 +737,5 @@ double Sequencer::stepDuration(const Step &st) const
     if (!st.timeline) return m_engine.snapshotDuration(st.snapshot);
     return st.action == AnimAction::Play ? m_engine.animationPlayTime(st.timeline) : 0;
 }
+
+#include "Sequencer.moc"

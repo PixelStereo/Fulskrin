@@ -58,6 +58,9 @@ struct Mask {
 
 namespace masks {
 
+// Split a cubic without changing its outline (De Casteljau).
+bool splitSegment(Mask &mask, int segment, double t);
+
 // Align two or more selected mask nodes. Move their Bézier handles with the node.
 // Does not alter unselected nodes; returns false for invalid/degenerate selections.
 enum class AlignEdge { Left = 0, Right, Top, Bottom };
