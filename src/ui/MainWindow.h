@@ -56,6 +56,7 @@ private:
     bool m_quitting = false; // closing: the project question is asked once, the outputs leave fullscreen first
     void buildMenus();
     void refreshLayerList();
+    void refreshViewports();
     void refreshAll();
     void selectLayer(int index);
     void toggleSolo(int row); // a setup aid: not undone, not saved
@@ -120,6 +121,9 @@ private:
     class InteractionPanel *m_interactions = nullptr;
     MappingView *m_view = nullptr;
     LayerInspector *m_inspector = nullptr;
+    LayerInspector *m_viewportInspector = nullptr;
+    class QListWidget *m_viewportList = nullptr;
+    quint64 m_selectedViewport = 0;
     LayerTable *m_layerTable = nullptr;
     MediaBin *m_bin = nullptr;
     LogPanel *m_logs = nullptr;

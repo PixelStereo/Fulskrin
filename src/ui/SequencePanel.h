@@ -62,6 +62,7 @@ private:
     QLabel *m_wait; // what is waiting, and in how long
     void pollWaits();
     QLabel *m_prev, *m_current, *m_next;
+    QLabel *m_prevTiming, *m_currentTiming, *m_nextTiming, *m_elapsed, *m_nextDescription;
     QLabel *m_prevText, *m_currentText, *m_nextText; // each step's text, under it
     bool m_modified = false, m_filling = false;
 };

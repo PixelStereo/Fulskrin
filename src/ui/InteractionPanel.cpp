@@ -193,6 +193,15 @@ InteractionPanel::InteractionPanel(Engine *engine, QUndoStack *undo, QWidget *pa
     v->addLayout(bar);
 
     m_list = new QTreeWidget;
+    m_list->setObjectName(QStringLiteral("interactionList"));
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_list, &QWidget::customContextMenuRequested, this, [this](const QPoint &point) {
+        auto *item = m_list->itemAt(point);
+        if (!item) return;
+        QMenu menu(this);
+        if (auto *editor = PresetEditor::instance()) editor->fillInteractionMenu(&menu, item->data(0, Qt::UserRole).toULongLong());
+        if (!menu.isEmpty()) menu.exec(m_list->viewport()->mapToGlobal(point));
+    });
     m_list->setColumnCount(4);
     m_list->setHeaderLabels({QStringLiteral("Name"), QStringLiteral("Source"), QStringLiteral("Target"), QStringLiteral("Value")});
     m_list->setRootIsDecorated(false);

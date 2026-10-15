@@ -1,4 +1,5 @@
 #include "Commands.h"
+#include "EngineInternal.h"
 #include "Osc.h"
 
 #include <QColor>
@@ -392,39 +393,42 @@ RecallPreset::RecallPreset(Engine *e, quint64 preset) : m_e(e), m_preset(preset)
 {
     const Engine::Preset p = e->preset(e->indexOfPreset(preset));
     for (const Engine::PresetValue &v : p.values) m_before.push_back(e->presetValue(v.layer, v.path));
+    for (auto it = p.geometry.begin(); it != p.geometry.end(); ++it) m_parts[it.key().toULongLong()] |= Engine::PartSpatial;
+    for (auto it = p.categories.begin(); it != p.categories.end(); ++it) m_parts[it.key().section(':', 0, 0).toULongLong()] |= it.key().section(':', 1).toInt();
+    for (const auto &animation : p.animations) if (!animation.tracks.empty()) {
+        const quint64 layer = animation.tracks.front().layer;
+        m_animations[layer] = e->layerAnims(layer);
+    }
+    for (const auto &[id, parts] : m_parts) { (void)parts; m_layers[id] = e->layerJson(e->indexOfId(id)); }
+    m_hasInteractions = !p.interactions.empty();
+    if (m_hasInteractions) m_interactions = e->interactions();
     setText(QStringLiteral("Recall Preset \"%1\"").arg(p.name));
 }
 
 void RecallPreset::undo()
 {
-    for (const Engine::PresetValue &v : m_before)
-        if (!v.value.isUndefined()) m_e->setParameter(v.layer, v.path, v.value);
+    for (const auto &value : m_before) m_e->cancelParameterRecall(value.layer, value.path);
+    for (const auto &[id, state] : m_layers) {
+        const int index = m_e->indexOfId(id);
+        if (index >= 0) m_e->applyLayerParts(index, state, m_parts[id]);
+    }
+    for (const auto &value : m_before)
+        if (!value.value.isUndefined()) m_e->setParameter(value.layer, value.path, value.value);
+    for (const auto &[id, animations] : m_animations) m_e->setLayerAnims(id, animations);
+    if (m_hasInteractions) m_e->setInteractions(m_interactions);
 }
 
 void RecallPreset::redo()
 {
-    const int i = m_e->indexOfPreset(m_preset);
-    if (i < 0) return;
-    if (m_first) {
-        m_first = false;
-        m_e->recallPreset(i);
-        return;
-    }
-    for (const Engine::PresetValue &v : m_e->preset(i).values) m_e->setParameter(v.layer, v.path, v.value);
+    const int index = m_e->indexOfPreset(m_preset);
+    if (index >= 0) m_e->recallPreset(index);
 }
 
 static bool samePresets(const std::vector<Engine::Preset> &a, const std::vector<Engine::Preset> &b)
 {
     if (a.size() != b.size()) return false;
-    for (size_t k = 0; k < a.size(); ++k) {
-        const Engine::Preset &x = a[k], &y = b[k];
-        if (x.id != y.id || x.name != y.name || x.fade != y.fade || x.values.size() != y.values.size()) return false;
-        for (size_t v = 0; v < x.values.size(); ++v) {
-            const Engine::PresetValue &p = x.values[v], &q = y.values[v];
-            if (p.layer != q.layer || p.path != q.path || p.value != q.value || p.time != q.time || p.easing != q.easing)
-                return false;
-        }
-    }
+    for (size_t k = 0; k < a.size(); ++k)
+        if (presetToJson(a[k]) != presetToJson(b[k])) return false;
     return true;
 }
 

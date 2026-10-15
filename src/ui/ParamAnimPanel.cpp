@@ -13,6 +13,7 @@
 #include <optional>
 #include <QLabel>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSplitter>
@@ -360,6 +361,14 @@ public:
         head->addWidget(m_fold);
         head->addWidget(m_on);
         head->addWidget(m_title, 1);
+        m_title->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_title, &QWidget::customContextMenuRequested, this, [this, layer](const QPoint &point) {
+            if (auto *preset = PresetEditor::instance()) {
+                QMenu menu(this);
+                preset->fillMenu(&menu, layer, {m_param});
+                menu.exec(m_title->mapToGlobal(point));
+            }
+        });
         head->addWidget(m_summary);
         head->addWidget(pin);
         head->addWidget(window);
@@ -418,7 +427,7 @@ public:
 protected:
     bool eventFilter(QObject *o, QEvent *e) override
     {
-        if (o == m_title && e->type() == QEvent::MouseButtonRelease) {
+        if (o == m_title && e->type() == QEvent::MouseButtonRelease && static_cast<QMouseEvent *>(e)->button() == Qt::LeftButton) {
             setFolded(!m_folded, true);
             return true;
         }

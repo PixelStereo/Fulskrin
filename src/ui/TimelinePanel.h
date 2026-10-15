@@ -53,6 +53,8 @@ class TimelineWindow : public QWidget
     Q_OBJECT
 public:
     explicit TimelineWindow(Engine *engine, QUndoStack *undo, QWidget *parent = nullptr);
+    QWidget *listPanel() const { return m_listPanel; }
+    TimelineEditor *editor() const { return m_editor; }
     void setCurrentLayer(quint64 id) { m_editor->setCurrentLayer(id); } // the layer a new track drives
 
 signals:
@@ -64,6 +66,7 @@ private:
     void pollList(); // the ones playing
     Engine *m_engine;
     QUndoStack *m_undo = nullptr;
+    QWidget *m_listPanel;
     TimelineList *m_list;
     QPushButton *m_add, *m_dup, *m_del;
     TimelineEditor *m_editor;

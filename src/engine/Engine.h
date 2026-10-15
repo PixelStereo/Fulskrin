@@ -302,6 +302,7 @@ public:
     void removeEffect(int layerIndex, int fx);
     void moveEffect(int layerIndex, int from, int to);
     bool setIsfImageInput(IsfInstance *inst, int input, const QString &path, QString *err = nullptr);
+    int reloadIsfFile(const QString &path, QString *error = nullptr); // all live instances, transactional per shader
     bool reloadIsf(IsfInstance *inst); // reloads from disk (live editing)
 
     // --- Snapshots (cues, as in MadMapper): snapshots of the layers, recalled with a fade
@@ -332,6 +333,7 @@ public:
     void applyInteractionValues(quint64 id, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,
                                 double fade, const QJsonObject &delays = {});
     static QStringList interactionKeys(); // the keys of an interaction's values, in their order
+    bool snapshotMatches(quint64 id, QString *reason = nullptr) const; // static state, ignores playheads and active drivers
     int snapshotCount() const;
     Snapshot snapshot(int i) const;
     void setSnapshot(int i, const Snapshot &m);
@@ -385,6 +387,8 @@ public:
         // Definitions captured with the selected values, not merely their current output.
         std::vector<::Animation> animations;
         std::vector<Interaction> interactions;
+        QJsonObject categories; // layer:part -> structural source/FX/mask/routing state
+        QJsonObject geometry; // layer id -> mesh topology/offsets; corner/position values are in values
         int indexOf(quint64 layer, const QString &path) const; // -1: not in it
     };
     int presetCount() const;
@@ -396,6 +400,7 @@ public:
     void removePreset(int i);
     int indexOfPreset(quint64 id) const;
     void recallPreset(int i);
+    void cancelParameterRecall(quint64 layer, const QString &path); // undo of an outstanding preset recall
     // A value as it is now, to put in a preset (an undefined value: it has none at that address)
     PresetValue presetValue(quint64 layer, const QString &path) const;
 

@@ -63,6 +63,7 @@
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QListWidget>
 #include <QStackedWidget>
 #include <QThread>
 #include <QUndoStack>
@@ -102,8 +103,58 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_inspector = new LayerInspector(m_engine, m_undo);
     m_composition = new CompositionPanel(m_engine);
     m_tabs = new QTabWidget;
+    m_tabs->setObjectName(QStringLiteral("mainInspectorTabs"));
     m_tabs->addTab(scrolled(m_inspector), QStringLiteral("Layer"));
+    auto *viewportPage = new QWidget;
+    auto *viewportLayout = new QVBoxLayout(viewportPage);
+    viewportLayout->setContentsMargins(0, 0, 0, 0);
+    auto *viewportHeader = new QHBoxLayout;
+    viewportHeader->addWidget(new QLabel(QStringLiteral("Viewports")), 1);
+    auto *newViewport = new QPushButton(QStringLiteral("+"));
+    newViewport->setFixedWidth(30);
+    newViewport->setToolTip(QStringLiteral("New viewport"));
+    connect(newViewport, &QPushButton::clicked, this, &MainWindow::addViewport);
+    viewportHeader->addWidget(newViewport);
+    viewportLayout->addLayout(viewportHeader);
+    m_viewportList = new QListWidget;
+    m_viewportList->setObjectName(QStringLiteral("viewportList"));
+    m_viewportList->setFixedHeight(86);
+    m_viewportList->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    auto *removeViewport = new QPushButton(QStringLiteral("−"));
+    removeViewport->setObjectName(QStringLiteral("removeViewport"));
+    removeViewport->setFixedWidth(30);
+    removeViewport->setToolTip(QStringLiteral("Delete selected viewport"));
+    viewportHeader->addWidget(removeViewport);
+    connect(removeViewport, &QPushButton::clicked, this, [this] { m_tabs->setCurrentIndex(1); removeCurrentLayer(); });
+    connect(m_viewportList, &QListWidget::itemChanged, this, [this](QListWidgetItem *item) {
+        const quint64 id = item->data(Qt::UserRole).toULongLong();
+        const QString name = item->text();
+        const auto before = cmd::SetLayerProp::read(m_engine, id, cmd::SetLayerProp::Name);
+        if (before.isValid() && before.toString() != name)
+            m_undo->push(new cmd::SetLayerProp(m_engine, id, cmd::SetLayerProp::Name, before, name));
+    });
+    viewportLayout->addWidget(m_viewportList);
+    m_viewportInspector = new LayerInspector(m_engine, m_undo);
+    m_viewportInspector->setObjectName(QStringLiteral("viewportInspector"));
+    viewportLayout->addWidget(scrolled(m_viewportInspector), 1);
+    m_tabs->addTab(viewportPage, QStringLiteral("Viewports"));
     m_tabs->addTab(scrolled(m_composition), QStringLiteral("Composition"));
+    connect(m_viewportList, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *item) {
+        m_selectedViewport = item ? item->data(Qt::UserRole).toULongLong() : 0;
+        const int index = m_engine->indexOfId(m_selectedViewport);
+        m_viewportInspector->setLayer(index);
+        if (m_tabs->currentIndex() == 1) {
+            m_view->setLayer(index);
+            if (m_timelineWindow) m_timelineWindow->setCurrentLayer(m_selectedViewport);
+        }
+    });
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this](int tab) {
+        if (tab == 1) m_view->setLayer(m_engine->indexOfId(m_selectedViewport));
+        else if (tab == 0 && m_layerTable) m_view->setLayer(m_layerTable->currentRow());
+    });
+    connect(m_viewportInspector, &LayerInspector::layerChanged, this, [this] { refreshLayerList(); markDirty(); });
+    connect(m_viewportInspector, &LayerInspector::mappingChanged, m_view, qOverload<>(&QWidget::update));
+    connect(m_viewportInspector, &LayerInspector::projectEdited, this, &MainWindow::markDirty);
     m_settings = new SettingsPanel(m_engine);
     m_tabs->addTab(scrolled(m_settings), QStringLiteral("Settings"));
     connect(m_settings, &SettingsPanel::playModeChanged, this,
@@ -183,14 +234,34 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_workspaceTabs->addTab(QStringLiteral("Snapshots"));
     m_workspaceTabs->addTab(QStringLiteral("Presets"));
     m_workspaceTabs->addTab(QStringLiteral("Timelines"));
+    auto *library = new QWidget;
+    library->setObjectName(QStringLiteral("showLibraryColumn"));
+    library->setMinimumWidth(360);
+    auto *libraryLayout = new QVBoxLayout(library);
+    libraryLayout->setContentsMargins(0, 0, 0, 0);
+    libraryLayout->addWidget(m_workspaceTabs);
+    auto *libraryPages = new QStackedWidget;
+    libraryPages->setObjectName(QStringLiteral("showLibraryPages"));
+    libraryPages->addWidget(m_snapshots->listPanel());
+    libraryPages->addWidget(m_timelineWindow->listPanel());
+    libraryLayout->addWidget(libraryPages, 1);
     auto *workspacePages = new QStackedWidget;
     workspacePages->setObjectName(QStringLiteral("showWorkspacePages"));
     workspacePages->addWidget(m_snapshots);
-    workspacePages->addWidget(m_timelineWindow);
-    workspaceLayout->addWidget(m_workspaceTabs);
-    workspaceLayout->addWidget(workspacePages);
-    connect(m_workspaceTabs, &QTabBar::currentChanged, this, [this, workspacePages](int tab) {
+    workspacePages->addWidget(m_timelineWindow->editor());
+    m_timelineWindow->hide(); // retains the library/editor controller connections
+    auto *librarySplit = new QSplitter(Qt::Horizontal);
+    librarySplit->setObjectName(QStringLiteral("showLibrarySplit"));
+    librarySplit->setChildrenCollapsible(false);
+    librarySplit->addWidget(library);
+    librarySplit->addWidget(workspacePages);
+    librarySplit->setStretchFactor(0, 1);
+    librarySplit->setStretchFactor(1, 3);
+    librarySplit->setSizes({300, 700});
+    workspaceLayout->addWidget(librarySplit);
+    connect(m_workspaceTabs, &QTabBar::currentChanged, this, [this, workspacePages, libraryPages](int tab) {
         workspacePages->setCurrentIndex(tab == 2 ? 1 : 0);
+        libraryPages->setCurrentIndex(tab == 2 ? 1 : 0);
         if (tab < 2) m_snapshots->setMode(tab);
     });
     connect(m_snapshots, &SnapshotPanel::modeChanged, this, [this](int mode) {
@@ -296,6 +367,12 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_layerTable, &LayerTable::filesDropped, this, [this](int row, const QStringList &paths) {
         loadDropped(row >= 0 ? row : currentLayer(), paths);
     });
+    connect(m_bin, &MediaBin::reloadIsfRequested, this, [this](const QString &path) {
+        QString error;
+        const int count = m_engine->reloadIsfFile(path, &error);
+        rescanLibrary();
+        statusBar()->showMessage(error.isEmpty() ? QStringLiteral("ISF reloaded: %1 live instance(s)").arg(count) : error, 6000);
+    });
     connect(m_bin, &MediaBin::binEdited, this, &MainWindow::markDirty);
     m_binTimer.setSingleShot(true);
     m_binTimer.setInterval(150);
@@ -303,6 +380,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_inspectorTimer.setSingleShot(true);
     m_inspectorTimer.setInterval(250);
     connect(&m_inspectorTimer, &QTimer::timeout, m_inspector, &LayerInspector::rebuild);
+    connect(&m_inspectorTimer, &QTimer::timeout, m_viewportInspector, &LayerInspector::rebuild);
 
     // --- Composition
     connect(m_composition, &CompositionPanel::blackoutChanged, this, [this](bool on) {
@@ -319,7 +397,9 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     // --- General sync
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
     // Masks: the one selected in the inspector is edited in the preview, the one drawn there is selected
-    connect(m_inspector, &LayerInspector::maskSelected, m_view, &MappingView::setMaskIndex);
+    connect(m_inspector, &LayerInspector::maskSelected, this, [this](int index) {
+        if (m_tabs->currentIndex() != 1) m_view->setMaskIndex(index);
+    });
     connect(m_inspector, &LayerInspector::maskDrawRequested, this, [this] {
         m_view->startMaskDrawing();
         statusBar()->showMessage(QStringLiteral("Draw the mask in the preview: click its points (drag to curve); the first "
@@ -327,7 +407,18 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
                                  10000);
     });
     connect(m_view, &MappingView::masksEdited, m_inspector, &LayerInspector::refreshMasks);
-    connect(m_view, &MappingView::maskPicked, m_inspector, &LayerInspector::selectMask);
+    connect(m_view, &MappingView::maskPicked, this, [this](int index) {
+        (m_tabs->currentIndex() == 1 ? m_viewportInspector : m_inspector)->selectMask(index);
+    });
+    connect(m_view, &MappingView::masksEdited, m_viewportInspector, &LayerInspector::refreshMasks);
+    connect(m_viewportInspector, &LayerInspector::maskSelected, this, [this](int index) {
+        if (m_tabs->currentIndex() == 1) m_view->setMaskIndex(index);
+    });
+    connect(m_viewportInspector, &LayerInspector::maskDrawRequested, this, [this] {
+        m_tabs->setCurrentIndex(1);
+        m_view->startMaskDrawing();
+    });
+    connect(m_viewportInspector, &LayerInspector::rescanLibraryRequested, this, &MainWindow::rescanLibrary, Qt::QueuedConnection);
     connect(m_inspector, &LayerInspector::layerChanged, this, &MainWindow::refreshLayerList);
     connect(m_inspector, &LayerInspector::projectEdited, this, &MainWindow::markDirty);
     connect(m_inspector, &LayerInspector::rescanLibraryRequested, this, &MainWindow::rescanLibrary,
@@ -605,7 +696,7 @@ void MainWindow::buildMenus()
     edit->addSeparator();
     // On macOS, Qt moves it to the application menu (Pinol ▸ Settings…, ⌘,)
     QAction *prefs = edit->addAction(QStringLiteral("Preferences…"), QKeySequence::Preferences, this,
-                                     [this] { m_tabs->setCurrentWidget(m_tabs->widget(2)); }); // the Settings tab
+                                     [this] { m_tabs->setCurrentWidget(m_tabs->widget(3)); }); // the Settings tab
     prefs->setMenuRole(QAction::PreferencesRole);
     if (prefs->shortcut().isEmpty()) prefs->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma)); // Linux / Windows
 
@@ -650,7 +741,7 @@ void MainWindow::buildMenus()
     seq->addAction(QStringLiteral("Timelines…"), this, &MainWindow::openTimelines);
 
     QMenu *comp = menuBar()->addMenu(QStringLiteral("C&omposition"));
-    comp->addAction(QStringLiteral("Composition Size (Composition tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
+    comp->addAction(QStringLiteral("Composition Size (Composition tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(2)); });
     comp->addAction(QStringLiteral("New Viewport"), this, &MainWindow::addViewport);
     comp->addSeparator();
     QAction *outlines = comp->addAction(QStringLiteral("Show Outlines of Other Layers"));
@@ -800,7 +891,8 @@ void MainWindow::setAllOutputs(const std::map<quint64, int> &modes, int otherwis
         const auto it = modes.find(id);
         m_engine->setViewportOutput(i, screen, it != modes.end() ? it->second : otherwise);
     }
-    m_inspector->refreshDynamic(); // the Output tab of the selected viewport
+    m_inspector->refreshDynamic();
+    m_viewportInspector->refreshDynamic(); // the Output tab of the selected viewport
 }
 
 // First time: every viewport goes to `mode`, each on its own screen. Second time: back to how each one was
@@ -889,6 +981,7 @@ void MainWindow::refreshLayerList()
                     : l->isGroup  ? QStringLiteral("▤")
                                   : layerTag(l->type != SourceType::None ? l->type : l->missingType);
             r.viewport = l->isViewport;
+            r.hidden = l->isViewport;
             r.group = l->isGroup;
             r.collapsed = l->isGroup && l->collapsed;
             r.locked = l->locked;
@@ -960,18 +1053,53 @@ void MainWindow::refreshLayerList()
         }
     }
     const int n = int(rows.size());
-    const int keep = qBound(-1, m_layerTable->currentRow(), n - 1);
+    int keep = qBound(-1, m_layerTable->currentRow(), n - 1);
+    if (keep >= 0 && rows[size_t(keep)].viewport) keep = -1;
     m_layerTable->setRows(rows);
     // Nothing selected yet: the first layer below the viewports (or the first viewport)
     int firstLayer = 0;
     while (firstLayer < n && rows[size_t(firstLayer)].viewport) ++firstLayer;
-    const int sel = keep >= 0 ? keep : n == 0 ? -1 : firstLayer < n ? firstLayer : 0;
+    const int sel = keep >= 0 ? keep : n == 0 ? -1 : firstLayer < n ? firstLayer : -1;
     if (sel != m_layerTable->currentRow()) m_layerTable->setCurrentRow(sel);
     if (sel != m_inspector->layerIndex()) {
         m_inspector->setLayer(sel);
         m_view->setLayer(sel);
         m_lastSelected = sel;
     }
+    refreshViewports();
+}
+
+void MainWindow::refreshViewports()
+{
+    const auto indices = m_engine->viewports();
+    bool rebuild = m_viewportList->count() != int(indices.size());
+    for (int k = 0; !rebuild && k < int(indices.size()); ++k) {
+        Engine::Lock lock(&m_engine->mutex());
+        const Layer *layer = m_engine->layer(indices[size_t(k)]);
+        rebuild = !layer || m_viewportList->item(k)->data(Qt::UserRole).toULongLong() != layer->id
+                        || m_viewportList->item(k)->text() != layer->name;
+    }
+    QSignalBlocker blocker(m_viewportList);
+    if (rebuild) {
+        m_viewportList->clear();
+        for (int index : indices) {
+            Engine::Lock lock(&m_engine->mutex());
+            const Layer *layer = m_engine->layer(index);
+            if (!layer) continue;
+            auto *item = new QListWidgetItem(layer->name, m_viewportList);
+            item->setData(Qt::UserRole, QVariant::fromValue(layer->id));
+            item->setFlags(item->flags() | Qt::ItemIsEditable);
+        }
+    }
+    QListWidgetItem *selected = nullptr;
+    for (int k = 0; k < m_viewportList->count(); ++k)
+        if (m_viewportList->item(k)->data(Qt::UserRole).toULongLong() == m_selectedViewport) selected = m_viewportList->item(k);
+    if (!selected && m_viewportList->count()) selected = m_viewportList->item(0);
+    m_viewportList->setCurrentItem(selected);
+    m_selectedViewport = selected ? selected->data(Qt::UserRole).toULongLong() : 0;
+    const int index = m_engine->indexOfId(m_selectedViewport);
+    if (m_viewportInspector->layerIndex() != index) m_viewportInspector->setLayer(index);
+    if (m_tabs->currentIndex() == 1) m_view->setLayer(index);
 }
 
 void MainWindow::refreshAll()
@@ -980,10 +1108,21 @@ void MainWindow::refreshAll()
     m_inspector->rebuild();
     m_view->update();
     m_bin->refresh();
+    m_viewportInspector->rebuild();
 }
 
 void MainWindow::selectLayer(int index)
 {
+    { Engine::Lock lock(&m_engine->mutex());
+      const Layer *layer = m_engine->layer(index);
+      if (layer && layer->isViewport) {
+          m_selectedViewport = layer->id;
+          refreshViewports();
+          m_tabs->setCurrentIndex(1);
+          m_view->setLayer(index);
+          return;
+      }
+    }
     refreshLayerList();
     m_layerTable->setCurrentRow(index);
     m_view->setLayer(index);
@@ -992,7 +1131,7 @@ void MainWindow::selectLayer(int index)
     m_lastSelected = index;
 }
 
-int MainWindow::currentLayer() const { return m_layerTable->currentRow(); }
+int MainWindow::currentLayer() const { return m_tabs->currentIndex() == 1 ? m_engine->indexOfId(m_selectedViewport) : m_layerTable->currentRow(); }
 
 // ---------------------------------------------------------------------------
 // Layer actions (all undoable)
@@ -1208,7 +1347,9 @@ void MainWindow::addEmptyLayer()
 
 void MainWindow::removeCurrentLayer()
 {
-    QList<int> rows = m_layerTable->selectedRows();
+    const bool viewportSelection = m_tabs->currentIndex() == 1;
+    QList<int> rows = m_tabs->currentIndex() == 1
+        ? (currentLayer() >= 0 ? QList<int>{currentLayer()} : QList<int>{}) : m_layerTable->selectedRows();
     if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
     if (rows.isEmpty()) return;
     // A group goes with its layers; locked layers stay
@@ -1237,7 +1378,8 @@ void MainWindow::removeCurrentLayer()
     m_undo->beginMacro(order.size() > 1 ? QStringLiteral("Delete %1 Layers").arg(order.size()) : QStringLiteral("Delete Layer"));
     for (int r : order) m_undo->push(new cmd::RemoveLayer(m_engine, r));
     m_undo->endMacro();
-    selectLayer(qMin(first, m_engine->layerCount() - 1));
+    if (viewportSelection) { refreshViewports(); m_tabs->setCurrentIndex(1); }
+    else selectLayer(qMin(first, m_engine->layerCount() - 1));
 }
 
 void MainWindow::duplicateCurrentLayer()
@@ -1331,7 +1473,8 @@ void MainWindow::copyLayerParams(int row)
 void MainWindow::pasteLayerParams(int parts, const QString &what)
 {
     if (m_paramClipboard.isEmpty()) return;
-    QList<int> rows = m_layerTable->selectedRows();
+    QList<int> rows = m_tabs->currentIndex() == 1
+        ? (currentLayer() >= 0 ? QList<int>{currentLayer()} : QList<int>{}) : m_layerTable->selectedRows();
     if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
     QList<int> targets;
     for (int i : rows)
@@ -1541,7 +1684,8 @@ void MainWindow::ungroupCurrent()
 
 void MainWindow::toggleLockCurrent()
 {
-    QList<int> rows = m_layerTable->selectedRows();
+    QList<int> rows = m_tabs->currentIndex() == 1
+        ? (currentLayer() >= 0 ? QList<int>{currentLayer()} : QList<int>{}) : m_layerTable->selectedRows();
     if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
     if (rows.isEmpty()) return;
     const bool lock = !cmd::SetLayerProp::read(m_engine, m_engine->layerId(rows.first()), cmd::SetLayerProp::Locked).toBool();
@@ -1630,7 +1774,7 @@ void MainWindow::openSequences()
 void MainWindow::openTimelines()
 {
     m_workspaceTabs->setCurrentIndex(2);
-    m_timelineWindow->setFocus();
+    m_timelineWindow->editor()->setFocus();
 }
 
 void MainWindow::togglePlayCurrent()
@@ -1645,6 +1789,7 @@ void MainWindow::togglePlayCurrent()
     }
     m_engine->setLayerPlaying(i, !playing);
     m_inspector->refreshDynamic();
+    m_viewportInspector->refreshDynamic();
 }
 
 // ---------------------------------------------------------------------------
@@ -1655,6 +1800,7 @@ void MainWindow::statusTick()
 {
     m_engine->acknowledgeFrame(); // safety net: the preview cannot stay frozen
     m_inspector->refreshDynamic();
+    m_viewportInspector->refreshDynamic();
     m_composition->refreshStatus();
     refreshLayerList(); // playback positions (in-place update)
     const int pct = int(std::lround(m_engine->outputLevel() * 100));

@@ -1614,3 +1614,25 @@ bool Engine::reloadIsf(IsfInstance *inst)
     }
     return ok;
 }
+
+int Engine::reloadIsfFile(const QString &path, QString *error)
+{
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    int reloaded = 0;
+    QStringList errors;
+    Lock lock(&m_mutex); // keep instances alive while the GL task runs without taking this lock again
+    runGl([&] {
+        for (auto &layer : m_layers) {
+            auto reload = [&](IsfInstance *shader) {
+                if (!shader || QFileInfo(shader->path()).absoluteFilePath() != absolute) return;
+                if (shader->reloadSafely()) { ++reloaded; layer->paramKey = 0; }
+                else errors << shader->error();
+                if (shader == layer->generator.get()) layer->error = shader->error();
+            };
+            reload(layer->generator.get());
+            for (auto &effect : layer->effects) reload(effect.get());
+        }
+    });
+    if (error) *error = errors.join(QLatin1Char('\n'));
+    return reloaded;
+}

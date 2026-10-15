@@ -190,7 +190,7 @@ QJsonObject presetToJson(const Engine::Preset &p)
     }
     for (const Interaction &it : p.interactions) interactions.append(it.toJson());
     return QJsonObject{{"id", QString::number(p.id)}, {"name", p.name}, {"fade", p.fade},
-                       {"values", values}, {"animations", animations}, {"interactions", interactions}};
+                       {"values", values}, {"animations", animations}, {"interactions", interactions}, {"geometry", p.geometry}, {"categories", p.categories}};
 }
 
 Engine::Preset presetFromJson(const QJsonObject &o)
@@ -198,6 +198,8 @@ Engine::Preset presetFromJson(const QJsonObject &o)
     Engine::Preset p;
     p.id = o.value("id").toString().toULongLong();
     p.name = o.value("name").toString();
+    p.geometry = o.value("geometry").toObject();
+    p.categories = o.value("categories").toObject();
     p.fade = std::clamp(o.value("fade").toDouble(1.0), 0.0, 600.0);
     for (const QJsonValue &x : o.value("values").toArray()) {
         const QJsonObject vo = x.toObject();

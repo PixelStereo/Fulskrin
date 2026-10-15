@@ -49,6 +49,7 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp); // video_
 int runCueCaptureTests(Engine &e); // cue_capture.cpp
 int runGpuTargetTests(Engine &e); // gpu_targets.cpp
 int runGoldenRenderTests(Engine &e, const QString &root, const QString &tmp); // golden_render.cpp
+int runOperatorStateTests(Engine &e);
 int runRecallDelayTests(Engine &e); // recall_delay.cpp
 int runEmergencyStopTests(Engine &e); // emergency_stop.cpp
 int runPreviewSourceTests(Engine &e, const QString &tmp);
@@ -167,6 +168,7 @@ int main(int argc, char **argv)
     if (area("gpu_targets")) {
         failures += runGpuTargetTests(e);
     } // gpu_targets
+    if (area("operator_state")) failures += runOperatorStateTests(e);
     if (area("recall_delay")) {
         failures += runRecallDelayTests(e);
     } // recall_delay

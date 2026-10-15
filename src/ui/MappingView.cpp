@@ -64,8 +64,8 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     QToolButton *fit = button(QStringLiteral("Fit"), QStringLiteral("Whole composition in view\n"
                                                                      "Pan: middle button, Alt/⌥ + drag, or two fingers on a trackpad"));
     m_magnetButton = button(QString(), QStringLiteral("Magnetism: dragged points, layers and viewports are caught by the "
-                                                      "edges, centers and corners around them.\nHold Ctrl / ⌘ while "
-                                                      "dragging to move freely. On or off at start: Settings."));
+                                                      "edges, centers and corners around them while Shift is held.\n"
+                                                      "Release Shift to move freely. On or off at start: Settings."));
     m_magnetButton->setIcon(magnet::icon());
     m_magnetButton->setObjectName(QStringLiteral("mappingMagnet"));
     m_magnetButton->setCheckable(true);
@@ -93,20 +93,10 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     // The same canvas supports two deliberate tools: layer mapping or mask node editing.
     // Mask nodes never accidentally move while the layer tool is active.
     m_maskModeButton = button(QStringLiteral("Layer"), QStringLiteral("Layer mode: select and move layers. "
-                                                      "Press to switch to Mask mode: click, snap and align mask nodes."));
+                                                      "Press to switch to Mask mode. Hold Shift while dragging a node to align it with another point."));
     m_maskModeButton->setObjectName(QStringLiteral("mappingSelectionMode"));
     m_maskModeButton->setCheckable(true);
     connect(m_maskModeButton, &QToolButton::toggled, this, &MappingView::setMaskEditMode);
-    for (int i = 0; i < 4; ++i) {
-        static const char *icons[4] = {"←", "→", "↑", "↓"};
-        static const char *labels[4] = {"Align mask nodes left", "Align mask nodes right",
-                                        "Align mask nodes top", "Align mask nodes bottom"};
-        m_alignMask[i] = button(QString::fromUtf8(icons[i]), QString::fromLatin1(labels[i]) +
-                                QStringLiteral(" (Ctrl/Command-click at least two points first)"));
-        m_alignMask[i]->setObjectName(QStringLiteral("maskAlign%1").arg(i));
-        m_alignMask[i]->setEnabled(false);
-        connect(m_alignMask[i], &QToolButton::clicked, this, [this, i] { alignMaskNodes(i); });
-    }
     connect(out, &QToolButton::clicked, this, [this] { zoomBy(1 / 1.25); });
     connect(in, &QToolButton::clicked, this, [this] { zoomBy(1.25); });
     connect(fit, &QToolButton::clicked, this, &MappingView::zoomToFit);
@@ -164,7 +154,6 @@ void MappingView::refreshCoordinateBar()
     QString name;
     bool show = false;
     bool mask = false;
-    int aligned = 0;
     {
         Engine::Lock lk(&m_engine->mutex());
         if (m_maskEditMode) {
@@ -177,7 +166,6 @@ void MappingView::refreshCoordinateBar()
                 const QPointF p = k->nodes[size_t(m_maskNode)].p;
                 out = QPointF(p.x() * frame.width(), p.y() * frame.height());
                 name = QStringLiteral("Mask node %1").arg(m_maskNode + 1);
-                aligned = int(m_maskSelection.size());
                 show = true;
             }
         } else {
@@ -195,7 +183,6 @@ void MappingView::refreshCoordinateBar()
             }
         }
     }
-    for (QToolButton *b : m_alignMask) if (b) b->setEnabled(mask && aligned >= 2);
     if (m_coordBar->isVisible() != show) m_coordBar->setVisible(show);
     if (!show) return;
     m_coordName->setText(name);
@@ -312,6 +299,11 @@ void MappingView::wheelEvent(QWheelEvent *e)
 
 bool MappingView::event(QEvent *e)
 {
+    if ((e->type() == QEvent::KeyRelease && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Shift) ||
+        e->type() == QEvent::FocusOut) {
+        clearGuides();
+        update();
+    }
     if (e->type() == QEvent::NativeGesture) { // macOS trackpad pinch
         auto *g = static_cast<QNativeGestureEvent *>(e);
         if (g->gestureType() == Qt::ZoomNativeGesture) {
@@ -837,7 +829,7 @@ bool MappingView::insideLayer(int index, QPointF p) const
 // ---------------------------------------------------------------------------
 // Magnetism
 // ---------------------------------------------------------------------------
-bool MappingView::snapping(Qt::KeyboardModifiers mods) const { return magnet::enabled() && !(mods & Qt::ControlModifier); }
+bool MappingView::snapping(Qt::KeyboardModifiers mods) const { return magnet::enabled() && (mods & Qt::ShiftModifier); }
 
 void MappingView::clearGuides()
 {
@@ -902,7 +894,11 @@ QPointF MappingView::snapPoint(QPointF p, const SnapTargets &t)
             m_guideAt = q;
         }
     }
-    if (m_guidePoint) return m_guideAt;
+    if (m_guidePoint) {
+        m_guideX = {m_guideAt.x()};
+        m_guideY = {m_guideAt.y()};
+        return m_guideAt;
+    }
     // Otherwise each coordinate on the nearest line within reach
     QPointF r = p;
     double bx = dx, by = dy;
@@ -1099,17 +1095,19 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
         } else {
             MaskNode &n = k->nodes[size_t(m_maskNode)];
             // Magnetism works in composition space even when a surface mask is warped by mapping.
-            // Other mask points are additional snap targets; Ctrl/Command disables magnetism.
+            // Shift aligns against stationary anchors, in screen axes even on a warped surface.
             auto snapMask = [&](QPointF raw) {
                 if (!snapping(e->modifiers())) { clearGuides(); return raw; }
-                SnapTargets targets = snapTargets();
-                for (size_t j = 0; j < k->nodes.size(); ++j) {
-                    if (int(j) == m_maskNode) continue;
-                    const QPointF p = toNorm(frameToWidget(comp, k->nodes[j].p));
-                    targets.points.push_back(p);
-                    targets.xs.push_back(p.x());
-                    targets.ys.push_back(p.y());
-                }
+                SnapTargets targets;
+                for (const Mask &other : l->masks)
+                    for (size_t j = 0; j < other.nodes.size(); ++j) {
+                        if (&other == k && m_maskDrag == MaskDrag::Node &&
+                            (int(j) == m_maskNode || std::find(m_maskSelection.begin(), m_maskSelection.end(), int(j)) != m_maskSelection.end())) continue;
+                        const QPointF p = toNorm(frameToWidget(maskInComposition(&other), other.nodes[j].p));
+                        targets.points.push_back(p);
+                        targets.xs.push_back(p.x());
+                        targets.ys.push_back(p.y());
+                    }
                 const QPointF snapped = snapPoint(toNorm(frameToWidget(comp, raw)), targets);
                 return widgetToFrame(comp, toWidget(snapped), raw);
             };
@@ -1140,7 +1138,6 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
     // Moves happen in the layer's own canvas (inside its group's mapping)
     QPointF delta = canvasOf(m_layer, n) - canvasOf(m_layer, m_lastNorm);
     m_lastNorm = n;
-    if (e->modifiers() & Qt::ShiftModifier) delta *= 0.1; // fine movement
     if (m_rubber) {
         m_rubberEnd = e->position();
     } else if (m_dragHandle) {
@@ -1216,6 +1213,8 @@ void MappingView::mouseReleaseEvent(QMouseEvent *)
             m_undo->push(new cmd::SetMasks(m_engine, id, m_masksBefore, after,
                                            whole ? QStringLiteral("Move Mask") : QStringLiteral("Move Mask Point")));
         emit masksEdited();
+        clearGuides();
+        update();
         return;
     }
     if (m_rubber) { // adds the points inside the rectangle to the selection
@@ -1379,30 +1378,6 @@ void MappingView::setMaskIndex(int index)
     m_maskNode = -1;
     m_maskDrag = MaskDrag::None;
     update();
-}
-
-// Align selected nodes along an extreme X or Y coordinate, preserving their Bézier handles.
-void MappingView::alignMaskNodes(int edge)
-{
-    if (!m_maskEditMode || m_maskSelection.size() < 2) return;
-    quint64 id = 0;
-    std::vector<Mask> before, after;
-    {
-        Engine::Lock lk(&m_engine->mutex());
-        Mask *k = editedMask();
-        Layer *l = m_engine->layer(m_layer);
-        if (!k || !l || m_engine->isLocked(m_layer)) return;
-        id = l->id;
-        before = after = l->masks;
-        masks::alignNodes(after[size_t(m_maskIndex)], m_maskSelection, masks::AlignEdge(edge));
-    }
-    if (before != after) {
-        if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after,
-                                                  QStringLiteral("Align Mask Nodes")));
-        else m_engine->setLayerMasks(id, after);
-        emit masksEdited();
-        update();
-    }
 }
 
 void MappingView::startMaskDrawing()

@@ -41,6 +41,9 @@ public:
     void fillLayerMenu(QMenu *menu, quint64 layer);
     // The stored values of `layer` grouped by category ("Source", "Spatial"…), in the layer's order (tests)
     static std::vector<std::pair<QString, QStringList>> layerValues(Engine *engine, quint64 layer);
+    void fillCategoryMenu(QMenu *menu, quint64 layer, const QString &category);
+    void fillInteractionMenu(QMenu *menu, quint64 interaction);
+    void addInteraction(quint64 id, bool newPreset);
     void capturePresetDrivers(Engine::Preset &preset, quint64 layer, const QStringList &paths) const;
     void addToNew(quint64 layer, const QStringList &paths);
     void addToSelected(quint64 layer, const QStringList &paths);
@@ -63,6 +66,7 @@ private:
         int state = 0;     // 0 not in the selected preset, 1 in it, 2 in it with another value now
         bool driven = false; // an enabled animation track or interaction targets one of these values
     };
+    void captureCategory(Engine::Preset &preset, quint64 layer, const QString &path) const;
     QStringList stored(quint64 layer, const QStringList &paths) const;
     void toggle(const Tracked &t);
     void updateMarks();

@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QSet>
 #include <functional>
+#include <set>
 
 // Easing curve types for parameter interpolation
 enum class EasingCurve { Linear, EaseIn, EaseOut, EaseInOut, EaseInCubic, EaseOutCubic };
@@ -421,6 +422,24 @@ void Engine::recallPreset(int i)
     const Preset p = preset(i);
     if (!p.id) return;
     const double fade = std::max(0.0, p.fade);
+    for (auto it = p.categories.begin(); it != p.categories.end(); ++it) {
+        const QStringList key = it.key().split(QLatin1Char(':'));
+        if (key.size() != 2) continue;
+        const int index = indexOfId(key[0].toULongLong());
+        if (index < 0 || isLocked(index)) continue;
+        QJsonObject state = it.value().toObject();
+        // Structural data applies first. Static values retain their live values until the
+        // per-address scheduler below starts their individual delay/fade.
+        state["params"] = layerJson(index).value("params");
+        applyLayerParts(index, state, key[1].toInt());
+    }
+    { Lock lock(&m_mutex);
+      for (auto it = p.geometry.begin(); it != p.geometry.end(); ++it) {
+          const int index = indexOfId(it.key().toULongLong());
+          Layer *layer = this->layer(index);
+          if (layer && !isLocked(index) && !layer->isViewport) layer->mapping.setMeshJson(it.value().toObject());
+      }
+    }
     std::map<quint64, std::vector<const PresetValue *>> byLayer;
     for (const PresetValue &v : p.values)
         if (!v.value.isUndefined() && !v.value.isNull()) byLayer[v.layer].push_back(&v);
@@ -1487,4 +1506,117 @@ QString Engine::transitionShader(quint64 layer) const
     Lock lk(&m_mutex);
     const auto it = m_transitions.find(layer);
     return it == m_transitions.end() ? QString() : it->second->shaderPath;
+}
+
+// Operator concordance: compare only state a recall owns. Running clocks and
+// outputs of active animation/interaction drivers are deliberately excluded.
+bool Engine::snapshotMatches(quint64 id, QString *reason) const
+{
+    Lock lock(&m_mutex);
+    if (reason) reason->clear();
+    const int index = indexOfSnapshot(id);
+    auto mismatch = [&](const QString &detail) { if (reason) *reason = detail; return false; };
+    if (index < 0) return mismatch(QStringLiteral("Snapshot removed"));
+    const Snapshot &snapshot = m_snapshots[size_t(index)];
+    std::set<std::pair<quint64, QString>> driven;
+    auto collect = [&](const Animation &animation) {
+        if (animation.state == AnimState::Stopped) return;
+        for (const auto &track : animation.tracks) if (track.enabled) driven.insert({track.layer, track.param});
+    };
+    for (const auto &animation : m_animations) collect(animation);
+    for (const auto &layer : m_layers) for (const auto &animation : layer->anims) collect(animation);
+    for (const auto &interaction : m_interactions) if (interaction.enabled) driven.insert({interaction.layer, interaction.param});
+    auto isDriven = [&](quint64 layer, const QString &path) {
+        if (driven.count({layer, path})) return true;
+        for (const auto &[owner, group] : driven)
+            if (owner == layer && path.startsWith(group + QLatin1Char('/'))) return true;
+        return false;
+    };
+    auto equal = [](const QJsonValue &a, const QJsonValue &b) {
+        if (a.isDouble() && b.isDouble()) return std::abs(a.toDouble() - b.toDouble()) <= 1e-5 * std::max(1.0, std::abs(b.toDouble()));
+        return a == b;
+    };
+    auto paramsMatch = [&](quint64 layer, const QJsonObject &values, const QString &prefix = QString(), const QJsonObject *liveValues = nullptr) {
+        for (auto value = values.begin(); value != values.end(); ++value) {
+            const QString path = prefix + value.key();
+            if (path == QLatin1String("position") || path == QLatin1String("tc/position") || isDriven(layer, path)) continue;
+            const QJsonValue live = liveValues ? liveValues->value(value.key()) : parameterValue(layer, path);
+            if (!equal(live, value.value())) return mismatch(path);
+        }
+        return true;
+    };
+    QSet<quint64> named;
+    for (const auto &value : snapshot.layers) {
+        const auto stored = value.toObject();
+        const quint64 layerId = stored.value("id").toString().toULongLong();
+        named.insert(layerId);
+        if (!stored.value("included").toBool(true)) continue;
+        const int row = indexOfId(layerId);
+        if (row < 0) return mismatch(QStringLiteral("Layer removed"));
+        if (isLocked(row)) continue; // the recall itself leaves this layer alone
+        const QJsonObject live = layerJson(row);
+        for (const char *field : {"source", "fx", "parent", "enable", "name", "viewports", "masks", "mask", "color_models"}) {
+            QJsonValue a = live.value(QLatin1String(field)), b = stored.value(QLatin1String(field));
+            if (QLatin1String(field) == QLatin1String("source")) {
+                auto clean = [](QJsonValue value) { auto o = value.toObject(); o.remove("relative_path"); return QJsonValue(o); };
+                a = clean(a); b = clean(b);
+            }
+            if (a != b) return mismatch(QString::fromLatin1(field));
+        }
+        auto a = live.value("mesh").toObject(), b = stored.value("mesh").toObject();
+        a.remove("edit"); b.remove("edit");
+        if (a != b) return mismatch(QStringLiteral("Mesh"));
+        auto definitions = [](const QJsonArray &animations) {
+            QJsonArray result;
+            for (const auto &value : animations) {
+                auto definition = value.toObject();
+                definition.remove("state"); definition.remove("clock");
+                result.append(definition);
+            }
+            return result;
+        };
+        if (definitions(live.value("anims").toArray()) != definitions(stored.value("anims").toArray()))
+            return mismatch(QStringLiteral("Animation settings"));
+        const QJsonObject liveValues = live.value("params").toObject();
+        if (!paramsMatch(layerId, stored.value("params").toObject(), QString(), &liveValues)) return false;
+    }
+    for (int row = 0; row < int(m_layers.size()); ++row) {
+        const auto &layer = m_layers[size_t(row)];
+        if (!layer->isViewport && !named.contains(layer->id) && !isLocked(row) && layer->enabled)
+            return mismatch(QStringLiteral("Additional visible layer"));
+    }
+    if (!snapshot.composition.isEmpty() && snapshot.composition.value("included").toBool(true)) {
+        for (const char *field : {"opacity", "volume"}) {
+            const QString path = QString::fromLatin1(field);
+            if (snapshot.composition.contains(path) && !isDriven(0, path) &&
+                !equal(parameterValue(0, path), snapshot.composition.value(path))) return mismatch(path);
+        }
+    }
+    QSet<quint64> interactionIds;
+    for (const auto &value : snapshot.interactions) {
+        const auto stored = value.toObject();
+        const quint64 interaction = stored.value("id").toString().toULongLong();
+        interactionIds.insert(interaction);
+        if (!stored.value("included").toBool(true)) continue;
+        if (!paramsMatch(0, stored.value("params").toObject(), QStringLiteral("interaction/%1/").arg(interaction))) return false;
+    }
+    for (const auto &interaction : m_interactions)
+        if (interaction.enabled && !interactionIds.contains(interaction.id)) return mismatch(QStringLiteral("Additional enabled interaction"));
+    return true;
+}
+
+void Engine::cancelParameterRecall(quint64 layer, const QString &path)
+{
+    Lock lock(&m_mutex);
+    cancelScheduledRecall(layer, path);
+    if (layer) {
+        takeOverFades(layer, QSet<QString>{path});
+        if (path == QLatin1String("text/content"))
+            if (Layer *l = this->layer(indexOfId(layer))) l->text.stopTyping();
+    } else {
+        if (path == QLatin1String("opacity")) m_compFade.opacity = false;
+        if (path == QLatin1String("volume")) m_compFade.volume = false;
+        m_interactionFades.erase(std::remove_if(m_interactionFades.begin(), m_interactionFades.end(),
+            [&](const InteractionFade &fade) { return fade.path == path; }), m_interactionFades.end());
+    }
 }

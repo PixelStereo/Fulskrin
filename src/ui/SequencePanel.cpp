@@ -169,6 +169,8 @@ void RecallProgressBar::paintEvent(QPaintEvent *)
 SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(engine)
 {
     setObjectName("sequenceBar");
+    setFixedHeight(190);
+    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     setStyleSheet("#sequenceBar { background:#202024; border-top:1px solid #34343a; }");
     setAttribute(Qt::WA_StyledBackground);
     auto *v = new QVBoxLayout(this);
@@ -178,8 +180,10 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     row->setSpacing(6);
     m_sequence = new QComboBox;
     m_sequence->setToolTip(QStringLiteral("Sequence played by GO"));
-    m_sequence->setMinimumWidth(110);
-    m_back = new QPushButton(QStringLiteral("◀ BACK"));
+    m_sequence->setMinimumWidth(100);
+    m_sequence->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_sequence->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_back = new QPushButton(QStringLiteral("GO BACK"));
     m_back->setToolTip(QStringLiteral("GO BACK: the previous step (Shift+Space)"));
     m_go = new QPushButton(QStringLiteral("GO ▶"));
     m_go->setToolTip(QStringLiteral("GO: the next step (Space)"));
@@ -204,12 +208,12 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     }
     m_currentText->setWordWrap(true);
     m_currentText->setStyleSheet("color:#e4e4e8; font-style:italic;");
-    m_stop = new QPushButton(QStringLiteral("■"));
+    m_stop = new QPushButton(QStringLiteral("STOP"));
     m_stop->setToolTip(QStringLiteral("Stop the waits of the selected sequence: its pre-waits and follows still to "
                                       "come are dropped (the snapshots already running go on; the other sequences "
                                       "keep playing)"));
     m_stop->setEnabled(false);
-    m_stop->setFixedWidth(34);
+    m_stop->setFixedWidth(52);
     m_stop->setStyleSheet("QPushButton:enabled { background:#8a2a24; color:white; }");
     // Several sequences may play at once: one button stops them all, whichever is selected
     m_stopAll = new QPushButton(QStringLiteral("■■"));
@@ -228,23 +232,44 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     row->addWidget(m_stop);
     row->addWidget(m_stopAll);
     row->addSpacing(6);
-    // Previous, current and next steps, each with its text under it
-    auto column = [](QLabel *name, QLabel *text) {
+    v->addLayout(row);
+    row = new QHBoxLayout;
+    // Previous, current and next steps, each with its comment and timing.
+    m_prevTiming = new QLabel; m_currentTiming = new QLabel; m_nextTiming = new QLabel;
+    m_prevTiming->setObjectName(QStringLiteral("previousCueTiming"));
+    m_currentTiming->setObjectName(QStringLiteral("currentCueTiming"));
+    m_nextTiming->setObjectName(QStringLiteral("nextCueTiming"));
+    m_elapsed = new QLabel;
+    m_elapsed->setObjectName(QStringLiteral("currentCueElapsed"));
+    m_nextDescription = new QLabel;
+    m_nextDescription->setObjectName(QStringLiteral("nextCueDescription"));
+    m_nextDescription->setTextFormat(Qt::PlainText);
+    for (QLabel *label : {m_prev, m_current, m_next, m_prevText, m_currentText, m_nextText,
+                         m_prevTiming, m_currentTiming, m_nextTiming, m_elapsed, m_nextDescription}) {
+        label->setWordWrap(false);
+        label->setFixedHeight(20);
+        label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    }
+    m_wait->setFixedHeight(20);
+    //
+    auto column = [](QLabel *name, QLabel *text, QLabel *timing) {
         auto *c = new QVBoxLayout;
         c->setSpacing(0);
         c->addWidget(name);
         c->addWidget(text);
+        c->addWidget(timing);
         c->addStretch();
         return c;
     };
-    row->addLayout(column(m_prev, m_prevText), 2);
+    row->addLayout(column(m_prev, m_prevText, m_prevTiming), 2);
     row->addWidget(new QLabel(QStringLiteral("›")), 0, Qt::AlignTop);
-    row->addLayout(column(m_current, m_currentText), 3);
+    row->addLayout(column(m_current, m_currentText, m_currentTiming), 3);
     row->addWidget(new QLabel(QStringLiteral("›")), 0, Qt::AlignTop);
-    row->addLayout(column(m_next, m_nextText), 2);
+    row->addLayout(column(m_next, m_nextText, m_nextTiming), 2);
     v->addLayout(row);
+    v->addWidget(m_elapsed);
     v->addWidget(m_wait);
-    m_wait->hide();
+    v->addWidget(m_nextDescription);
     auto *progress = new RecallProgressBar(m_engine);
     progress->setToolTip(QStringLiteral("The snapshot running, and where it is in its time"));
     v->addWidget(progress);
@@ -310,7 +335,8 @@ void SequenceBar::pollWaits()
         parts << QStringLiteral("<span style='color:#8a8a90'>WAIT · press GO for the next step</span>");
     const QString label = parts.join(QStringLiteral("  ·  "));
     if (label != m_wait->text()) m_wait->setText(label);
-    m_wait->setVisible(!label.isEmpty());
+    m_wait->setToolTip(label);
+    m_elapsed->setText(QStringLiteral("Elapsed since GO: %1 s").arg(m_engine->sequencer().stepElapsed(m_engine->sequencer().current()), 0, 'f', 1));
     m_stop->setEnabled(m_engine->sequencer().running());
     m_stopAll->setEnabled(m_engine->sequencer().anyActive());
 }
@@ -361,7 +387,19 @@ void SequenceBar::refresh()
                                                     : QStringLiteral("ready: GO plays the first step")));
         m_currentText->clear();
     }
-    for (QLabel *l : {m_prevText, m_currentText, m_nextText}) l->setVisible(!l->text().isEmpty());
+    auto cueTiming = [&](int k) {
+        if (k < 0 || k >= int(s.steps.size())) return QStringLiteral("Action — | PRE — | POST —");
+        const auto &step = s.steps[size_t(k)];
+        const double duration = m_engine->sequencer().stepDuration(step);
+        return QStringLiteral("Action %1 | PRE %2 | POST %3 s")
+            .arg(std::isfinite(duration) ? QString::number(duration, 'f', 1) : QStringLiteral("∞"))
+            .arg(step.preWait, 0, 'f', 1).arg(step.postWait, 0, 'f', 1);
+    };
+    m_prevTiming->setText(cueTiming(prev)); m_currentTiming->setText(cueTiming(pos)); m_nextTiming->setText(cueTiming(next));
+    const QString description = next >= 0 ? s.steps[size_t(next)].description : QString();
+    m_nextDescription->setText(QStringLiteral("Next: %1").arg(description));
+    m_nextDescription->setToolTip(description);
+    for (QLabel *label : {m_prev, m_current, m_next, m_prevText, m_currentText, m_nextText, m_prevTiming, m_currentTiming, m_nextTiming}) label->setToolTip(label->text());
     m_go->setEnabled(next >= 0);
     m_back->setEnabled(prev >= 0);
 }
@@ -370,7 +408,7 @@ void SequenceBar::refresh()
 // SequenceWindow
 // ---------------------------------------------------------------------------
 
-enum StepCol { ColNum, ColSnapshot, ColPre, ColAction, ColPost, ColNext, ColText, ColCount };
+enum StepCol { ColNum, ColSnapshot, ColPre, ColAction, ColPost, ColNext, ColText, ColDescription, ColCount };
 
 // The time columns (pre-wait, action, post-wait) filling as their time goes by, the continuation as a word;
 // the waits are edited with the app's number field, the continuation with a menu
@@ -514,7 +552,7 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     m_steps = new QTableWidget(0, ColCount);
     m_steps->setHorizontalHeaderLabels({QStringLiteral("#"), QStringLiteral("Snapshot / Timeline"), QStringLiteral("Pre-wait"),
                                         QStringLiteral("Action"), QStringLiteral("Post-wait"), QStringLiteral("Continue"),
-                                        QStringLiteral("Text")});
+                                        QStringLiteral("Comment"), QStringLiteral("Description")});
     m_steps->horizontalHeaderItem(ColPre)->setToolTip(QStringLiteral("Seconds between the step's GO and its snapshot"));
     m_steps->horizontalHeaderItem(ColAction)->setToolTip(QStringLiteral("The snapshot's time: its fade, or the longest time of its own values\n"
                                                                          "A timeline played: the time it plays, when it ends (endless: 0)"));
@@ -536,6 +574,8 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     m_steps->horizontalHeader()->setSectionResizeMode(ColText, QHeaderView::Stretch);
     m_steps->setColumnWidth(ColNum, 40);
     m_steps->setColumnWidth(ColSnapshot, 220);
+    m_steps->setColumnWidth(ColDescription, 220);
+    m_steps->setObjectName(QStringLiteral("sequenceSteps"));
     m_steps->setAcceptDrops(true);
     m_steps->viewport()->setAcceptDrops(true);
     m_steps->viewport()->installEventFilter(this);
@@ -619,6 +659,7 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
         Sequencer::Step &st = s.steps[size_t(it->row())];
         switch (it->column()) {
         case ColText: st.text = it->text(); break;
+        case ColDescription: st.description = it->text(); break;
         case ColPre: st.preWait = std::clamp(it->data(Qt::EditRole).toDouble(), 0.0, 3600.0); break;
         case ColPost: st.postWait = std::clamp(it->data(Qt::EditRole).toDouble(), 0.0, 3600.0); break;
         case ColNext: st.next = Sequencer::StepContinue(std::clamp(it->data(Qt::EditRole).toInt(), 0, 2)); break;
@@ -831,6 +872,7 @@ void SequenceWindow::refresh()
         m_steps->setItem(k, ColPost, post);
         m_steps->setItem(k, ColNext, next);
         m_steps->setItem(k, ColText, text);
+        m_steps->setItem(k, ColDescription, new QTableWidgetItem(st.description));
         if (k == pos) { // the step played: green, orange once something changed since
             const QColor c = m_modified ? QColor(QString::fromLatin1(kChanged)) : kLive;
             num->setText(QStringLiteral("▶ %1").arg(k + 1));

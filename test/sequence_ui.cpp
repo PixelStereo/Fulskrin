@@ -4,6 +4,8 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QTimer>
+#include <QJsonArray>
+#include <QThread>
 #include <cstdio>
 int main(int argc, char **argv)
 {
@@ -15,6 +17,8 @@ int main(int argc, char **argv)
     first.preWait = 2;
     first.postWait = 4;
     first.next = Sequencer::StepContinue::AutoFollow;
+    second.description = QString(2000, QChar('A'));
+    second.text = QString(2000, QChar('B'));
     sequence.steps = {first, second, third};
     engine.sequencer().add(sequence);
     engine.sequencer().setCurrent(0);
@@ -27,8 +31,17 @@ int main(int argc, char **argv)
     if (!label || !poller) return 1;
     poller->stop();
     auto poll = [&] { QMetaObject::invokeMethod(poller, "timeout", Qt::DirectConnection); };
+    bar.resize(650, bar.height()); bar.show(); app.processEvents();
+    const QSize fixedSize = bar.size();
+    check(bar.minimumHeight() == bar.maximumHeight(), "mini sequencer height is fixed");
+    check(engine.sequencer().toJson()[0].toObject()["steps"].toArray()[1].toObject()["description"].toString() == second.description, "description serialized independently of comment");
     engine.sequencer().go(); poll();
     check(label->text().contains("PRE-WAIT") && label->text().contains("0%"), "pre-wait starts at zero");
+    const double elapsedBeforeEdit = engine.sequencer().stepElapsed(0);
+    auto editedSequence = engine.sequencer().sequence(0);
+    editedSequence.steps[0].description = "Edited while running";
+    engine.sequencer().setSequence(0, editedSequence);
+    check(engine.sequencer().stepElapsed(0) >= elapsedBeforeEdit, "editing a cue preserves its elapsed clock");
     engine.sequencer().advance(1); poll();
     check(label->text().contains("PRE-WAIT") && label->text().contains("50%"), "pre-wait progress halfway");
     engine.sequencer().advance(1); poll();
@@ -39,6 +52,13 @@ int main(int argc, char **argv)
     check(label->text().contains("press GO"), "manual wait asks for GO after follow");
     for (auto *button : bar.findChildren<QPushButton *>())
         check(button->text() != "Sequences…" && button->text() != "Timelines…", "no editor launcher below preview");
+    app.processEvents();
+    check(bar.size() == fixedSize, "long comments and waits do not resize mini sequencer");
+    auto *description = bar.findChild<QLabel *>("nextCueDescription");
+    check(description != nullptr, "next cue description field exists");
+    auto *timing = bar.findChild<QLabel *>("nextCueTiming");
+    check(timing && timing->text().contains("PRE") && timing->text().contains("POST"), "next cue action and wait durations shown");
+    QThread::msleep(20); check(engine.sequencer().stepElapsed(0) > 0, "elapsed clock survives cue completion");
     engine.sequencer().stopAll(); poll();
     check(!label->text().contains("POST-WAIT") && !label->text().contains("PRE-WAIT"), "stop removes old wait progress");
     return failures ? 1 : 0;

@@ -35,6 +35,7 @@ PresetEditor::PresetEditor(Engine *engine, QUndoStack *undo, QObject *parent)
 PresetEditor::~PresetEditor()
 {
     if (s_instance == this) s_instance = nullptr;
+    delete m_overlay; // its parent window can outlive this controller
 }
 
 PresetEditor *PresetEditor::instance() { return s_instance; }
@@ -60,7 +61,10 @@ void PresetEditor::select(quint64 preset)
 QStringList PresetEditor::stored(quint64 layer, const QStringList &paths) const
 {
     QStringList out;
+    if (layer && m_engine->indexOfId(layer) < 0) return out;
     for (const QString &p : paths) {
+        if (layer && p.startsWith(QLatin1String("category/"))) { out << p; continue; }
+        if (layer && p == QLatin1String("geometry/mesh")) { out << p; continue; }
         ParamInfo info;
         if (m_engine->parameterInfo(layer, p, &info) && info.type != ParamInfo::Type::Trigger &&
             (info.access & ParamInfo::Write))
@@ -121,7 +125,13 @@ void PresetEditor::addToNew(quint64 layer, const QStringList &paths)
     if (keep.isEmpty()) return;
     Engine::Preset p;
     p.name = QStringLiteral("Preset %1").arg(m_engine->presetCount() + 1);
-    for (const QString &path : keep) p.values.push_back(m_engine->presetValue(layer, path));
+    for (const QString &path : keep) {
+        if (path.startsWith(QLatin1String("category/"))) { captureCategory(p, layer, path); continue; }
+        if (path == QLatin1String("geometry/mesh")) {
+            Engine::Lock lock(&m_engine->mutex());
+            if (const Layer *l = m_engine->layer(m_engine->indexOfId(layer))) p.geometry[QString::number(layer)] = l->mapping.meshJson();
+        } else p.values.push_back(m_engine->presetValue(layer, path));
+    }
     capturePresetDrivers(p, layer, keep);
     quint64 id = 0;
     cmd::editPresets(m_undo, m_engine, QStringLiteral("New Preset"), [&](std::vector<Engine::Preset> &all) {
@@ -141,6 +151,12 @@ void PresetEditor::addToSelected(quint64 layer, const QStringList &paths)
         for (Engine::Preset &p : all) {
             if (p.id != m_selected) continue;
             for (const QString &path : keep) {
+                if (path.startsWith(QLatin1String("category/"))) { captureCategory(p, layer, path); continue; }
+                if (path == QLatin1String("geometry/mesh")) {
+                    Engine::Lock lock(&m_engine->mutex());
+                    if (const Layer *l = m_engine->layer(m_engine->indexOfId(layer))) p.geometry[QString::number(layer)] = l->mapping.meshJson();
+                    continue;
+                }
                 const int k = p.indexOf(layer, path);
                 const Engine::PresetValue now = m_engine->presetValue(layer, path);
                 if (k >= 0) p.values[size_t(k)].value = now.value; // in already: its value now
@@ -156,6 +172,7 @@ void PresetEditor::removeFromSelected(quint64 layer, const QStringList &paths)
     cmd::editPresets(m_undo, m_engine, QStringLiteral("Remove from Preset"), [&](std::vector<Engine::Preset> &all) {
         for (Engine::Preset &p : all) {
             if (p.id != m_selected) continue;
+            if (paths.contains(QStringLiteral("geometry/mesh"))) p.geometry.remove(QString::number(layer));
             auto &v = p.values;
             v.erase(std::remove_if(v.begin(), v.end(),
                                    [&](const Engine::PresetValue &x) { return x.layer == layer && paths.contains(x.path); }),
@@ -372,4 +389,72 @@ void PresetEditor::fillLayerMenu(QMenu *menu, quint64 layer)
             a->setChecked(i >= 0 && inSelected(layer, {p}));
         }
     }
+}
+
+void PresetEditor::fillCategoryMenu(QMenu *menu, quint64 layer, const QString &category)
+{
+    QStringList paths;
+    for (const auto &group : layerValues(m_engine, layer))
+        if (group.first == category || (category == QLatin1String("Anim") && !group.second.isEmpty())) paths += group.second;
+    if (category == QLatin1String("Spatial")) paths << QStringLiteral("geometry/mesh");
+    int part = 0;
+    if (category == QLatin1String("Source")) part = Engine::PartSource;
+    if (category == QLatin1String("FX")) part = Engine::PartEffects;
+    if (category == QLatin1String("Masks")) part = Engine::PartMasks;
+    if (category == QLatin1String("Viewports")) part = Engine::PartViewports;
+    if (part) paths << QStringLiteral("category/%1").arg(part);
+    if (category == QLatin1String("Source"))
+        for (const auto &group : layerValues(m_engine, layer))
+            for (const auto &path : group.second) if (Engine::partOf(path) & (Engine::PartSource | Engine::PartTransport)) paths << path;
+    if (category == QLatin1String("Anim")) {
+        paths.clear();
+        for (const auto &animation : m_engine->layerAnims(layer)) if (!animation.tracks.empty()) paths << animation.tracks.front().param;
+    }
+    paths.removeDuplicates();
+    fillMenu(menu, layer, paths);
+}
+
+void PresetEditor::addInteraction(quint64 id, bool newPreset)
+{
+    const auto interactions = m_engine->interactions();
+    const auto found = std::find_if(interactions.begin(), interactions.end(), [id](const Interaction &it) { return it.id == id; });
+    if (found == interactions.end()) return;
+    quint64 selected = m_selected;
+    if (newPreset || m_engine->indexOfPreset(selected) < 0) selected = 0;
+    cmd::editPresets(m_undo, m_engine, QStringLiteral("Store Interaction in Preset"), [&](std::vector<Engine::Preset> &all) {
+        if (!selected) {
+            Engine::Preset p; p.name = found->name;
+            p.id = 1; for (const auto &item : all) p.id = std::max(p.id, item.id + 1);
+            selected = p.id; all.push_back(p);
+        }
+        for (auto &preset : all) if (preset.id == selected) {
+            auto it = std::find_if(preset.interactions.begin(), preset.interactions.end(), [id](const Interaction &item) { return item.id == id; });
+            if (it == preset.interactions.end()) preset.interactions.push_back(*found); else *it = *found;
+        }
+    });
+    select(selected);
+}
+
+void PresetEditor::fillInteractionMenu(QMenu *menu, quint64 id)
+{
+    menu->addAction(QStringLiteral("Add Interaction to New Preset"), this, [this, id] { addInteraction(id, true); });
+    auto *action = menu->addAction(QStringLiteral("Add Interaction to Selected Preset"), this, [this, id] { addInteraction(id, false); });
+    action->setEnabled(m_engine->indexOfPreset(m_selected) >= 0);
+}
+
+void PresetEditor::captureCategory(Engine::Preset &preset, quint64 layer, const QString &path) const
+{
+    const int part = path.section('/', 1).toInt();
+    if (!(part & (Engine::PartSource | Engine::PartEffects | Engine::PartMasks | Engine::PartViewports))) return;
+    const int index = m_engine->indexOfId(layer);
+    if (index < 0) return;
+    QJsonObject state = m_engine->layerJson(index);
+    state.remove("params"); state.remove("anims"); state.remove("play");
+    // Store only the structural data this category owns.
+    QJsonObject category;
+    if (part == Engine::PartSource) category["source"] = state.value("source");
+    if (part == Engine::PartEffects) category["fx"] = state.value("fx");
+    if (part == Engine::PartMasks) category["masks"] = state.value("masks");
+    if (part == Engine::PartViewports) category["viewports"] = state.value("viewports");
+    preset.categories[QStringLiteral("%1:%2").arg(layer).arg(part)] = category;
 }

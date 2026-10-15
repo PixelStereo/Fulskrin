@@ -35,6 +35,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <map>
 #include <vector>
 
 class Engine;
@@ -49,6 +50,7 @@ public:
     struct Step {
         quint64 snapshot = 0; // its id (0: none yet)
         QString text;
+        QString description; // advance notice for the operator; saved separately from the cue comment
         quint64 timeline = 0; // or a timeline's (an animation's) id, driven by `action`
         AnimAction action = AnimAction::Play;
         double seekTime = 0;            // Seek
@@ -141,6 +143,7 @@ public:
     bool backSequence(int index);
     bool goToStepOf(int index, int step);
     void stopSequence(int index);
+    double stepElapsed(int index) const; // wall seconds since the selected step received GO
     int positionOf(int index) const; // its playhead (-1: before the first step)
     std::vector<Run> runs() const; // the steps of the selected sequence on their way
     bool running() const; // waits/follows pending in the selected sequence (Stop is enabled)
@@ -188,6 +191,7 @@ private:
     std::vector<quint64> m_sequenceIds; // runtime identity, aligned with m_sequences
     quint64 m_nextSequenceId = 1;
     int m_startupSequence = -1; // none by default; adjusted on insert/remove
+    std::map<quint64, qint64> m_stepStartedNs;
     std::vector<Run> m_runs; // all active sequences; each run owns a stable sequenceId
     std::function<void(int)> m_recaller;                         // under m_mutex
     std::function<void(int, const RecallBefore &)> m_recorder;   // under m_mutex
