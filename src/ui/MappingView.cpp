@@ -957,6 +957,7 @@ void MappingView::mousePressEvent(QMouseEvent *e)
         update();
         return;
     }
+    if (m_maskEditMode) return; // never begin a layer move in explicit Mask selection mode
     const bool locked = m_engine->isLocked(m_layer);
     // The grips of the layer (not for a viewport, a locked or a warped layer)
     const Mapping *gm = mapping();
@@ -1227,6 +1228,41 @@ void MappingView::keyPressEvent(QKeyEvent *e)
     if (m_drawing) {
         if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) finishDrawing();
         else if (e->key() == Qt::Key_Escape) cancelDrawing();
+        return;
+    }
+    // In Mask mode the arrow keys nudge selected mask nodes, not the layer geometry.
+    if (m_maskEditMode && (e->key() == Qt::Key_Left || e->key() == Qt::Key_Right ||
+                           e->key() == Qt::Key_Up || e->key() == Qt::Key_Down)) {
+        quint64 id = 0;
+        std::vector<Mask> before, after;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(m_layer);
+            Mask *k = editedMask();
+            if (!l || !k || m_engine->isLocked(m_layer) || m_maskSelection.empty()) return;
+            id = l->id;
+            before = after = l->masks;
+            const QSize frame = maskInComposition(k) ? m_engine->compositionSize() : m_engine->maskFrame(id);
+            if (frame.width() <= 0 || frame.height() <= 0) return;
+            const double amount = e->modifiers() & Qt::ShiftModifier ? 10.0 : 1.0;
+            const QPointF delta((e->key() == Qt::Key_Right ? amount : e->key() == Qt::Key_Left ? -amount : 0) / frame.width(),
+                                (e->key() == Qt::Key_Down ? amount : e->key() == Qt::Key_Up ? -amount : 0) / frame.height());
+            Mask &target = after[size_t(m_maskIndex)];
+            for (int i : m_maskSelection) {
+                if (i < 0 || i >= int(target.nodes.size())) continue;
+                MaskNode &n = target.nodes[size_t(i)];
+                n.p += delta;
+                n.in += delta;
+                n.out += delta;
+            }
+            target.shape = Mask::Shape::Path;
+        }
+        if (before != after) {
+            if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after, QStringLiteral("Nudge Mask Nodes")));
+            else m_engine->setLayerMasks(id, after);
+            emit masksEdited();
+            update();
+        }
         return;
     }
     // A mask's point clicked last: Delete removes it (a mask keeps three)
