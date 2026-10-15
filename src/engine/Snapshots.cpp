@@ -740,6 +740,8 @@ void Engine::recallSnapshot(int i)
         if (m_compFade.volume && m_compFade.volumeElapsed <= 0) total = std::max(total, m_compFade.volumeDur);
         for (const InteractionFade &f : m_interactionFades)
             if (f.elapsed <= 0) total = std::max(total, f.time);
+        for (const auto &[due, v] : m_deferredRecall)
+            total = std::max(total, std::max(0.0, due - m_recallClock) + v.duration);
         m_recallTotal = total;
     }
     emit snapshotRecalled(i);
@@ -1194,17 +1196,27 @@ double Engine::snapshotDuration(quint64 id) const
         if (x.id == id) m = &x;
     if (!m) return 0;
     double d = 0;
-    auto scan = [&](const QJsonObject &timing) {
-        d = std::max(d, m->fade); // the values without a time of their own
+    auto scan = [&](const QJsonObject &o) {
+        const QJsonObject timing = o.value("timing").toObject();
+        const QJsonObject delay = o.value("delay").toObject();
+        d = std::max(d, m->fade);
         for (auto it = timing.begin(); it != timing.end(); ++it)
-            if (it.value().isDouble()) d = std::max(d, std::clamp(it.value().toDouble(), 0.0, 600.0));
+            if (it.value().isDouble())
+                d = std::max(d, timeOf(timing, it.key(), m->fade) + delayOf(delay, it.key()));
+        for (auto it = delay.begin(); it != delay.end(); ++it)
+            if (it.value().isDouble())
+                d = std::max(d, delayOf(delay, it.key()) + timeOf(timing, it.key(), m->fade));
     };
     for (const QJsonValue &v : m->layers) {
         const QJsonObject o = v.toObject();
-        if (o.value("included").toBool(true) && !o.value("viewport").toBool()) scan(o.value("timing").toObject());
+        if (o.value("included").toBool(true) && !o.value("viewport").toBool()) scan(o);
     }
     if (!m->composition.isEmpty() && m->composition.value("included").toBool(true))
-        scan(m->composition.value("timing").toObject());
+        scan(m->composition);
+    for (const QJsonValue &v : m->interactions) {
+        const QJsonObject o = v.toObject();
+        if (o.value("included").toBool(true)) scan(o);
+    }
     return d;
 }
 
