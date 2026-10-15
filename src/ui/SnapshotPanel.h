@@ -65,8 +65,10 @@ private:
     void fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject &layer);
     QTreeWidgetItem *addField(QTreeWidgetItem *parent, const MemField &f, const QJsonValue &value);
     void showTime(QTreeWidgetItem *it, const MemField &f); // its time in the time column
+    void showDelay(QTreeWidgetItem *it, const MemField &f); // parameter's delayed start (0 by default)
     void applyField(const MemField &f, const QJsonValue &value); // writes it into the selected snapshot
     void applyTime(int row, const QString &key, double seconds); // < 0: FOLLOW (the snapshot's fade)
+    void applyDelay(int row, const QString &key, double seconds); // per-value delay (0: immediately)
     void applyEasingCurve(int row, const QString &paramKey, const QString &curveKey); // easing curve of a parameter
     void setInclusion(int i, quint64 layerId, bool included);
     void setCompositionIncluded(int i, bool included);
