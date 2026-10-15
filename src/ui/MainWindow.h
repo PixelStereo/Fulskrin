@@ -96,6 +96,7 @@ private:
     void pasteLayerParams(int parts, const QString &what);     // Engine::LayerParts, onto the selected layers
     void togglePlayCurrent();
     // Sequences: GO plays the next step of the current sequence, GO BACK the previous one (Space, Shift+Space)
+    void emergencyStop(); // Escape from the interface or any output window
     void sequenceGo();
     void sequenceBack();
     void sequenceGoTo(int step);
