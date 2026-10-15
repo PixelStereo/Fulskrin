@@ -326,7 +326,7 @@ public:
     // Values of one interaction (keys: "master", "enable"… — or their whole address "interaction/<id>/master"), faded
     // as a snapshot's (lock held)
     void applyInteractionValues(quint64 id, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,
-                                double fade);
+                                double fade, const QJsonObject &delays = {});
     static QStringList interactionKeys(); // the keys of an interaction's values, in their order
     int snapshotCount() const;
     Snapshot snapshot(int i) const;
@@ -370,6 +370,7 @@ public:
         QString path;
         QJsonValue value;
         double time = -1;
+        double delay = 0; // seconds before the value begins to execute
         QString easing;
     };
     struct Preset {
@@ -674,7 +675,7 @@ public:
 private:
     void takeOverFades(quint64 id, const QSet<QString> &paths, bool all = false);
     void applyParams(Layer &l, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing, double fade,
-                     FadeJob &job, bool showing, bool hiding, bool chain);
+                     FadeJob &job, bool showing, bool hiding, bool chain, const QJsonObject &delays = {});
     friend class RenderThread;
     friend struct ScopedCurrent;
 
@@ -706,6 +707,22 @@ private:
     void composite();
     void readSourcePreview();
     void stepFade(double dt); // snapshot fades (render thread, lock held)
+    // Nonblocking per-parameter delayed recall. The show/render clock executes
+    // these actions even while the Qt user interface is blocked.
+    struct DeferredRecall {
+        quint64 layer = 0; // 0: composition or interaction address
+        QString path;
+        QJsonValue value;
+        double duration = 0, dueAt = 0;
+        QString easing;
+    };
+    std::multimap<double, DeferredRecall> m_deferredRecall;
+    double m_recallClock = 0;
+    void scheduleRecall(quint64 layer, const QString &path, const QJsonValue &value, double seconds,
+                        const QString &easing, double delay);
+    void cancelScheduledRecall(quint64 layer, const QString &path);
+    void stepScheduledRecall(double dt); // under engine mutex: execute due recalls only
+
     QJsonObject snapshotToJson(const Snapshot &m, const QString &projectDir) const;
     Snapshot snapshotFromJson(const QJsonObject &o, const QString &projectDir) const;
     void normalizeLocked(); // restores the structure invariants (lock held)
