@@ -1,6 +1,7 @@
 #include "MappingView.h"
 
 #include <algorithm>
+#include <limits>
 #include "Commands.h"
 #include "Engine.h"
 #include "Widgets.h"
@@ -158,34 +159,84 @@ void MappingView::refreshCoordinateBar()
     QPointF out;
     QString name;
     bool show = false;
+    bool mask = false;
+    int aligned = 0;
     {
         Engine::Lock lk(&m_engine->mutex());
-        Mapping *m = mapping();
-        show = m && !isViewport(m_layer) && !m_engine->isLocked(m_layer) && m_primary.valid() && isSelected(m_primary);
-        if (show) {
-            const QSize comp = m_engine->compositionSize();
-            const QPointF n = outOf(m_layer, handlePos(m_primary));
-            out = QPointF(n.x() * comp.width(), n.y() * comp.height());
-            static const char *corners[4] = {"Top left", "Top right", "Bottom right", "Bottom left"};
-            name = m_primary.kind == 0 ? QString::fromLatin1(corners[m_primary.i & 3])
-                                       : QStringLiteral("Point %1, %2").arg(m_primary.i + 1).arg(m_primary.j + 1);
-            if (m_selection.size() > 1) name += QStringLiteral(" (+%1)").arg(m_selection.size() - 1);
+        if (m_maskEditMode) {
+            Mask *k = editedMask();
+            mask = k && m_maskNode >= 0 && m_maskNode < int(k->nodes.size()) &&
+                   !m_engine->isLocked(m_layer);
+            if (mask) {
+                const QSize frame = maskInComposition(k) ? m_engine->compositionSize()
+                                       : m_engine->maskFrame(m_engine->layerId(m_layer));
+                const QPointF p = k->nodes[size_t(m_maskNode)].p;
+                out = QPointF(p.x() * frame.width(), p.y() * frame.height());
+                name = QStringLiteral("Mask node %1").arg(m_maskNode + 1);
+                aligned = int(m_maskSelection.size());
+                show = true;
+            }
+        } else {
+            Mapping *m = mapping();
+            show = m && !isViewport(m_layer) && !m_engine->isLocked(m_layer) &&
+                   m_primary.valid() && isSelected(m_primary);
+            if (show) {
+                const QSize comp = m_engine->compositionSize();
+                const QPointF n = outOf(m_layer, handlePos(m_primary));
+                out = QPointF(n.x() * comp.width(), n.y() * comp.height());
+                static const char *corners[4] = {"Top left", "Top right", "Bottom right", "Bottom left"};
+                name = m_primary.kind == 0 ? QString::fromLatin1(corners[m_primary.i & 3])
+                                           : QStringLiteral("Point %1, %2").arg(m_primary.i + 1).arg(m_primary.j + 1);
+                if (m_selection.size() > 1) name += QStringLiteral(" (+%1)").arg(m_selection.size() - 1);
+            }
         }
     }
+    for (QToolButton *b : m_alignMask) if (b) b->setEnabled(mask && aligned >= 2);
     if (m_coordBar->isVisible() != show) m_coordBar->setVisible(show);
     if (!show) return;
     m_coordName->setText(name);
     for (auto [box, v] : {std::pair{m_coordX, out.x()}, std::pair{m_coordY, out.y()}}) {
-        if (box->hasFocus() || std::abs(box->value() - v) < 0.05) continue; // being typed in, or the same
-        QSignalBlocker b(box);
+        if (box->hasFocus() || std::abs(box->value() - v) < 0.05) continue;
+        QSignalBlocker block(box);
         box->setValue(v);
     }
+    for (QDoubleSpinBox *box : {m_coordX, m_coordY})
+        box->setToolTip(mask ? QStringLiteral("Mask-node coordinate in pixels of the attached frame")
+                             : QStringLiteral("Layer point in composition pixels"));
     m_coordBar->adjustSize();
     m_coordBar->move(8, height() - m_coordBar->height() - 8);
 }
 
 void MappingView::typeCoordinate()
 {
+    if (m_maskEditMode) {
+        quint64 id = 0;
+        std::vector<Mask> before, after;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Mask *k = editedMask();
+            Layer *l = m_engine->layer(m_layer);
+            if (!k || !l || m_maskNode < 0 || m_maskNode >= int(k->nodes.size()) ||
+                m_engine->isLocked(m_layer)) return;
+            id = l->id;
+            before = after = l->masks;
+            const QSize frame = maskInComposition(k) ? m_engine->compositionSize() : m_engine->maskFrame(id);
+            if (frame.width() <= 0 || frame.height() <= 0) return;
+            MaskNode &n = after[size_t(m_maskIndex)].nodes[size_t(m_maskNode)];
+            const QPointF delta(m_coordX->value() / frame.width() - n.p.x(),
+                                m_coordY->value() / frame.height() - n.p.y());
+            n.p += delta;
+            n.in += delta;
+            n.out += delta;
+        }
+        if (before != after) {
+            if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after, QStringLiteral("Move Mask Node"), true));
+            else m_engine->setLayerMasks(id, after);
+            emit masksEdited();
+            update();
+        }
+        return;
+    }
     Mapping before, after;
     {
         Engine::Lock lk(&m_engine->mutex());
@@ -425,6 +476,7 @@ void MappingView::paintGL()
 // Next to each selected point (a few at most), its position in composition pixels
 void MappingView::paintCoordinates()
 {
+    if (m_maskEditMode) return;
     std::vector<std::pair<QPointF, QString>> labels;
     {
         Engine::Lock lk(&m_engine->mutex());
@@ -1270,6 +1322,46 @@ void MappingView::setMaskIndex(int index)
     m_maskNode = -1;
     m_maskDrag = MaskDrag::None;
     update();
+}
+
+// Align selected nodes along an extreme X or Y coordinate, preserving their Bézier handles.
+void MappingView::alignMaskNodes(int edge)
+{
+    if (!m_maskEditMode || m_maskSelection.size() < 2) return;
+    quint64 id = 0;
+    std::vector<Mask> before, after;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Mask *k = editedMask();
+        Layer *l = m_engine->layer(m_layer);
+        if (!k || !l || m_engine->isLocked(m_layer)) return;
+        id = l->id;
+        before = after = l->masks;
+        Mask &target = after[size_t(m_maskIndex)];
+        double v = edge == 0 || edge == 2 ? std::numeric_limits<double>::infinity()
+                                          : -std::numeric_limits<double>::infinity();
+        for (int i : m_maskSelection) {
+            if (i < 0 || i >= int(target.nodes.size())) return;
+            const QPointF p = target.nodes[size_t(i)].p;
+            const double x = edge <= 1 ? p.x() : p.y();
+            if (edge == 0 || edge == 2) v = std::min(v, x);
+            else v = std::max(v, x);
+        }
+        for (int i : m_maskSelection) {
+            MaskNode &n = target.nodes[size_t(i)];
+            const QPointF delta = edge <= 1 ? QPointF(v - n.p.x(), 0) : QPointF(0, v - n.p.y());
+            n.p += delta;
+            n.in += delta;
+            n.out += delta;
+        }
+    }
+    if (before != after) {
+        if (m_undo) m_undo->push(new cmd::SetMasks(m_engine, id, before, after,
+                                                  QStringLiteral("Align Mask Nodes")));
+        else m_engine->setLayerMasks(id, after);
+        emit masksEdited();
+        update();
+    }
 }
 
 void MappingView::startMaskDrawing()
