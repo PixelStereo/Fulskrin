@@ -57,6 +57,7 @@ private:
     bool m_quitting = false; // closing: the project question is asked once, the outputs leave fullscreen first
     void buildMenus();
     void refreshLayerList();
+    void scheduleRecallRefresh();
     void refreshViewports();
     void refreshAll();
     void selectLayer(int index);
@@ -150,6 +151,7 @@ private:
     QLabel *m_status = nullptr;
     OscServer *m_osc = nullptr;
     QThread *m_oscThread = nullptr;
+    QTimer m_recallRefreshTimer;
     QTimer m_statusTimer, m_renderTimer, m_autosaveTimer, m_binTimer, m_inspectorTimer;
 
     QAction *m_fullscreenAction = nullptr, *m_windowedAction = nullptr, *m_undoAction = nullptr, *m_redoAction = nullptr,

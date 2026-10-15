@@ -423,6 +423,18 @@ public:
     using AnimTrack = ::AnimTrack;
     using Animation = ::Animation;
     using AnimParam = ParamInfo; // a number a timeline can drive (Parameter.h)
+    // UI telemetry deliberately excludes tracks/keyframes; a busy engine leaves the last UI sample in place.
+    struct AnimationPlayback {
+        quint64 id = 0;
+        QString name;
+        AnimState state = AnimState::Stopped;
+        AnimLoop loop = AnimLoop::Once;
+        double position = 0, duration = 0, clock = 0, speed = 1, length = 0;
+        int tracks = 0, pass = 1;
+        std::vector<double> captured;
+    };
+    bool sampleAnimations(std::vector<AnimationPlayback> *out) const;
+    bool sampleAnimation(quint64 timeline, quint64 layer, const QString &param, AnimationPlayback *out) const;
     int animationCount() const;
     Animation animation(int i) const;
     int indexOfAnimation(quint64 id) const; // -1: none

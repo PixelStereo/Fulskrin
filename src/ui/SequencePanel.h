@@ -108,6 +108,7 @@ public:
 
 signals:
     void goToRequested(int step); // play that step of the current sequence
+    void timelineRequested(quint64 id);
     void timelinesRequested();    // the timelines' window
     void stopRequested();         // the pre-waits and follows still to come
     void stopAllRequested();      // those of every sequence, the ones playing in the background too
@@ -134,5 +135,6 @@ private:
     std::vector<Sequencer::Run> m_runs; // the steps on their way, drawn in their time columns
     int m_position = -1, m_upcoming = -1; // the step played (green frame) and the one GO plays (red frame)
     void pollRuns();
+    void refreshTransport();
     friend class StepDelegate;
 };

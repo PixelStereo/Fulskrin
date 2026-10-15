@@ -654,8 +654,18 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     connect(m_layers, &QTreeWidget::itemCollapsed, this, [remember](QTreeWidgetItem *it) { remember(it, false); });
     connect(m_engine, &Engine::snapshotsChanged, this, &SnapshotPanel::refresh);
     connect(m_engine, &Engine::snapshotRecalled, this, [this](int i) {
+        const int previous = m_active;
         m_active = i;
-        refresh();
+        // Playback moves a marker; it does not replace the list or the parameter inspector.
+        for (int row : {previous, m_active}) if (auto *item = itemOf(row)) {
+            const bool active = row == m_active;
+            item->setText(0, active ? QStringLiteral("▶ %1").arg(row+1) : QString::number(row+1));
+            auto font = item->font(1); font.setBold(active);
+            for (int column=0; column<3; ++column) {
+                item->setFont(column,font);
+                item->setForeground(column,active ? kLiveSnapshot : palette().color(QPalette::Text));
+            }
+        }
     });
     refresh();
 }
@@ -1473,6 +1483,7 @@ void SnapshotPanel::store()
 void SnapshotPanel::recall(int i)
 {
     if (i < 0 || i >= m_engine->snapshotCount()) return;
+    if (m_engine->sequencer().requestSnapshot(m_engine->snapshot(i).id)) return;
     m_undo->push(new cmd::RecallSnapshot(m_engine, i));
     emit recalled();
 }

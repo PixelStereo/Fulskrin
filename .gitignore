@@ -78,3 +78,6 @@ test/out/
 
 # Sorties de tests lancés depuis la racine
 /out/
+
+# Python test caches
+__pycache__/

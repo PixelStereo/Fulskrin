@@ -1223,20 +1223,17 @@ void AnimEditor::commit(const QString &text, const QString &mergeKey)
 void AnimEditor::poll()
 {
     if (!isVisible()) return;
-    Animation a;
-    if (!fetch(&a)) {
-        m_time->clear();
-        return;
-    }
+    Engine::AnimationPlayback a;
+    if (!fetchPlayback(&a)) return;
     const bool shown = a.state != AnimState::Stopped;
-    const double pos = a.position();
+    const double pos = a.position;
     m_ruler->setPlayhead(pos, shown);
     for (size_t k = 0; k < m_rows.size(); ++k) {
         m_rows[k]->setPlayhead(pos, shown);
-        m_rows[k]->setLive(k < a.tracks.size() ? a.tracks[k].captured : std::numeric_limits<double>::quiet_NaN(), shown);
+        m_rows[k]->setLive(k < a.captured.size() ? a.captured[k] : std::numeric_limits<double>::quiet_NaN(), shown);
     }
     const double d = std::max(0.05, a.duration);
-    const int pass = int(std::floor(std::min(a.clock, a.length()) / d)) + 1;
+    const int pass = a.pass;
     const QString state = a.state == AnimState::Playing ? QStringLiteral("<span style='color:%1'>playing</span>").arg(kPlayhead.name())
                         : a.state == AnimState::Paused  ? QStringLiteral("<span style='color:#e0b43a'>paused</span>")
                                                         : QStringLiteral("<span style='color:#8a8a90'>stopped</span>");

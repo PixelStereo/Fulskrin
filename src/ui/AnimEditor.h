@@ -197,6 +197,7 @@ protected:
     friend class TrackRow;
     static constexpr int kHeader = 300; // width of a track's settings, left of its lane (Side)
     // Where the animation lives
+    virtual bool fetchPlayback(Engine::AnimationPlayback *a) const = 0;
     virtual bool fetch(Animation *a) const = 0; // as the engine has it now (false: none)
     // m_edit replacing `before`, as an undo step. Edits with the same non-empty key that follow one another (a drag,
     // the arrows of a number) form one step.

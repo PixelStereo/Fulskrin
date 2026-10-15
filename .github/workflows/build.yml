@@ -6,11 +6,47 @@ on:
     tags: ["v*", "[0-9]*"] # v1.2 or 1.2: both publish a release
   pull_request:
   workflow_dispatch:
+    inputs:
+      full_validation:
+        description: Run all platforms and safety checks
+        type: boolean
+        default: true
+  schedule:
+    - cron: '17 2 * * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
+  scope:
+    name: Validation scope
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.scope.outputs.build }}
+      ui: ${{ steps.scope.outputs.ui }}
+      memory: ${{ steps.scope.outputs.memory }}
+      tsan: ${{ steps.scope.outputs.tsan }}
+      fuzz: ${{ steps.scope.outputs.fuzz }}
+      valgrind: ${{ steps.scope.outputs.valgrind }}
+      media: ${{ steps.scope.outputs.media }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test change routing
+        run: python3 -m unittest discover -s .github/scripts -p 'test_ci_scope.py'
+      - name: Select validation
+        id: scope
+        env:
+          FULL_VALIDATION: ${{ inputs.full_validation || false }}
+        run: python3 .github/scripts/ci_scope.py
+
   # The test media, made once with Ubuntu's ffmpeg program (it has every encoder the tests need: x264, HAP…) and
   # handed to the three platforms
   media:
+    if: needs.scope.outputs.media == 'true'
+    needs: scope
     name: Test media
     runs-on: ubuntu-24.04
     steps:
@@ -27,9 +63,10 @@ jobs:
           retention-days: 1
 
   linux:
+    if: needs.scope.outputs.build == 'true'
     name: Linux (Ubuntu 24.04) + tests
     runs-on: ubuntu-24.04
-    needs: media
+    needs: [scope, media]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,6 +129,8 @@ jobs:
           path: Pinol-linux-x86_64*.tar.gz
 
   workspace-memory:
+    if: needs.scope.outputs.memory == 'true'
+    needs: scope
     name: Workspace memory safety (Linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -118,6 +157,8 @@ jobs:
         run: xvfb-run -a ctest --test-dir build-asan --output-on-failure -R '^workspace_ui$'
 
   workspace-valgrind:
+    if: needs.scope.outputs.valgrind == 'true'
+    needs: scope
     name: Workspace allocation lifetime (Linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -154,9 +195,10 @@ jobs:
   # fails the job. Libraries not built with it (Qt, Mesa, FFmpeg) are suppressed in test/tsan.supp; the engine's
   # Qt mutexes and the render thread's join are annotated (src/engine/AnnotatedMutex.h).
   tsan:
+    if: needs.scope.outputs.tsan == 'true'
     name: ThreadSanitizer (video, sound, OSC)
     runs-on: ubuntu-24.04
-    needs: media
+    needs: [scope, media]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -205,9 +247,10 @@ jobs:
   # relinking, undo, dragging, fullscreen, blackout, autosave, a forced kill and the recovery. Fails if the
   # application exits on its own or the recovery does not come; the screenshots are kept.
   ui:
+    if: needs.scope.outputs.ui == 'true'
     name: Interface scenario (Linux)
     runs-on: ubuntu-24.04
-    needs: media
+    needs: [scope, media]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -241,13 +284,14 @@ jobs:
   # The HAP and Snappy readers against damaged files: a short libFuzzer run with ASan / UBSan, seeded with the
   # HAP frames of the test media (test/fuzz_hap.cpp). A crash fails the job and its input is kept as an artifact.
   fuzz:
+    if: needs.scope.outputs.fuzz == 'true'
     name: Fuzzing (HAP, Snappy, OSC)
     # libFuzzer's default per-input timeout is 1200 s, and a fork-mode child stuck on one input is not stopped by
     # -max_total_time: a 1-minute OSC run once stayed up for over 20 minutes. Per input: 10 s (a timeout becomes a
     # finding, its input kept); for the job: a hard ceiling
     timeout-minutes: 20
     runs-on: ubuntu-24.04
-    needs: media
+    needs: [scope, media]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -282,9 +326,10 @@ jobs:
           path: fuzz_crashes
 
   macos:
+    if: needs.scope.outputs.build == 'true'
     name: macOS (Apple Silicon) + tests
     runs-on: macos-14
-    needs: media
+    needs: [scope, media]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -414,9 +459,10 @@ jobs:
           path: Pinol-macos*.zip
 
   windows:
+    if: needs.scope.outputs.build == 'true'
     name: Windows (MSVC 2022) + tests
     runs-on: windows-2022
-    needs: media
+    needs: [scope, media]
     env:
       # Avoid the daily deletion/re-upload window of BtbN's mutable "latest" assets.
       FFMPEG_ZIP: ffmpeg-n8.1.3-18-g46d899d7a0-win64-lgpl-shared-8.1
@@ -568,3 +614,20 @@ jobs:
           files: |
             dist/**/*.zip
             dist/**/*.tar.gz
+
+  validation:
+    name: Validation
+    if: always()
+    needs: [scope, media, linux, macos, windows, workspace-memory, workspace-valgrind, tsan, ui, fuzz]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every selected check
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          failed = [name for name, job in json.loads(os.environ['RESULTS']).items() if job['result'] not in ('success', 'skipped')]
+          if failed:
+              sys.exit('Validation failed: ' + ', '.join(failed))
+          PYTHON

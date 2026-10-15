@@ -577,3 +577,6 @@ void ParamAnimPanel::reveal(const QString &param)
             });
         }
 }
+
+
+bool ParamAnimEditor::fetchPlayback(Engine::AnimationPlayback *a) const { return m_engine->sampleAnimation(0, m_layer, m_param, a); }

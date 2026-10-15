@@ -2,6 +2,7 @@
 #include "Engine.h"
 #include "SnapshotPanel.h"
 #include "TimelinePanel.h"
+#include "TimelineActivity.h"
 #include "Widgets.h"
 
 #include <QApplication>
@@ -238,6 +239,7 @@ void CueStack::rebuild()
     };
 
     std::vector<Row> rows;
+    rows.reserve(5 + height() / std::max(1, rowHeight(Later)));
     auto add = [&](Role role, int k) {
         Row r;
         r.role = role;
@@ -462,7 +464,7 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
         if (!m_filling) m_engine->sequencer().setCurrent(i);
     });
     connect(&m_engine->sequencer(), &Sequencer::changed, this, &SequenceBar::refresh);
-    connect(&m_engine->sequencer(), &Sequencer::positionChanged, this, &SequenceBar::refresh);
+    connect(&m_engine->sequencer(), &Sequencer::positionChanged, this, &SequenceBar::pollWaits);
     connect(m_engine, &Engine::snapshotsChanged, this, &SequenceBar::refresh);
     connect(m_engine, &Engine::animationsChanged, this, &SequenceBar::refresh);
     refresh();
@@ -472,6 +474,8 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
 void SequenceBar::pollWaits()
 {
     m_stack->rebuild();
+    m_go->setEnabled(m_engine->sequencer().next() >= 0);
+    m_back->setEnabled(m_engine->sequencer().previous() >= 0);
     m_stop->setEnabled(m_engine->sequencer().running());
     m_stopAll->setEnabled(m_engine->sequencer().anyActive());
 }
@@ -706,6 +710,9 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
                                        "or a text to edit it · double-click a timeline step: its action · right-click: "
                                        "choose the snapshot or the timeline"));
     right->addWidget(m_steps, 1);
+    auto *activity = new TimelineActivity(m_engine);
+    right->addWidget(activity);
+    connect(activity, &TimelineActivity::editRequested, this, &SequenceWindow::timelineRequested);
     auto *stb = new QHBoxLayout;
     m_stepAdd = new QPushButton(QStringLiteral("+ Step"));
     m_stepDel = new QPushButton(QStringLiteral("− Delete"));
@@ -840,7 +847,7 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     connect(m_up, &QPushButton::clicked, this, [this] { moveStep(-1); });
     connect(m_down, &QPushButton::clicked, this, [this] { moveStep(+1); });
     connect(&m_engine->sequencer(), &Sequencer::changed, this, &SequenceWindow::refresh);
-    connect(&m_engine->sequencer(), &Sequencer::positionChanged, this, &SequenceWindow::refresh);
+    connect(&m_engine->sequencer(), &Sequencer::positionChanged, this, &SequenceWindow::refreshTransport);
     connect(m_engine, &Engine::snapshotsChanged, this, &SequenceWindow::refresh);
     connect(m_engine, &Engine::animationsChanged, this, &SequenceWindow::refresh);
     refresh();
@@ -947,7 +954,7 @@ void SequenceWindow::setModified(bool on)
 {
     if (on == m_modified) return;
     m_modified = on;
-    refresh();
+    refreshTransport();
 }
 
 void SequenceWindow::refresh()
@@ -1012,16 +1019,7 @@ void SequenceWindow::refresh()
         }
     }
     if (keep >= 0 && keep < m_steps->rowCount()) m_steps->setCurrentCell(keep, ColSnapshot);
-    if (pos >= 0 && pos < int(s.steps.size()))
-        m_status->setText(QStringLiteral("Played: <b style='color:%1'>%2. %3</b>%4")
-                              .arg((m_modified ? QColor(QString::fromLatin1(kChanged)) : kLive).name())
-                              .arg(pos + 1)
-                              .arg(stepTarget(m_engine, s.steps[size_t(pos)], false).toHtmlEscaped())
-                              .arg(m_modified ? QStringLiteral(" <span style='color:%1'>— changed since it was played</span>")
-                                                    .arg(QLatin1String(kChanged))
-                                              : QString()));
-    else
-        m_status->setText(QStringLiteral("<span style='color:#8a8a90'>No step played yet</span>"));
+    refreshTransport();
     m_filling = false;
 }
 
@@ -1132,4 +1130,39 @@ bool SequenceWindow::eventFilter(QObject *o, QEvent *e)
         return true;
     }
     return QWidget::eventFilter(o, e);
+}
+
+
+void SequenceWindow::refreshTransport()
+{
+    const int previous = m_position;
+    const int pos = m_engine->sequencer().position();
+    const auto s = m_engine->sequencer().sequence(m_engine->sequencer().current());
+    if (pos >= 0 && pos < int(s.steps.size()))
+        m_status->setText(QStringLiteral("Played: <b style='color:%1'>%2. %3</b>%4")
+                              .arg((m_modified ? QColor(QString::fromLatin1(kChanged)) : kLive).name())
+                              .arg(pos + 1)
+                              .arg(stepTarget(m_engine, s.steps[size_t(pos)], false).toHtmlEscaped())
+                              .arg(m_modified ? QStringLiteral(" <span style='color:%1'>— changed since it was played</span>")
+                                                    .arg(QLatin1String(kChanged))
+                                              : QString()));
+    else
+        m_status->setText(QStringLiteral("<span style='color:#8a8a90'>No step played yet</span>"));
+    // Update only the old/new cue's styling. Item identity and any active text editor survive GO.
+    const QSignalBlocker blocker(m_steps);
+    for (int row : {previous, pos}) {
+        if (row < 0 || row >= m_steps->rowCount() || row >= int(s.steps.size())) continue;
+        const bool current = row == pos;
+        auto *number = m_steps->item(row, ColNum);
+        if (number) number->setText(current ? QStringLiteral("▶ %1").arg(row+1) : QString::number(row+1));
+        for (int column : {ColNum, ColSnapshot, ColText}) if (auto *item = m_steps->item(row,column)) {
+            auto f=item->font(); f.setBold(current); item->setFont(f);
+            QColor color=palette().color(QPalette::Text);
+            if (current) color=m_modified?QColor(QString::fromLatin1(kChanged)):kLive;
+            else if (column==ColSnapshot && targetGone(m_engine,s.steps[size_t(row)])) color=QColor(255,120,100);
+            else if (column==ColSnapshot && s.steps[size_t(row)].timeline) color=QColor(86,196,255);
+            item->setForeground(color);
+        }
+    }
+    pollRuns();
 }
