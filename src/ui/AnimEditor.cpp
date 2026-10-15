@@ -935,7 +935,7 @@ AnimEditor::AnimEditor(Engine *engine, QUndoStack *undo, Layout layout, bool scr
     m_main->addWidget(m_body, 1);
 
     // Transport, duration, speed, loop
-    m_play = new QPushButton(side ? QStringLiteral("▶ Play") : QStringLiteral("▶"));
+    m_play = new QPushButton(QStringLiteral("▶ PLAY"));
     m_pause = new QPushButton(side ? QStringLiteral("❚❚ Pause") : QStringLiteral("❚❚"));
     m_stop = new QPushButton(side ? QStringLiteral("■ Stop") : QStringLiteral("■"));
     m_rewind = new QPushButton(QStringLiteral("⏮"));
@@ -945,7 +945,7 @@ AnimEditor::AnimEditor(Engine *engine, QUndoStack *undo, Layout layout, bool scr
     m_stop->setToolTip(QStringLiteral("Stop: back to the start, the values stay where they are"));
     m_play->setStyleSheet("QPushButton:enabled { background:#2f6b3a; color:white; }");
     if (!side)
-        for (QPushButton *b : {m_play, m_pause, m_stop, m_rewind}) b->setFixedWidth(34);
+        for (QPushButton *b : {m_pause, m_stop, m_rewind}) b->setFixedWidth(34);
     m_time = new QLabel;
     m_time->setMinimumWidth(side ? 170 : 0);
     m_duration = numberBox(0.05, 36000, 2, 0.1, QStringLiteral(" s"));
