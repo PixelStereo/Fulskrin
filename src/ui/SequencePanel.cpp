@@ -219,10 +219,9 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     m_stopAll->setFixedWidth(40);
     m_stopAll->setStyleSheet("QPushButton:enabled { background:#a01e18; color:white; font-weight:bold; }");
     m_wait = new QLabel;
+    m_wait->setObjectName(QStringLiteral("sequenceWaitProgress"));
     m_wait->setTextFormat(Qt::RichText);
     m_wait->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    m_open = new QPushButton(QStringLiteral("Sequences…"));
-    m_open->setToolTip(QStringLiteral("All the sequences and their steps, in a window that stays in front"));
     row->addWidget(m_sequence);
     row->addWidget(m_back);
     row->addWidget(m_go);
@@ -243,16 +242,6 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     row->addLayout(column(m_current, m_currentText), 3);
     row->addWidget(new QLabel(QStringLiteral("›")), 0, Qt::AlignTop);
     row->addLayout(column(m_next, m_nextText), 2);
-    auto *timelines = new QPushButton(QStringLiteral("Timelines…"));
-    timelines->setToolTip(QStringLiteral("The timelines: curves and oscillators driving the layers, played by the sequences"));
-    auto *windows = new QVBoxLayout; // stacked: the steps keep their room
-    windows->setSpacing(2);
-    for (QPushButton *b : {m_open, timelines}) {
-        b->setStyleSheet("QPushButton { padding:1px 8px; }");
-        windows->addWidget(b);
-    }
-    row->addLayout(windows);
-    connect(timelines, &QPushButton::clicked, this, &SequenceBar::timelinesRequested);
     v->addLayout(row);
     v->addWidget(m_wait);
     m_wait->hide();
@@ -264,8 +253,8 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     connect(m_back, &QPushButton::clicked, this, &SequenceBar::backRequested);
     connect(m_stop, &QPushButton::clicked, this, &SequenceBar::stopRequested);
     connect(m_stopAll, &QPushButton::clicked, this, &SequenceBar::stopAllRequested);
-    connect(m_open, &QPushButton::clicked, this, &SequenceBar::windowRequested);
     auto *waits = new QTimer(this);
+    waits->setObjectName(QStringLiteral("sequenceWaitPoller"));
     waits->setInterval(50);
     connect(waits, &QTimer::timeout, this, &SequenceBar::pollWaits);
     waits->start();
@@ -284,11 +273,20 @@ void SequenceBar::pollWaits()
 {
     const std::vector<Sequencer::Run> runs = m_engine->sequencer().runs();
     const Sequencer::Sequence s = m_engine->sequencer().sequence(m_engine->sequencer().current());
+    const auto progressBar = [](double elapsed, double duration) {
+        const double fraction = duration > 0 ? std::clamp(elapsed / duration, 0.0, 1.0) : 1.0;
+        const int filled = int(std::floor(fraction * 12));
+        return QStringLiteral("<span style='color:#56c4ff'>%1</span><span style='color:#555560'>%2</span> %3%")
+            .arg(QString(filled, QChar(0x2588)), QString(12 - filled, QChar(0x2591)))
+            .arg(int(std::lround(fraction * 100)));
+    };
     QStringList parts;
     for (const Sequencer::Run &r : runs) {
         if (!r.fired) {
-            parts << QStringLiteral("<span style='color:%1'>%2. pre-wait %3 s</span>")
-                         .arg(kPreWait.name()).arg(r.step + 1).arg(seconds(r.preWait - r.elapsed));
+            parts << QStringLiteral("<b>%1 · PRE-WAIT</b> %2 · %3 s left")
+                         .arg(r.step + 1)
+                         .arg(progressBar(r.elapsed, r.preWait))
+                         .arg(seconds(std::max(0.0, r.preWait - r.elapsed)));
             continue;
         }
         const double at = r.continueAt();
@@ -296,15 +294,24 @@ void SequenceBar::pollWaits()
         const int n = int(s.steps.size());
         const int next = r.step + 1 < n ? r.step + 1 : s.loop ? 0 : -1;
         if (next < 0) continue;
-        parts << QStringLiteral("<span style='color:%1'>%2 → %3 in %4 s</span>")
-                     .arg(kPostWait.name(), r.next == Sequencer::StepContinue::Follow ? QStringLiteral("follow") : QStringLiteral("auto-follow"))
-                     .arg(next + 1)
-                     .arg(seconds(at - r.elapsed));
+        const double postStarts = r.preWait + (r.next == Sequencer::StepContinue::AutoFollow ? r.duration : 0.0);
+        if (r.elapsed < postStarts) {
+            parts << QStringLiteral("<b>%1 · PLAY</b> %2 s until post-wait (%3)")
+                         .arg(r.step + 1).arg(seconds(postStarts - r.elapsed))
+                         .arg(r.next == Sequencer::StepContinue::AutoFollow ? QStringLiteral("AUTO-FOLLOW") : QStringLiteral("FOLLOW"));
+        } else {
+            parts << QStringLiteral("<b>%1 → %2 · POST-WAIT</b> %3 · %4 s left")
+                         .arg(r.step + 1).arg(next + 1)
+                         .arg(progressBar(r.elapsed - postStarts, r.postWait))
+                         .arg(seconds(std::max(0.0, at - r.elapsed)));
+        }
     }
-    const QString text = parts.join(QStringLiteral(" · "));
-    if (text != m_wait->text()) m_wait->setText(text);
-    m_wait->setVisible(!text.isEmpty());
-    m_stop->setEnabled(!text.isEmpty());
+    if (parts.isEmpty() && m_engine->sequencer().position() >= 0 && m_engine->sequencer().next() >= 0)
+        parts << QStringLiteral("<span style='color:#8a8a90'>WAIT · press GO for the next step</span>");
+    const QString label = parts.join(QStringLiteral("  ·  "));
+    if (label != m_wait->text()) m_wait->setText(label);
+    m_wait->setVisible(!label.isEmpty());
+    m_stop->setEnabled(m_engine->sequencer().running());
     m_stopAll->setEnabled(m_engine->sequencer().anyActive());
 }
 

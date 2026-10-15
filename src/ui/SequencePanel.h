@@ -53,14 +53,12 @@ signals:
     void backRequested();   // GO BACK: the previous step
     void stopRequested();   // the pre-waits and follows still to come
     void stopAllRequested(); // those of every sequence, the ones playing in the background too
-    void windowRequested(); // the floating window
-    void timelinesRequested(); // the timelines' window
     void edited();
 
 private:
     Engine *m_engine;
     QComboBox *m_sequence;
-    QPushButton *m_go, *m_back, *m_stop, *m_stopAll, *m_open;
+    QPushButton *m_go, *m_back, *m_stop, *m_stopAll;
     QLabel *m_wait; // what is waiting, and in how long
     void pollWaits();
     QLabel *m_prev, *m_current, *m_next;

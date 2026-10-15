@@ -338,7 +338,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_seqWindow = new SequenceWindow(m_engine, this);
     connect(m_seqBar, &SequenceBar::goRequested, this, &MainWindow::sequenceGo);
     connect(m_seqBar, &SequenceBar::backRequested, this, &MainWindow::sequenceBack);
-    connect(m_seqBar, &SequenceBar::windowRequested, this, &MainWindow::openSequences);
     connect(m_seqWindow, &SequenceWindow::goToRequested, this, &MainWindow::sequenceGoTo);
     connect(m_seqWindow, &SequenceWindow::edited, this, &MainWindow::markDirty);
     connect(m_seqBar, &SequenceBar::stopRequested, &m_engine->sequencer(), &Sequencer::stop);
@@ -348,7 +347,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_timelineWindow = new TimelineWindow(m_engine, m_undo, this);
     m_timelineWindow->addActions({m_undoAction, m_redoAction}); // undo / redo from the Timelines window too
     connect(m_timelineWindow, &TimelineWindow::edited, this, &MainWindow::markDirty);
-    connect(m_seqBar, &SequenceBar::timelinesRequested, this, &MainWindow::openTimelines);
     connect(m_seqWindow, &SequenceWindow::timelinesRequested, this, &MainWindow::openTimelines);
     connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
         m_timelineWindow->setCurrentLayer(r >= 0 ? m_engine->layerId(r) : 0);
@@ -455,6 +453,15 @@ bool MainWindow::eventFilter(QObject *o, QEvent *e)
     // output window shown fullscreen — a QWindow of its own, not a widget's)
     const bool keyTarget = o == QApplication::focusWidget() || (!QApplication::focusWidget() && o == this) ||
                            (o->isWindowType() && !o->inherits("QWidgetWindow"));
+    // Escape is a show-wide safety command, including when an editor has keyboard focus.
+    // Only the actual target sees it, once per physical key press (no repeats).
+    if (e->type() == QEvent::KeyPress && keyTarget) {
+        const auto *k = static_cast<QKeyEvent *>(e);
+        if (k->key() == Qt::Key_Escape) {
+            if (!k->isAutoRepeat()) emergencyStop();
+            return true;
+        }
+    }
     if ((e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) && keyTarget) {
         auto *k = static_cast<QKeyEvent *>(e);
         QWidget *f = QApplication::focusWidget();
@@ -488,7 +495,8 @@ bool MainWindow::handleControlKey(int key, Qt::KeyboardModifiers mods)
 {
     const bool ctrl = mods & Qt::ControlModifier;
     const bool shift = mods & Qt::ShiftModifier;
-    if (ctrl && key == Qt::Key_B) setBlackout(!m_composition->isBlackout());
+    if (key == Qt::Key_Escape) emergencyStop();
+    else if (ctrl && key == Qt::Key_B) setBlackout(!m_composition->isBlackout());
     else if (ctrl && shift && key == Qt::Key_F) toggleAllOutputs(1);
     else if (ctrl && key == Qt::Key_F) toggleAllOutputs(2);
     else if (!ctrl && shift && key == Qt::Key_Space) sequenceBack();
@@ -603,6 +611,7 @@ void MainWindow::buildMenus()
     seq->addAction(QStringLiteral("GO — next step (Space)"), this, &MainWindow::sequenceGo);
     seq->addAction(QStringLiteral("GO BACK — previous step (Shift+Space)"), this, &MainWindow::sequenceBack);
     seq->addAction(QStringLiteral("Stop the waits (pre-waits and follows still to come)"), &m_engine->sequencer(), &Sequencer::stop);
+    seq->addAction(QStringLiteral("STOP ALL — Escape"), this, &MainWindow::emergencyStop);
     seq->addSeparator();
     seq->addAction(QStringLiteral("Sequences…"), this, &MainWindow::openSequences);
     seq->addAction(QStringLiteral("Timelines…"), this, &MainWindow::openTimelines);
@@ -1564,6 +1573,12 @@ void MainWindow::setInOutAtPosition(bool in)
                   in ? QStringLiteral("Set In Point") : QStringLiteral("Set Out Point"));
     m_inspector->rebuild();
     statusBar()->showMessage((in ? QStringLiteral("In point: %1 s") : QStringLiteral("Out point: %1 s")).arg(pos, 0, 'f', 2), 3000);
+}
+
+void MainWindow::emergencyStop()
+{
+    m_engine->stopShowPlayback();
+    statusBar()->showMessage(QStringLiteral("STOP ALL — sequences, waits, fades, timelines and media paused"), 5000);
 }
 
 void MainWindow::sequenceGo() { m_engine->sequencer().go(); }
