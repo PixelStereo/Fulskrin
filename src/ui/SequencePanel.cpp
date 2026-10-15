@@ -17,6 +17,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QPainter>
+#include <QPainterPath>
 #include <QStyledItemDelegate>
 #include <QTimer>
 #include <QPushButton>
@@ -163,6 +164,233 @@ void RecallProgressBar::paintEvent(QPaintEvent *)
 }
 
 // ---------------------------------------------------------------------------
+// CueStack
+// ---------------------------------------------------------------------------
+
+static const QColor kUpcoming(232, 76, 61); // the step GO plays: its frame
+static const QColor kStackBack(32, 32, 36);
+
+CueStack::CueStack(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(engine)
+{
+    setObjectName(QStringLiteral("sequenceCueStack"));
+    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored); // long names give way, not the buttons
+    setMinimumWidth(120);
+}
+
+void CueStack::setModified(bool on)
+{
+    if (on == m_modified) return;
+    m_modified = on;
+    rebuild();
+}
+
+// Heights of the rows: the step played gets the most room
+static int rowHeight(CueStack::Role r)
+{
+    switch (r) {
+    case CueStack::Current: return 58;
+    case CueStack::Next: return 50;
+    default: return 24;
+    }
+}
+static constexpr int kRowGap = 4;
+
+void CueStack::rebuild()
+{
+    const Sequencer &sq = m_engine->sequencer();
+    const Sequencer::Sequence s = sq.sequence(sq.current());
+    const int n = int(s.steps.size());
+    const int pos = sq.position(), next = sq.next(), prev = sq.previous();
+    const std::vector<Sequencer::Run> runs = sq.runs();
+
+    auto fill = [&](Row &row, int k) {
+        row.step = k;
+        const Sequencer::Step &st = s.steps[size_t(k)];
+        row.title = QStringLiteral("%1").arg(stepTarget(m_engine, st, false));
+        row.text = st.text;
+        row.note = st.description;
+        const double d = sq.stepDuration(st);
+        row.timing = QStringLiteral("PRE %1   ACTION %2   POST %3 s   ·   %4")
+                         .arg(seconds(st.preWait), std::isfinite(d) ? seconds(d) : QStringLiteral("∞"), seconds(st.postWait),
+                              continueName(st.next));
+        // Its time on its way (the latest, should it be there twice in a loop)
+        const Sequencer::Run *run = nullptr;
+        for (const Sequencer::Run &r : runs)
+            if (r.step == k) run = &r;
+        if (!run) return;
+        const RunPhases ph = phasesOf(*run);
+        auto on = [](double f) { return f >= 0 && f < 1; };
+        auto pct = [](double f) { return int(std::lround(std::clamp(f, 0.0, 1.0) * 100)); };
+        row.pre = on(ph.pre) ? ph.pre : -1;
+        row.action = run->fired && run->duration > 0 && on(ph.action) ? ph.action : -1;
+        row.post = on(ph.post) ? ph.post : -1;
+        if (!run->fired) {
+            row.status = QStringLiteral("PRE-WAIT · %1 s left · %2%").arg(seconds(run->preWait - run->elapsed)).arg(pct(ph.pre));
+        } else if (row.post >= 0) {
+            const int to = k + 1 < n ? k + 1 : s.loop ? 0 : -1;
+            row.status = QStringLiteral("POST-WAIT%1 · %2 s left · %3%")
+                             .arg(to >= 0 ? QStringLiteral(" → %1").arg(to + 1) : QString())
+                             .arg(seconds(run->continueAt() - run->elapsed)).arg(pct(ph.post));
+        } else if (row.action >= 0) {
+            row.status = QStringLiteral("ACTION · %1 s left · %2%")
+                             .arg(seconds(run->duration - (run->elapsed - run->preWait))).arg(pct(ph.action));
+        }
+    };
+
+    std::vector<Row> rows;
+    auto add = [&](Role role, int k) {
+        Row r;
+        r.role = role;
+        if (k >= 0 && k < n) fill(r, k);
+        rows.push_back(r);
+        return &rows.back();
+    };
+    if (prev >= 0 && prev != pos) add(Previous, prev);
+    Row *current = add(Current, pos);
+    if (n == 0) current->title = QStringLiteral("No step — add them in Sequences…");
+    else if (pos < 0) current->title = QStringLiteral("Ready — GO plays the first step");
+    else current->aside = QStringLiteral("%1 s since GO").arg(seconds(sq.stepElapsed(sq.current())));
+    if (n > 0) {
+        Row *upcoming = add(Next, next != pos ? next : -1);
+        if (upcoming->step < 0) upcoming->title = QStringLiteral("End of the sequence");
+        else if (upcoming->status.isEmpty()) {
+            // Played by the step before it (a follow), or waiting for GO
+            bool followed = false;
+            for (const Sequencer::Run &r : runs)
+                if (r.fired && !r.continued && r.continueAt() >= 0) followed = true;
+            upcoming->status = followed ? QStringLiteral("follows") : pos >= 0 ? QStringLiteral("press GO") : QStringLiteral("GO");
+        }
+        // Then the steps after it, as many as there is room for
+        int used = 0;
+        for (const Row &r : rows) used += rowHeight(r.role) + kRowGap;
+        for (int k = upcoming->step + 1; upcoming->step >= 0 && k < n && used + rowHeight(Later) <= height(); ++k) {
+            add(Later, k);
+            used += rowHeight(Later) + kRowGap;
+        }
+    }
+    m_rows = std::move(rows);
+    const QString drawn = describe() + QString::number(m_modified) + QString::number(width());
+    if (drawn != m_drawn) {
+        m_drawn = drawn;
+        setToolTip(describe());
+        update();
+    }
+}
+
+QString CueStack::describe() const
+{
+    QStringList lines;
+    for (const Row &r : m_rows) {
+        QStringList parts;
+        if (r.step >= 0) parts << QString::number(r.step + 1);
+        for (const QString &t : {r.title, r.text, r.note, r.status, r.aside, r.timing})
+            if (!t.isEmpty()) parts << t;
+        lines << parts.join(QStringLiteral("  ·  "));
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+void CueStack::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillRect(rect(), kStackBack);
+    const QColor played = m_modified ? QColor(QString::fromLatin1(kChanged)) : kLive;
+    int y = 0;
+    for (const Row &r : m_rows) {
+        const int h = rowHeight(r.role);
+        const QRectF box(0.5, y + 0.5, width() - 1.0, h - 1.0);
+        y += h + kRowGap;
+        const bool placeholder = r.step < 0;
+        QColor frame = r.role == Current ? played : r.role == Next ? kUpcoming : QColor(58, 58, 66);
+        if (placeholder) frame.setAlphaF(0.35);
+        QPainterPath shape;
+        shape.addRoundedRect(box, 3, 3);
+
+        // The time going by, at half opacity, inside the frame; a thin line at its foot says exactly where
+        p.save();
+        p.setClipPath(shape);
+        const QRectF inside = box.adjusted(1, 1, -1, -1);
+        for (auto [f, c] : {std::pair{r.pre, kPreWait}, std::pair{r.action, kLive}, std::pair{r.post, kPostWait}}) {
+            if (f < 0) continue;
+            QColor half = c;
+            half.setAlphaF(0.5);
+            p.fillRect(QRectF(inside.left(), inside.top(), inside.width() * f, inside.height()), half);
+            p.fillRect(QRectF(inside.left(), inside.bottom() - 2, inside.width() * f, 2), c);
+        }
+        p.restore();
+        p.setPen(QPen(frame, 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(shape);
+
+        // The number, then what the step does, its text and its times
+        const bool big = r.role == Current, mid = r.role == Next;
+        const bool dim = r.role == Previous || r.role == Later;
+        const QRect area = box.toAlignedRect().adjusted(8, 3, -8, -3);
+        QFont number = font();
+        number.setPixelSize(big ? 20 : mid ? 15 : 11);
+        number.setBold(true);
+        const int numberWidth = big ? 34 : mid ? 30 : 26;
+        QRect numberRect(area.left(), area.top(), numberWidth, big || mid ? 24 : area.height());
+        p.setFont(number);
+        p.setPen(r.role == Current ? played : r.role == Next ? kUpcoming.lighter(125) : QColor(120, 120, 128));
+        if (!placeholder) p.drawText(numberRect, Qt::AlignLeft | Qt::AlignVCenter, QString::number(r.step + 1));
+
+        const int textLeft = area.left() + (placeholder ? 0 : numberWidth);
+        QFont title = font();
+        title.setPixelSize(big ? 14 : mid ? 13 : 11);
+        title.setBold(!dim && !placeholder);
+        QFont small = font();
+        small.setPixelSize(10);
+        const QFontMetrics tm(title), sm(small);
+
+        // Right of the first line: where its time is (or the time since GO)
+        const QString right = !r.status.isEmpty() ? r.status : r.aside;
+        int rightWidth = 0;
+        if (!right.isEmpty()) {
+            QFont status = small;
+            status.setPixelSize(big || mid ? 11 : 10);
+            status.setBold(r.pre >= 0 || r.action >= 0 || r.post >= 0);
+            p.setFont(status);
+            const QFontMetrics stm(status);
+            rightWidth = std::min(stm.horizontalAdvance(right) + 4, area.width() / 2);
+            p.setPen(r.status == QLatin1String("press GO") || r.status == QLatin1String("GO") ? QColor(150, 150, 158)
+                                                                                                : QColor(236, 236, 240));
+            p.drawText(QRect(area.right() - rightWidth, area.top(), rightWidth, tm.height() + 4), Qt::AlignRight | Qt::AlignVCenter,
+                       stm.elidedText(right, Qt::ElideRight, rightWidth));
+            rightWidth += 10;
+        }
+        QString name = r.title;
+        if (r.role == Current && m_modified && !placeholder) name += QStringLiteral("  (changed)");
+        p.setFont(title);
+        p.setPen(placeholder ? QColor(130, 130, 138) : dim ? QColor(150, 150, 158) : QColor(240, 240, 244));
+        const QRect titleRect(textLeft, area.top(), std::max(0, area.right() - rightWidth - textLeft), tm.height() + 4);
+        p.drawText(titleRect, Qt::AlignLeft | Qt::AlignVCenter, tm.elidedText(name, Qt::ElideRight, titleRect.width()));
+        if (dim || placeholder) continue;
+
+        // Its text (and what the operator should know), then its times, in thin grey
+        int line = titleRect.bottom() + 1;
+        QString words = r.text;
+        if (!r.note.isEmpty()) words += (words.isEmpty() ? QString() : QStringLiteral("   —   ")) + r.note;
+        if (!words.isEmpty()) {
+            QFont italic = font();
+            italic.setPixelSize(big ? 12 : 11);
+            italic.setItalic(true);
+            p.setFont(italic);
+            const QFontMetrics im(italic);
+            p.setPen(QColor(200, 200, 206));
+            p.drawText(QRect(textLeft, line, area.right() - textLeft, im.height()), Qt::AlignLeft | Qt::AlignVCenter,
+                       im.elidedText(words, Qt::ElideRight, area.right() - textLeft));
+            line += im.height();
+        }
+        p.setFont(small);
+        p.setPen(QColor(128, 128, 136));
+        p.drawText(QRect(textLeft, area.bottom() - sm.height(), area.right() - textLeft, sm.height() + 1),
+                   Qt::AlignLeft | Qt::AlignBottom, sm.elidedText(r.timing, Qt::ElideRight, area.right() - textLeft));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SequenceBar
 // ---------------------------------------------------------------------------
 
@@ -171,108 +399,55 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     setObjectName("sequenceBar");
     setFixedHeight(190);
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-    setStyleSheet("#sequenceBar { background:#202024; border-top:1px solid #34343a; }");
+    setStyleSheet(
+        "#sequenceBar { background:#202024; border-top:1px solid #34343a; }"
+        "#sequenceBar QPushButton { background:#26262b; color:#d8d8dc; border:1px solid #3a3a42; border-radius:3px;"
+        "  padding:3px 6px; }"
+        "#sequenceBar QPushButton:hover { border-color:#56565f; }"
+        "#sequenceBar QPushButton:disabled { color:#5a5a62; border-color:#2e2e34; }"
+        "#sequenceBar QPushButton#sequenceGo { background:#24452b; border-color:#4cd964; color:white; font-weight:bold;"
+        "  font-size:16px; }"
+        "#sequenceBar QPushButton#sequenceGo:disabled { background:#232826; border-color:#2e3a31; color:#5a5a62; }"
+        "#sequenceBar QPushButton#sequenceStop:enabled, #sequenceBar QPushButton#sequenceStopAll:enabled {"
+        "  border-color:#e84c3d; color:#ff8f84; }");
     setAttribute(Qt::WA_StyledBackground);
-    auto *v = new QVBoxLayout(this);
-    v->setContentsMargins(8, 4, 8, 4);
-    v->setSpacing(2);
-    auto *row = new QHBoxLayout;
-    row->setSpacing(6);
+    auto *h = new QHBoxLayout(this);
+    h->setContentsMargins(8, 6, 8, 6);
+    h->setSpacing(8);
+
+    // On the left, one above the other: the sequence, GO, GO BACK, STOP, STOP ALL
+    auto *buttons = new QVBoxLayout;
+    buttons->setSpacing(4);
     m_sequence = new QComboBox;
     m_sequence->setToolTip(QStringLiteral("Sequence played by GO"));
-    m_sequence->setMinimumWidth(100);
-    m_sequence->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     m_sequence->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_go = new QPushButton(QStringLiteral("GO"));
+    m_go->setObjectName(QStringLiteral("sequenceGo"));
+    m_go->setToolTip(QStringLiteral("GO: the next step (Space)"));
+    m_go->setFixedHeight(48);
     m_back = new QPushButton(QStringLiteral("GO BACK"));
     m_back->setToolTip(QStringLiteral("GO BACK: the previous step (Shift+Space)"));
-    m_go = new QPushButton(QStringLiteral("GO ▶"));
-    m_go->setToolTip(QStringLiteral("GO: the next step (Space)"));
-    m_go->setStyleSheet("QPushButton { font-weight:bold; background:#2f6b3a; color:white; padding:4px 18px; }"
-                        "QPushButton:disabled { background:#2a2f2b; color:#666; }");
-    m_prev = new QLabel;
-    m_current = new QLabel;
-    m_next = new QLabel;
-    m_prevText = new QLabel;
-    m_currentText = new QLabel;
-    m_nextText = new QLabel;
-    m_prev->setStyleSheet("color:#8a8a90;");
-    m_next->setStyleSheet("color:#8a8a90;");
-    for (QLabel *l : {m_prev, m_current, m_next, m_prevText, m_currentText, m_nextText}) {
-        l->setMinimumWidth(40);
-        l->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); // long names give way, not the buttons
-        l->setTextFormat(Qt::RichText);
-    }
-    for (QLabel *l : {m_prevText, m_nextText}) {
-        l->setWordWrap(true);
-        l->setStyleSheet("color:#7a7a80; font-style:italic; font-size:11px;");
-    }
-    m_currentText->setWordWrap(true);
-    m_currentText->setStyleSheet("color:#e4e4e8; font-style:italic;");
     m_stop = new QPushButton(QStringLiteral("STOP"));
+    m_stop->setObjectName(QStringLiteral("sequenceStop"));
     m_stop->setToolTip(QStringLiteral("Stop the waits of the selected sequence: its pre-waits and follows still to "
                                       "come are dropped (the snapshots already running go on; the other sequences "
                                       "keep playing)"));
-    m_stop->setEnabled(false);
-    m_stop->setFixedWidth(52);
-    m_stop->setStyleSheet("QPushButton:enabled { background:#8a2a24; color:white; }");
     // Several sequences may play at once: one button stops them all, whichever is selected
-    m_stopAll = new QPushButton(QStringLiteral("■■"));
+    m_stopAll = new QPushButton(QStringLiteral("STOP ALL"));
+    m_stopAll->setObjectName(QStringLiteral("sequenceStopAll"));
     m_stopAll->setToolTip(QStringLiteral("Stop all: the pre-waits and follows still to come in every sequence, "
                                          "those playing in the background too (the snapshots already running go on)"));
-    m_stopAll->setEnabled(false);
-    m_stopAll->setFixedWidth(40);
-    m_stopAll->setStyleSheet("QPushButton:enabled { background:#a01e18; color:white; font-weight:bold; }");
-    m_wait = new QLabel;
-    m_wait->setObjectName(QStringLiteral("sequenceWaitProgress"));
-    m_wait->setTextFormat(Qt::RichText);
-    m_wait->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    row->addWidget(m_sequence);
-    row->addWidget(m_back);
-    row->addWidget(m_go);
-    row->addWidget(m_stop);
-    row->addWidget(m_stopAll);
-    row->addSpacing(6);
-    v->addLayout(row);
-    row = new QHBoxLayout;
-    // Previous, current and next steps, each with its comment and timing.
-    m_prevTiming = new QLabel; m_currentTiming = new QLabel; m_nextTiming = new QLabel;
-    m_prevTiming->setObjectName(QStringLiteral("previousCueTiming"));
-    m_currentTiming->setObjectName(QStringLiteral("currentCueTiming"));
-    m_nextTiming->setObjectName(QStringLiteral("nextCueTiming"));
-    m_elapsed = new QLabel;
-    m_elapsed->setObjectName(QStringLiteral("currentCueElapsed"));
-    m_nextDescription = new QLabel;
-    m_nextDescription->setObjectName(QStringLiteral("nextCueDescription"));
-    m_nextDescription->setTextFormat(Qt::PlainText);
-    for (QLabel *label : {m_prev, m_current, m_next, m_prevText, m_currentText, m_nextText,
-                         m_prevTiming, m_currentTiming, m_nextTiming, m_elapsed, m_nextDescription}) {
-        label->setWordWrap(false);
-        label->setFixedHeight(20);
-        label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    for (QPushButton *b : {m_stop, m_stopAll}) b->setEnabled(false);
+    for (QWidget *w : std::initializer_list<QWidget *>{m_sequence, m_go, m_back, m_stop, m_stopAll}) {
+        w->setFixedWidth(124);
+        buttons->addWidget(w);
     }
-    m_wait->setFixedHeight(20);
-    //
-    auto column = [](QLabel *name, QLabel *text, QLabel *timing) {
-        auto *c = new QVBoxLayout;
-        c->setSpacing(0);
-        c->addWidget(name);
-        c->addWidget(text);
-        c->addWidget(timing);
-        c->addStretch();
-        return c;
-    };
-    row->addLayout(column(m_prev, m_prevText, m_prevTiming), 2);
-    row->addWidget(new QLabel(QStringLiteral("›")), 0, Qt::AlignTop);
-    row->addLayout(column(m_current, m_currentText, m_currentTiming), 3);
-    row->addWidget(new QLabel(QStringLiteral("›")), 0, Qt::AlignTop);
-    row->addLayout(column(m_next, m_nextText, m_nextTiming), 2);
-    v->addLayout(row);
-    v->addWidget(m_elapsed);
-    v->addWidget(m_wait);
-    v->addWidget(m_nextDescription);
-    auto *progress = new RecallProgressBar(m_engine);
-    progress->setToolTip(QStringLiteral("The snapshot running, and where it is in its time"));
-    v->addWidget(progress);
+    buttons->addStretch();
+    h->addLayout(buttons);
+
+    // The steps, from top to bottom
+    m_stack = new CueStack(m_engine);
+    h->addWidget(m_stack, 1);
 
     connect(m_go, &QPushButton::clicked, this, &SequenceBar::goRequested);
     connect(m_back, &QPushButton::clicked, this, &SequenceBar::backRequested);
@@ -293,59 +468,17 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     refresh();
 }
 
-// What is waiting: a step in its pre-wait, or the next step's GO after a follow / auto-follow
+// The times on their way, and what the stop buttons can stop
 void SequenceBar::pollWaits()
 {
-    const std::vector<Sequencer::Run> runs = m_engine->sequencer().runs();
-    const Sequencer::Sequence s = m_engine->sequencer().sequence(m_engine->sequencer().current());
-    const auto progressBar = [](double elapsed, double duration) {
-        const double fraction = duration > 0 ? std::clamp(elapsed / duration, 0.0, 1.0) : 1.0;
-        const int filled = int(std::floor(fraction * 12));
-        return QStringLiteral("<span style='color:#56c4ff'>%1</span><span style='color:#555560'>%2</span> %3%")
-            .arg(QString(filled, QChar(0x2588)), QString(12 - filled, QChar(0x2591)))
-            .arg(int(std::lround(fraction * 100)));
-    };
-    QStringList parts;
-    for (const Sequencer::Run &r : runs) {
-        if (!r.fired) {
-            parts << QStringLiteral("<b>%1 · PRE-WAIT</b> %2 · %3 s left")
-                         .arg(r.step + 1)
-                         .arg(progressBar(r.elapsed, r.preWait))
-                         .arg(seconds(std::max(0.0, r.preWait - r.elapsed)));
-            continue;
-        }
-        const double at = r.continueAt();
-        if (at < 0 || r.continued) continue;
-        const int n = int(s.steps.size());
-        const int next = r.step + 1 < n ? r.step + 1 : s.loop ? 0 : -1;
-        if (next < 0) continue;
-        const double postStarts = r.preWait + (r.next == Sequencer::StepContinue::AutoFollow ? r.duration : 0.0);
-        if (r.elapsed < postStarts) {
-            parts << QStringLiteral("<b>%1 · PLAY</b> %2 s until post-wait (%3)")
-                         .arg(r.step + 1).arg(seconds(postStarts - r.elapsed))
-                         .arg(r.next == Sequencer::StepContinue::AutoFollow ? QStringLiteral("AUTO-FOLLOW") : QStringLiteral("FOLLOW"));
-        } else {
-            parts << QStringLiteral("<b>%1 → %2 · POST-WAIT</b> %3 · %4 s left")
-                         .arg(r.step + 1).arg(next + 1)
-                         .arg(progressBar(r.elapsed - postStarts, r.postWait))
-                         .arg(seconds(std::max(0.0, at - r.elapsed)));
-        }
-    }
-    if (parts.isEmpty() && m_engine->sequencer().position() >= 0 && m_engine->sequencer().next() >= 0)
-        parts << QStringLiteral("<span style='color:#8a8a90'>WAIT · press GO for the next step</span>");
-    const QString label = parts.join(QStringLiteral("  ·  "));
-    if (label != m_wait->text()) m_wait->setText(label);
-    m_wait->setToolTip(label);
-    m_elapsed->setText(QStringLiteral("Elapsed since GO: %1 s").arg(m_engine->sequencer().stepElapsed(m_engine->sequencer().current()), 0, 'f', 1));
+    m_stack->rebuild();
     m_stop->setEnabled(m_engine->sequencer().running());
     m_stopAll->setEnabled(m_engine->sequencer().anyActive());
 }
 
 void SequenceBar::setModified(bool on)
 {
-    if (on == m_modified) return;
-    m_modified = on;
-    refresh();
+    m_stack->setModified(on);
 }
 
 void SequenceBar::refresh()
@@ -358,50 +491,9 @@ void SequenceBar::refresh()
     m_sequence->setCurrentIndex(std::max(0, cur));
     m_sequence->setEnabled(n > 0);
     m_filling = false;
-
-    const Sequencer::Sequence s = m_engine->sequencer().sequence(cur);
-    const int pos = m_engine->sequencer().position(), next = m_engine->sequencer().next(), prev = m_engine->sequencer().previous();
-    auto stepName = [&](int k) {
-        if (k < 0 || k >= int(s.steps.size())) return QString();
-        const QString name = stepTarget(m_engine, s.steps[size_t(k)], false);
-        return QStringLiteral("%1. %2").arg(k + 1).arg(name.toHtmlEscaped());
-    };
-    auto stepText = [&](int k) {
-        return k >= 0 && k < int(s.steps.size()) ? s.steps[size_t(k)].text.toHtmlEscaped() : QString();
-    };
-    m_prev->setText(prev >= 0 ? stepName(prev) : QStringLiteral("—"));
-    m_next->setText(next >= 0 ? stepName(next) : (s.steps.empty() ? QStringLiteral("—") : QStringLiteral("end")));
-    m_prevText->setText(stepText(prev));
-    m_nextText->setText(stepText(next));
-    if (pos >= 0) {
-        // The step played; in another color once something was changed since
-        const QString color = m_modified ? QString::fromLatin1(kChanged) : kLive.name();
-        m_current->setText(QStringLiteral("<span style='font-size:15px; font-weight:bold; color:%1'>%2</span>%3")
-                               .arg(color, stepName(pos),
-                                    m_modified ? QStringLiteral(" <span style='color:%1'>(changed)</span>").arg(QLatin1String(kChanged))
-                                               : QString()));
-        m_currentText->setText(stepText(pos));
-    } else {
-        m_current->setText(QStringLiteral("<span style='color:#8a8a90'>%1</span>")
-                               .arg(s.steps.empty() ? QStringLiteral("no step — add them in Sequences…")
-                                                    : QStringLiteral("ready: GO plays the first step")));
-        m_currentText->clear();
-    }
-    auto cueTiming = [&](int k) {
-        if (k < 0 || k >= int(s.steps.size())) return QStringLiteral("Action — | PRE — | POST —");
-        const auto &step = s.steps[size_t(k)];
-        const double duration = m_engine->sequencer().stepDuration(step);
-        return QStringLiteral("Action %1 | PRE %2 | POST %3 s")
-            .arg(std::isfinite(duration) ? QString::number(duration, 'f', 1) : QStringLiteral("∞"))
-            .arg(step.preWait, 0, 'f', 1).arg(step.postWait, 0, 'f', 1);
-    };
-    m_prevTiming->setText(cueTiming(prev)); m_currentTiming->setText(cueTiming(pos)); m_nextTiming->setText(cueTiming(next));
-    const QString description = next >= 0 ? s.steps[size_t(next)].description : QString();
-    m_nextDescription->setText(QStringLiteral("Next: %1").arg(description));
-    m_nextDescription->setToolTip(description);
-    for (QLabel *label : {m_prev, m_current, m_next, m_prevText, m_currentText, m_nextText, m_prevTiming, m_currentTiming, m_nextTiming}) label->setToolTip(label->text());
-    m_go->setEnabled(next >= 0);
-    m_back->setEnabled(prev >= 0);
+    m_go->setEnabled(m_engine->sequencer().next() >= 0);
+    m_back->setEnabled(m_engine->sequencer().previous() >= 0);
+    m_stack->rebuild();
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +548,37 @@ public:
     }
 
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
+    {
+        paintCell(p, opt, idx);
+        paintFrame(p, opt, idx);
+    }
+
+private:
+    // The step played and the one GO plays: a thin frame around their whole row (each cell draws its part of it)
+    void paintFrame(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const
+    {
+        const int row = idx.row();
+        bool playing = row == m_w->m_position;
+        for (const Sequencer::Run &r : m_w->m_runs)
+            if (r.step == row) playing = true;
+        if (!playing && row != m_w->m_upcoming) return;
+        const auto *view = qobject_cast<const QAbstractItemView *>(opt.widget);
+        const QHeaderView *header = m_w->m_steps->horizontalHeader();
+        if (!view || !header) return;
+        const int first = header->logicalIndex(0), last = header->logicalIndex(header->count() - 1);
+        const QRect left = view->visualRect(idx.sibling(row, first)), right = view->visualRect(idx.sibling(row, last));
+        const QRectF whole = QRectF(QRect(left.topLeft(), right.bottomRight())).adjusted(1.5, 1.5, -1.5, -1.5);
+        const QColor c = playing ? (m_w->m_modified ? QColor(QString::fromLatin1(kChanged)) : kLive) : kUpcoming;
+        p->save();
+        p->setClipRect(opt.rect);
+        p->setRenderHint(QPainter::Antialiasing);
+        p->setPen(QPen(c, 1));
+        p->setBrush(Qt::NoBrush);
+        p->drawRoundedRect(whole, 3, 3);
+        p->restore();
+    }
+
+    void paintCell(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const
     {
         const int col = idx.column();
         if (col != ColPre && col != ColAction && col != ColPost && col != ColNext) {
@@ -513,7 +636,6 @@ public:
         p->drawText(opt.rect.adjusted(4, 0, -6, 0), Qt::AlignVCenter | Qt::AlignRight, text);
     }
 
-private:
     SequenceWindow *m_w;
 };
 
@@ -813,8 +935,11 @@ void SequenceWindow::pollRuns()
     m_stop->setEnabled(m_engine->sequencer().running());
     m_stopAll->setEnabled(m_engine->sequencer().anyActive());
     std::vector<Sequencer::Run> runs = m_engine->sequencer().runs();
-    if (runs.empty() && m_runs.empty()) return;
+    const int position = m_engine->sequencer().position(), upcoming = m_engine->sequencer().next();
+    if (runs.empty() && m_runs.empty() && position == m_position && upcoming == m_upcoming) return;
     m_runs = std::move(runs);
+    m_position = position;
+    m_upcoming = upcoming;
     if (isVisible()) m_steps->viewport()->update();
 }
 
@@ -842,6 +967,8 @@ void SequenceWindow::refresh()
     const int keep = m_steps->currentRow();
     m_steps->setRowCount(int(s.steps.size()));
     const int pos = m_engine->sequencer().position();
+    m_position = pos;
+    m_upcoming = m_engine->sequencer().next();
     for (int k = 0; k < int(s.steps.size()); ++k) {
         const Sequencer::Step &st = s.steps[size_t(k)];
         auto *num = new QTableWidgetItem(QString::number(k + 1));

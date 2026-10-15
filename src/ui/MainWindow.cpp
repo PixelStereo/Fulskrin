@@ -23,6 +23,7 @@
 #include "LogPanel.h"
 #include "SnapshotPanel.h"
 #include "SequencePanel.h"
+#include "SequenceFeedback.h"
 #include "TimelinePanel.h"
 #include "OutputWindow.h"
 #include "Osc.h"
@@ -175,6 +176,14 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     screenRate();
     connect(qApp, &QGuiApplication::primaryScreenChanged, this, screenRate);
     connect(m_settings, &SettingsPanel::oscChanged, this, &MainWindow::startOsc);
+    // The sequence's state sent by OSC to a remote interface (Companion, TouchOSC…)
+    m_feedback = new SequenceFeedback(m_engine, this);
+    auto applyFeedback = [this] {
+        m_feedback->setTargets(SettingsPanel::feedbackTargets());
+        m_feedback->setEnabled(SettingsPanel::feedbackEnabled());
+    };
+    applyFeedback();
+    connect(m_settings, &SettingsPanel::feedbackChanged, this, applyFeedback);
     // Default transition of the sources changed by a snapshot
     m_engine->setDefaultTransition(SettingsPanel::defaultTransition(m_engine->library()));
     m_settings->setTransitions(m_engine->library().transitions(), m_engine->defaultTransition());
@@ -482,6 +491,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_cueUndoIndex = m_undo->index();
         m_seqBar->setModified(false);
         m_seqWindow->setModified(false);
+        m_feedback->setModified(false);
     });
     // A step the cue clock fired (its pre-wait, a follow): already recalled on time, recorded here for undo
     m_engine->sequencer().setRecallRecorder([this](int snapshot, const Sequencer::RecallBefore &before) {
@@ -491,17 +501,20 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_cueUndoIndex = m_undo->index();
         m_seqBar->setModified(false);
         m_seqWindow->setModified(false);
+        m_feedback->setModified(false);
     });
     // Played elsewhere (OSC) or another sequence: nothing changed since; any edit afterwards: the bar says so
     connect(&m_engine->sequencer(), &Sequencer::positionChanged, this, [this] {
         m_cueUndoIndex = m_undo->index();
         m_seqBar->setModified(false);
         m_seqWindow->setModified(false);
+        m_feedback->setModified(false);
     });
     connect(m_undo, &QUndoStack::indexChanged, this, [this](int i) {
         if (m_engine->sequencer().position() >= 0 && i != m_cueUndoIndex) {
             m_seqBar->setModified(true);
             m_seqWindow->setModified(true);
+            m_feedback->setModified(true);
         }
     });
 

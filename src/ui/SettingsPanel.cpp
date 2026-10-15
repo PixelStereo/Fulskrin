@@ -1,6 +1,7 @@
 #include "SettingsPanel.h"
 #include "Widgets.h"
 #include "ColorPicker.h"
+#include "SequenceFeedback.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -14,6 +15,8 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QHBoxLayout>
 #include <QTabWidget>
 #include <QToolButton>
@@ -27,6 +30,8 @@ static const char *kOscKey = "osc/enabled";
 static const char *kOscPortKey = "osc/udpPort";        // (osc/port, osc/queryPort: earlier defaults, ignored)
 static const char *kQueryPortKey = "osc/oscQueryPort";
 static const char *kOscListenKey = "osc/listen"; // the address listened on ("": every interface)
+static const char *kFeedbackKey = "osc/feedback/enabled";      // the sequence's state sent by OSC
+static const char *kFeedbackTargetsKey = "osc/feedback/targets"; // "host:port" each
 static const char *kTransitionKey = "snapshots/transition";
 static const char *kRateKey = "render/frameRate";
 static const char *kSamplesKey = "render/antialiasing";
@@ -83,6 +88,11 @@ bool SettingsPanel::oscEnabled() { return QSettings().value(kOscKey, true).toBoo
 int SettingsPanel::oscPort() { return QSettings().value(kOscPortKey, kDefaultOscPort).toInt(); }
 int SettingsPanel::oscQueryPort() { return QSettings().value(kQueryPortKey, kDefaultQueryPort).toInt(); }
 QString SettingsPanel::oscListen() { return QSettings().value(kOscListenKey).toString(); }
+bool SettingsPanel::feedbackEnabled() { return QSettings().value(kFeedbackKey, true).toBool(); }
+QStringList SettingsPanel::feedbackTargets()
+{
+    return QSettings().value(kFeedbackTargetsKey, SequenceFeedback::defaultTargets()).toStringList();
+}
 
 QString SettingsPanel::defaultTransition(const IsfLibrary &library)
 {
@@ -413,6 +423,7 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
         "No password: any machine on a network listened on can control the show. On a shared network, listen on the "
         "show's interface only, or on this computer only.")));
     oscPage->addWidget(osc);
+    oscPage->addWidget(buildFeedback());
     audioPage->addWidget(buildAudio());
     for (QVBoxLayout *l : {playbackPage, renderPage, audioPage, interfacePage, oscPage}) l->addStretch();
     auto apply = [this] {
@@ -427,6 +438,94 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     connect(m_oscPort, qOverload<int>(&QSpinBox::valueChanged), this, apply);
     connect(m_queryPort, qOverload<int>(&QSpinBox::valueChanged), this, apply);
     connect(m_oscListen, qOverload<int>(&QComboBox::currentIndexChanged), this, apply);
+}
+
+// Sequence feedback: the state of the sequence sent by OSC to the addresses listed, for a remote interface
+QWidget *SettingsPanel::buildFeedback()
+{
+    auto *box = new QGroupBox(QStringLiteral("Sequence feedback"));
+    auto *v = new QVBoxLayout(box);
+    m_feedback = new FlagBox(QStringLiteral("Send the sequence's state by OSC at each cue (remote interface)"));
+    m_feedback->setChecked(feedbackEnabled());
+    v->addWidget(m_feedback);
+    m_feedbackTargets = new QTableWidget(0, 2);
+    m_feedbackTargets->setObjectName(QStringLiteral("feedbackTargets"));
+    m_feedbackTargets->setHorizontalHeaderLabels({QStringLiteral("Address (IP or name)"), QStringLiteral("Port")});
+    m_feedbackTargets->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_feedbackTargets->setColumnWidth(1, 80);
+    m_feedbackTargets->verticalHeader()->setVisible(false);
+    m_feedbackTargets->setMaximumHeight(130);
+    m_feedbackTargets->setToolTip(QStringLiteral("Double-click to edit. Each address receives every message."));
+    for (const QString &t : feedbackTargets()) {
+        QString host;
+        quint16 port = 0;
+        if (!SequenceFeedback::parseTarget(t, &host, &port)) continue;
+        const int r = m_feedbackTargets->rowCount();
+        m_feedbackTargets->insertRow(r);
+        m_feedbackTargets->setItem(r, 0, new QTableWidgetItem(host));
+        m_feedbackTargets->setItem(r, 1, new QTableWidgetItem(QString::number(port)));
+    }
+    v->addWidget(m_feedbackTargets);
+    auto *buttons = new QHBoxLayout;
+    auto *add = new QPushButton(QStringLiteral("+ Address"));
+    auto *remove = new QPushButton(QStringLiteral("− Remove"));
+    auto *reset = new QPushButton(QStringLiteral("Default"));
+    reset->setToolTip(QStringLiteral("This computer, port 11111"));
+    for (QPushButton *b : {add, remove, reset}) buttons->addWidget(b);
+    buttons->addStretch();
+    v->addLayout(buttons);
+    v->addWidget(note(QStringLiteral(
+        "For Bitfocus Companion, TouchOSC or an iPhone OSC app. Sent: /sequence/name, /sequence/running, "
+        "/sequence/go_enabled… and for /sequence/cue/previous, /sequence/cue/current and /sequence/cue/next: number, "
+        "name, label, text, description, prewait, action, postwait, continue, phase, elapsed, remaining (and their "
+        "_text), progress, percent, phase_progress, phase_percent. At each cue, ten times a second while a time goes "
+        "by (only what changed), and everything every 2 s.<br>"
+        "Commands, to the OSC port above: /sequence/go, /sequence/back, /sequence/stop, /sequence/stop_all, "
+        "/sequence/step &lt;n&gt;.")));
+
+    auto apply = [this] {
+        QStringList targets;
+        for (int r = 0; r < m_feedbackTargets->rowCount(); ++r) {
+            const QString host = m_feedbackTargets->item(r, 0) ? m_feedbackTargets->item(r, 0)->text().trimmed() : QString();
+            const QString port = m_feedbackTargets->item(r, 1) ? m_feedbackTargets->item(r, 1)->text().trimmed() : QString();
+            const QString t = (host.contains(QLatin1Char(':')) ? QStringLiteral("[%1]").arg(host) : host) + QLatin1Char(':') + port;
+            if (SequenceFeedback::parseTarget(t, nullptr, nullptr)) targets << t;
+        }
+        QSettings s;
+        s.setValue(kFeedbackKey, m_feedback->isChecked());
+        s.setValue(kFeedbackTargetsKey, targets);
+        emit feedbackChanged();
+    };
+    connect(m_feedback, &QCheckBox::toggled, this, apply);
+    connect(m_feedbackTargets, &QTableWidget::itemChanged, this, apply);
+    connect(add, &QPushButton::clicked, this, [this, apply] {
+        const int r = m_feedbackTargets->rowCount();
+        {
+            QSignalBlocker b(m_feedbackTargets);
+            m_feedbackTargets->insertRow(r);
+            m_feedbackTargets->setItem(r, 0, new QTableWidgetItem(QStringLiteral("127.0.0.1")));
+            m_feedbackTargets->setItem(r, 1, new QTableWidgetItem(QStringLiteral("11111")));
+        }
+        apply();
+        m_feedbackTargets->editItem(m_feedbackTargets->item(r, 0));
+    });
+    connect(remove, &QPushButton::clicked, this, [this, apply] {
+        const int r = m_feedbackTargets->currentRow();
+        if (r < 0) return;
+        m_feedbackTargets->removeRow(r);
+        apply();
+    });
+    connect(reset, &QPushButton::clicked, this, [this, apply] {
+        {
+            QSignalBlocker b(m_feedbackTargets);
+            m_feedbackTargets->setRowCount(0);
+            m_feedbackTargets->insertRow(0);
+            m_feedbackTargets->setItem(0, 0, new QTableWidgetItem(QStringLiteral("127.0.0.1")));
+            m_feedbackTargets->setItem(0, 1, new QTableWidgetItem(QStringLiteral("11111")));
+        }
+        apply();
+    });
+    return box;
 }
 
 // Audio: the sound card of this machine (the volume is the composition's)

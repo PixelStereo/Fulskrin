@@ -14,6 +14,7 @@ class CompositionPanel;
 class SettingsPanel;
 class SnapshotPanel;
 class SequenceBar;
+class SequenceFeedback;
 class SequenceWindow;
 class TimelineWindow;
 class OutputWindow;
@@ -131,6 +132,7 @@ private:
     SettingsPanel *m_settings = nullptr;
     SnapshotPanel *m_snapshots = nullptr;
     SequenceBar *m_seqBar = nullptr;
+    SequenceFeedback *m_feedback = nullptr;
     SequenceWindow *m_seqWindow = nullptr;
     TimelineWindow *m_timelineWindow = nullptr;
     class QTabBar *m_workspaceTabs = nullptr;
