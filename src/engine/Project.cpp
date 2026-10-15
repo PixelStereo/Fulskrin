@@ -73,6 +73,8 @@ void Engine::clearProject()
         m_animations.clear();
         m_nextAnimationId = 1;
         m_fades.clear();
+        m_deferredRecall.clear();
+        m_recallClock = 0;
         m_recalledSnapshot = 0;
         m_recallTotal = 0;
         for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
