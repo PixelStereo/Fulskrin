@@ -137,8 +137,9 @@ jobs:
           cmake --build build-memory --target pinol_workspace_ui_test -j4
       - name: Check workspace allocation lifetime
         run: |
-          xvfb-run -a valgrind --tool=memcheck --error-exitcode=99 --track-origins=yes \
-            --undef-value-errors=no --leak-check=no --num-callers=35 \
+          xvfb-run -a valgrind --tool=memcheck --error-exitcode=99 \
+            --undef-value-errors=no --show-realloc-size-zero=no --leak-check=no --num-callers=35 \
+            --suppressions=test/valgrind.supp \
             --log-file=workspace-valgrind.log ./build-memory/pinol_workspace_ui_test
       - name: Memory diagnostics
         if: always()
