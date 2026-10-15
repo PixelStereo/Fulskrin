@@ -561,8 +561,16 @@ void Sequencer::advance(double dt)
                     r.trackPending = r.target.timeline && r.target.action == AnimAction::Play;
                     fire.push_back(r.target);
                 } else if (r.tracking) {
-                    // The timeline plays on its own clock: its speed or loop mode may have changed since
-                    r.duration = std::max(0.0, r.elapsed - r.preWait) + m_engine.animationRemaining(r.target.timeline);
+                    // Track the animation's real remaining time while it runs, including speed and loop edits.
+                    // Freeze the action's duration when playback ends. Otherwise elapsed + 0 is recomputed
+                    // on every tick, so AutoFollow's post-wait deadline moves forever.
+                    const double remaining = m_engine.animationRemaining(r.target.timeline);
+                    if (remaining <= 0.0) {
+                        r.duration = std::max(0.0, r.elapsed - r.preWait);
+                        r.tracking = false;
+                    } else {
+                        r.duration = std::max(0.0, r.elapsed - r.preWait) + remaining;
+                    }
                 }
                 const double at = r.continueAt();
                 if (!r.fired || r.continued || at < 0 || r.elapsed < at) continue;
