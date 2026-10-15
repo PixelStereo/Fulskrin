@@ -219,7 +219,9 @@ void Engine::markNeeded()
             const auto g = groupNeeded.find(l.parent);
             inShown = g != groupNeeded.end() && g->second;
         }
-        l.needed = l.isViewport || l.referenced || l.id == m_previewId || (l.enabled && inShown && !l.soloHidden);
+        l.needed = l.isViewport || l.referenced || l.id == m_previewId ||
+                   std::any_of(m_previewSlots.begin(), m_previewSlots.end(), [&](const auto &p) { return p.id == l.id; }) ||
+                   (l.enabled && inShown && !l.soloHidden);
         if (l.isGroup) groupNeeded[l.id] = l.needed;
     }
     for (auto &[id, t] : m_transitions) t->from->needed = true;
@@ -942,6 +944,31 @@ void Engine::frame(double dt)
             it->second.used = false;
             ++it;
         }
+    }
+    // Copy only requested pictures into bounded, double-buffered preview textures.
+    // No CPU readback, decoder duplication, blocking task dispatch or per-view engine render.
+    for (auto &slot : m_previewSlots) {
+        // The UI may still sample this buffer on the GPU: wait there, never on the CPU.
+        if (slot.reader[m_back]) {
+            gl()->glWaitSync(slot.reader[m_back], 0, GL_TIMEOUT_IGNORED);
+            gl()->glDeleteSync(slot.reader[m_back]);
+            slot.reader[m_back] = nullptr;
+        }
+        slot.renderedId[m_back] = 0;
+        if (!slot.id) { slot.target[m_back].destroy(); continue; }
+        const int index = indexOfId(slot.id);
+        if (index < 0) { slot.target[m_back].destroy(); continue; }
+        const Layer &layer = *m_layers[size_t(index)];
+        const RenderTarget *vp = layer.isViewport ? &layer.vpOut[layer.vpBack] : nullptr;
+        const GLuint texture = vp ? vp->tex : layer.finalTex;
+        QSize size = vp ? QSize(vp->w, vp->h) : QSize(layer.finalW, layer.finalH);
+        if (!texture || size.isEmpty()) continue;
+        if (size.width() > 1024 || size.height() > 1024) size.scale(1024, 1024, Qt::KeepAspectRatio);
+        auto &target = slot.target[m_back];
+        target.ensure(std::max(1, size.width()), std::max(1, size.height()));
+        if (!target.fbo) continue;
+        blit(texture, target);
+        slot.renderedId[m_back] = slot.id;
     }
     readSourcePreview();
     // Publishing follows the viewports, however they changed (added, removed, undone, loaded, edited)

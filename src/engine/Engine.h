@@ -43,6 +43,7 @@
 #include <condition_variable>
 #include <deque>
 #include <map>
+#include <array>
 #include <functional>
 #include <mutex>
 
@@ -584,6 +585,9 @@ public:
 
     // --- Rendering
     void renderFrame();                  // manual mode only
+    void setPreviewSource(int slot, quint64 id); // 0: composition; four bounded GPU-only preview slots
+    GLuint previewTexture(int slot, QSize *size, int *buffer = nullptr) const; // caller holds mutex(), shared GL context current
+    void finishPreviewRead(int slot, int buffer, QOpenGLExtraFunctions *f); // mutex held
     GLuint outputTexture() const;        // last published frame (readable from a shared context)
     // Another context reading the published pictures calls this first, with itself current: its GPU waits for the
     // frame to be drawn (the CPU does not)
@@ -788,6 +792,13 @@ private:
     GLuint m_blackTex = 0;
     VideoConverter m_videoConv; // video frames to RGBA (render thread)
     TestCard m_testCard;        // the viewports' test cards (render thread)
+    struct PreviewSlot {
+        quint64 id = 0;
+        quint64 renderedId[2] = {0, 0};
+        RenderTarget target[2];
+        GLsync reader[2] = {nullptr, nullptr};
+    };
+    std::array<PreviewSlot, 4> m_previewSlots;
     RenderTarget m_output[2];
     std::atomic<int> m_published{0};
     int m_back = 1;

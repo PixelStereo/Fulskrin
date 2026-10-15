@@ -17,6 +17,7 @@
 #include "LayerTable.h"
 #include "InteractionPanel.h"
 #include "MappingView.h"
+#include "PreviewWorkspace.h"
 #include "CompositionPanel.h" // CompositionPanel
 #include "MediaBin.h"
 #include "LogPanel.h"
@@ -156,7 +157,9 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     auto *cv = new QVBoxLayout(center);
     cv->setContentsMargins(0, 0, 0, 0);
     cv->setSpacing(0);
-    cv->addWidget(m_view, 1);
+    auto *previews = new PreviewWorkspace(m_engine, m_view);
+    cv->addWidget(previews, 1);
+    connect(m_engine, &Engine::frameRendered, previews, &PreviewWorkspace::refreshFrames);
     cv->addWidget(m_seqBar);
     top->addWidget(center);
     top->addWidget(m_tabs);
