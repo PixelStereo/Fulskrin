@@ -343,6 +343,65 @@ void Engine::applyParams(Layer &layer, const QJsonObject &params, const QJsonObj
         }
 }
 
+void Engine::cancelScheduledRecall(quint64 layer, const QString &path)
+{
+    Lock lk(&m_mutex);
+    for (auto it = m_deferredRecall.begin(); it != m_deferredRecall.end();) {
+        if (it->second.layer == layer && it->second.path == path) it = m_deferredRecall.erase(it);
+        else ++it;
+    }
+}
+
+void Engine::scheduleRecall(quint64 layer, const QString &path, const QJsonValue &value, double seconds,
+                            const QString &easing, double delay)
+{
+    Lock lk(&m_mutex);
+    cancelScheduledRecall(layer, path);
+    const double due = m_recallClock + std::clamp(delay, 0.0, 600.0);
+    m_deferredRecall.emplace(due, DeferredRecall{layer, path, value, std::clamp(seconds, 0.0, 600.0), due, easing});
+}
+
+// Runs in the same fixed-step show-clock domain as fades/animations. No timers or
+// Qt queued UI callbacks: a busy interface cannot postpone a scheduled parameter.
+void Engine::stepScheduledRecall(double dt)
+{
+    m_recallClock += std::max(0.0, dt);
+    while (!m_deferredRecall.empty() && m_deferredRecall.begin()->first <= m_recallClock + 1e-9) {
+        DeferredRecall value = std::move(m_deferredRecall.begin()->second);
+        m_deferredRecall.erase(m_deferredRecall.begin());
+        QJsonObject timing{{value.path, value.duration}};
+        QJsonObject easing;
+        if (!value.easing.isEmpty()) easing.insert(value.path, value.easing);
+        if (value.layer == 0) {
+            if (value.path == QLatin1String("opacity") || value.path == QLatin1String("volume")) {
+                QJsonObject c{{"timing", timing}, {"easing", easing}};
+                c.insert(value.path, value.value);
+                applyComposition(c, 0);
+            } else if (value.path.startsWith(QLatin1String("interaction/"))) {
+                const quint64 id = value.path.section('/', 1, 1).toULongLong();
+                const QString key = value.path.section('/', 2);
+                QJsonObject t{{key, value.duration}}, curves;
+                if (!value.easing.isEmpty()) curves.insert(key, value.easing);
+                applyInteractionValues(id, QJsonObject{{value.path, value.value}}, t, curves, 0);
+                interactionValuesTouched();
+            } else {
+                setParameter(0, value.path, value.value);
+            }
+            continue;
+        }
+        const int index = indexOfId(value.layer);
+        if (index < 0 || isLocked(index)) continue;
+        takeOverFades(value.layer, QSet<QString>{value.path});
+        if (Layer *l = layer(index)) {
+            auto job = std::make_shared<FadeJob>();
+            job->id = value.layer;
+            applyParams(*l, QJsonObject{{value.path, value.value}}, timing, easing, value.duration,
+                        *job, false, false, false);
+            if (!job->done()) m_fades.push_back(std::move(job));
+        }
+    }
+}
+
 // A preset's recall
 // Each layer's values on their way, as a snapshot's are (only these: the other values, the source, the visibility
 // are left alone); the composition's level and volume with its own fade, its other values at once
@@ -593,13 +652,30 @@ void Engine::applyComposition(const QJsonObject &c, double fade)
 {
     if (c.isEmpty() || !c.value("included").toBool(true)) return;
     const QJsonObject timing = c.value("timing").toObject();
+    const QJsonObject delays = c.value("delay").toObject();
     auto time = [&](const QString &key) {
         const QJsonValue v = timing.value(key);
         return v.isDouble() ? std::clamp(v.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
     };
     const QJsonObject easing = c.value("easing").toObject();
     auto curve = [&](const QString &key) { return int(easingOf(easing, key)); };
-    const bool hasOpacity = c.contains("opacity"), hasVolume = c.contains("volume");
+    bool hasOpacity = c.contains("opacity"), hasVolume = c.contains("volume");
+    if (hasOpacity) {
+        const double delay = delayOf(delays, QStringLiteral("opacity"));
+        if (delay > 0) {
+            scheduleRecall(0, QStringLiteral("opacity"), c.value("opacity"), timeOf(timing, QStringLiteral("opacity"), fade),
+                           easing.value(QStringLiteral("opacity")).toString(), delay);
+            hasOpacity = false;
+        } else cancelScheduledRecall(0, QStringLiteral("opacity"));
+    }
+    if (hasVolume) {
+        const double delay = delayOf(delays, QStringLiteral("volume"));
+        if (delay > 0) {
+            scheduleRecall(0, QStringLiteral("volume"), c.value("volume"), timeOf(timing, QStringLiteral("volume"), fade),
+                           easing.value(QStringLiteral("volume")).toString(), delay);
+            hasVolume = false;
+        } else cancelScheduledRecall(0, QStringLiteral("volume"));
+    }
     const double opacity = std::clamp(c.value("opacity").toDouble(1), 0.0, 1.0);
     const float volume = float(std::clamp(c.value("volume").toDouble(1), 0.0, 2.0));
     const double opacityDur = time(QStringLiteral("opacity")), volumeDur = time(QStringLiteral("volume"));
@@ -1176,14 +1252,15 @@ void Engine::applyInteractions(const QJsonArray &states, double fade)
             const QJsonObject o = v.toObject();
             if (!o.value("included").toBool(true)) continue;
             applyInteractionValues(o.value("id").toString().toULongLong(), o.value("params").toObject(),
-                                   o.value("timing").toObject(), o.value("easing").toObject(), fade);
+                                   o.value("timing").toObject(), o.value("easing").toObject(), fade,
+                                   o.value("delay").toObject());
         }
     }
     interactionValuesTouched();
 }
 
 void Engine::applyInteractionValues(quint64 id, const QJsonObject &params, const QJsonObject &timing, const QJsonObject &easing,
-                                    double fade)
+                                    double fade, const QJsonObject &delays)
 {
     if (!id) return;
     const QString prefix = QStringLiteral("interaction/%1/").arg(id);
@@ -1213,6 +1290,14 @@ void Engine::applyInteractionValues(quint64 id, const QJsonObject &params, const
         const QString path = prefix + key;
         Parameter *p = findParameter(0, path);
         if (!p) continue;
+        const double delay = delayOf(delays, key);
+        if (delay > 0) {
+            const QString ek = Engine::timingKeyOf(easing, key);
+            scheduleRecall(0, path, value, timeOf(timing, key, fade),
+                           ek.isEmpty() ? QString() : easing.value(ek).toString(), delay);
+            continue;
+        }
+        cancelScheduledRecall(0, path);
         // A value given anew: the fade still running on it lets go
         m_interactionFades.erase(std::remove_if(m_interactionFades.begin(), m_interactionFades.end(),
                                                 [&](const InteractionFade &f) { return f.path == path; }),
