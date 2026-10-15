@@ -62,6 +62,7 @@
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QStackedWidget>
 #include <QThread>
 #include <QUndoStack>
 #include <QVBoxLayout>
@@ -165,11 +166,40 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     top->setStretchFactor(2, 0);
     top->setSizes({560, 610, 430});
 
-    // --- Bottom: snapshots (grid + inspector)
+    // --- Bottom: sequences beside a shared snapshot/preset/timeline workspace
     m_snapshots = new SnapshotPanel(m_engine, m_undo);
+    m_seqWindow = new SequenceWindow(m_engine, this);
+    m_seqWindow->setWindowFlags(Qt::Widget);
+    m_timelineWindow = new TimelineWindow(m_engine, m_undo, this);
+    m_timelineWindow->setWindowFlags(Qt::Widget);
+    auto *workspace = new QWidget;
+    auto *workspaceLayout = new QVBoxLayout(workspace);
+    workspaceLayout->setContentsMargins(0, 0, 0, 0);
+    m_workspaceTabs = new QTabBar;
+    m_workspaceTabs->addTab(QStringLiteral("Snapshots"));
+    m_workspaceTabs->addTab(QStringLiteral("Presets"));
+    m_workspaceTabs->addTab(QStringLiteral("Timelines"));
+    auto *workspacePages = new QStackedWidget;
+    workspacePages->addWidget(m_snapshots);
+    workspacePages->addWidget(m_timelineWindow);
+    workspaceLayout->addWidget(m_workspaceTabs);
+    workspaceLayout->addWidget(workspacePages);
+    connect(m_workspaceTabs, &QTabBar::currentChanged, this, [this, workspacePages](int tab) {
+        workspacePages->setCurrentIndex(tab == 2 ? 1 : 0);
+        if (tab < 2) m_snapshots->setMode(tab);
+    });
+    connect(m_snapshots, &SnapshotPanel::modeChanged, this, [this](int mode) {
+        m_workspaceTabs->setCurrentIndex(mode);
+    });
+    auto *bottom = new QSplitter(Qt::Horizontal);
+    bottom->addWidget(m_seqWindow);
+    bottom->addWidget(workspace);
+    bottom->setStretchFactor(0, 1);
+    bottom->setStretchFactor(1, 2);
+    bottom->setSizes({500, 1000});
     auto *split = new QSplitter(Qt::Vertical);
     split->addWidget(top);
-    split->addWidget(m_snapshots);
+    split->addWidget(bottom);
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 0);
     split->setSizes({720, 220});
@@ -335,7 +365,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(space, &QShortcut::activated, this, &MainWindow::sequenceGo);
     auto *spaceBack = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Space), this, nullptr, nullptr, Qt::ApplicationShortcut);
     connect(spaceBack, &QShortcut::activated, this, &MainWindow::sequenceBack);
-    m_seqWindow = new SequenceWindow(m_engine, this);
     connect(m_seqBar, &SequenceBar::goRequested, this, &MainWindow::sequenceGo);
     connect(m_seqBar, &SequenceBar::backRequested, this, &MainWindow::sequenceBack);
     connect(m_seqBar, &SequenceBar::windowRequested, this, &MainWindow::openSequences);
@@ -345,7 +374,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_seqWindow, &SequenceWindow::stopRequested, &m_engine->sequencer(), &Sequencer::stop);
     connect(m_seqBar, &SequenceBar::stopAllRequested, &m_engine->sequencer(), &Sequencer::stopAll);
     connect(m_seqWindow, &SequenceWindow::stopAllRequested, &m_engine->sequencer(), &Sequencer::stopAll);
-    m_timelineWindow = new TimelineWindow(m_engine, m_undo, this);
     m_timelineWindow->addActions({m_undoAction, m_redoAction}); // undo / redo from the Timelines window too
     connect(m_timelineWindow, &TimelineWindow::edited, this, &MainWindow::markDirty);
     connect(m_seqBar, &SequenceBar::timelinesRequested, this, &MainWindow::openTimelines);
@@ -1576,15 +1604,13 @@ void MainWindow::sequenceGoTo(int step) { m_engine->sequencer().goTo(step); }
 void MainWindow::openSequences()
 {
     m_seqWindow->show();
-    m_seqWindow->raise();
-    m_seqWindow->activateWindow();
+    m_seqWindow->setFocus();
 }
 
 void MainWindow::openTimelines()
 {
-    m_timelineWindow->show();
-    m_timelineWindow->raise();
-    m_timelineWindow->activateWindow();
+    m_workspaceTabs->setCurrentIndex(2);
+    m_timelineWindow->setFocus();
 }
 
 void MainWindow::togglePlayCurrent()
