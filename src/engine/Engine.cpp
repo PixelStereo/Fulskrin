@@ -494,6 +494,10 @@ void Engine::releaseAll()
     auto f = gl();
     for (RenderTarget &o : m_output) o.destroy();
     m_previewTarget.destroy();
+    for (auto &slot : m_previewSlots) {
+        for (auto &target : slot.target) target.destroy();
+        for (auto &reader : slot.reader) if (reader) { gl()->glDeleteSync(reader); reader = nullptr; }
+    }
     if (m_previewPbo) f->glDeleteBuffers(1, &m_previewPbo);
     m_previewPbo = 0;
     m_previewPboW = m_previewPboH = 0;
@@ -704,6 +708,39 @@ quint64 Engine::windowFrames(quint64 viewport)
         if (it != m_outWindows.end()) n = it->second.presented;
     });
     return n;
+}
+
+void Engine::setPreviewSource(int slot, quint64 id)
+{
+    Lock lk(&m_mutex);
+    if (slot >= 0 && slot < int(m_previewSlots.size())) m_previewSlots[size_t(slot)].id = id;
+}
+
+GLuint Engine::previewTexture(int slot, QSize *size, int *buffer) const
+{
+    if (slot < 0 || slot >= int(m_previewSlots.size())) return 0;
+    const auto &preview = m_previewSlots[size_t(slot)];
+    const int front = m_published.load();
+    if (buffer) *buffer = front;
+    if (!preview.id) {
+        if (size) *size = QSize(m_output[front].w, m_output[front].h);
+        return m_output[front].tex;
+    }
+    if (preview.renderedId[front] != preview.id) return 0; // source changed or deleted
+    const auto &target = preview.target[front];
+    if (size) *size = QSize(target.w, target.h);
+    return target.tex;
+}
+
+void Engine::finishPreviewRead(int slot, int buffer, QOpenGLExtraFunctions *f)
+{
+    if (slot < 0 || slot >= int(m_previewSlots.size()) || buffer < 0 || buffer > 1) return;
+    auto &preview = m_previewSlots[size_t(slot)];
+    if (!preview.id) return;
+    auto &reader = preview.reader[buffer];
+    if (reader) f->glDeleteSync(reader);
+    reader = f->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    f->glFlush(); // make the reader fence visible to the render context without a CPU wait
 }
 
 GLuint Engine::outputTexture() const { return m_output[m_published.load()].tex; }

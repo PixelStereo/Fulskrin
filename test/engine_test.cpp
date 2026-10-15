@@ -51,6 +51,7 @@ int runGpuTargetTests(Engine &e); // gpu_targets.cpp
 int runGoldenRenderTests(Engine &e, const QString &root, const QString &tmp); // golden_render.cpp
 int runRecallDelayTests(Engine &e); // recall_delay.cpp
 int runEmergencyStopTests(Engine &e); // emergency_stop.cpp
+int runPreviewSourceTests(Engine &e, const QString &tmp);
 int runTimelineRepeatTests(Engine &e, const QString &tmp); // timeline_repeat.cpp
 #define CHECK(cond)                                                                 \
     do {                                                                            \
@@ -172,6 +173,7 @@ int main(int argc, char **argv)
     if (area("golden")) {
         failures += runGoldenRenderTests(e, root, tmp);
     } // golden
+    if (area("preview_sources")) failures += runPreviewSourceTests(e, tmp);
     if (area("timeline_repeat")) {
         failures += runTimelineRepeatTests(e, tmp);
     } // timeline_repeat
