@@ -4547,7 +4547,7 @@ void main(){ gl_FragColor = definitely_not_defined; }
         CHECK(waitFor([&]{return e.audioOutput().spectrum().band(400,480)>.15f;}));
         CHECK(e.audioOutput().spectrum().band(6000,16000)<.01f);
         Interaction audioBand=Interaction::made(InteractionSource::Audio);
-        audioBand.audioLow=400;audioBand.audioHigh=480;audioBand.param="opacity";
+        audioBand.audioLow=400;audioBand.audioHigh=480;audioBand.param="opacity";audioBand.filterOn=false;
         audioBand.dstMin=.2;audioBand.dstMax=.8;
         const auto audioMapping=e.addInteraction(audioBand);
         e.advanceFades(.02);
