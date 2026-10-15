@@ -407,7 +407,7 @@ endif()
 # ---------------------------------------------------------------------------
 option(PINOL_TESTS "Build the engine tests" ON)
 if(PINOL_TESTS)
-  add_executable(pinol_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp test/cue_capture.cpp test/gpu_targets.cpp test/golden_render.cpp test/timeline_repeat.cpp test/emergency_stop.cpp src/ui/Commands.cpp src/ui/LogModel.cpp)
+  add_executable(pinol_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp test/cue_capture.cpp test/gpu_targets.cpp test/golden_render.cpp test/timeline_repeat.cpp test/recall_delay.cpp test/emergency_stop.cpp src/ui/Commands.cpp src/ui/LogModel.cpp)
   target_include_directories(pinol_tests PRIVATE src/ui)
   target_link_libraries(pinol_tests PRIVATE pinol_engine)
   target_compile_options(pinol_tests PRIVATE ${PINOL_WARNINGS})
@@ -415,7 +415,7 @@ if(PINOL_TESTS)
   # CTest: each area in a process of its own (a new engine), then every bundled shader compiled and rendered.
   # Test media first: sh test/make_media.sh
   enable_testing()
-  foreach(area emergency_stop cue_capture gpu_targets golden timeline_repeat isf_safe video project playback undo structure compositing osc snapshots masks rendering thread publishing
+  foreach(area emergency_stop cue_capture gpu_targets golden timeline_repeat recall_delay isf_safe video project playback undo structure compositing osc snapshots masks rendering thread publishing
           media sound layersource timecode interactions)
     add_test(NAME ${area} COMMAND pinol_tests --area ${area})
   endforeach()
@@ -423,6 +423,11 @@ if(PINOL_TESTS)
   # others once, these with retries (ctest -L timing --repeat until-pass:3) — their thresholds stay as they are; a CI
   # runner without a sound card or a GPU is late now and then, a real regression fails every attempt
   set_tests_properties(sound playback thread publishing timecode snapshots media PROPERTIES LABELS timing)
+  add_executable(pinol_recall_delay_ui_test test/recall_delay_ui.cpp src/ui/SnapshotPanel.cpp src/ui/PresetEditor.cpp
+                 src/ui/SequencePanel.cpp src/ui/Commands.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
+  target_include_directories(pinol_recall_delay_ui_test PRIVATE src/ui)
+  target_link_libraries(pinol_recall_delay_ui_test PRIVATE pinol_engine Qt6::Widgets)
+  add_test(NAME recall_delay_ui COMMAND pinol_recall_delay_ui_test)
   add_test(NAME isf COMMAND pinol_tests --check-isf "${CMAKE_SOURCE_DIR}/isf")
   if(NOT WIN32) # the application's exit codes in --render mode (Windows: its Qt libraries are deployed separately)
     add_test(NAME render_cli COMMAND ${CMAKE_COMMAND} -DPINOL=$<TARGET_FILE:Pinol> -DOUT=${CMAKE_BINARY_DIR}/render_cli
