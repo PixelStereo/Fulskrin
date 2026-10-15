@@ -49,6 +49,8 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp); // video_
 int runCueCaptureTests(Engine &e); // cue_capture.cpp
 int runGpuTargetTests(Engine &e); // gpu_targets.cpp
 int runGoldenRenderTests(Engine &e, const QString &root, const QString &tmp); // golden_render.cpp
+int runRecallDelayTests(Engine &e); // recall_delay.cpp
+int runEmergencyStopTests(Engine &e); // emergency_stop.cpp
 int runTimelineRepeatTests(Engine &e, const QString &tmp); // timeline_repeat.cpp
 #define CHECK(cond)                                                                 \
     do {                                                                            \
@@ -155,12 +157,18 @@ int main(int argc, char **argv)
         return ok == total ? 0 : 1;
     }
 
+    if (area("emergency_stop")) {
+        failures += runEmergencyStopTests(e);
+    } // emergency_stop
     if (area("cue_capture")) {
         failures += runCueCaptureTests(e);
     } // cue_capture
     if (area("gpu_targets")) {
         failures += runGpuTargetTests(e);
     } // gpu_targets
+    if (area("recall_delay")) {
+        failures += runRecallDelayTests(e);
+    } // recall_delay
     if (area("golden")) {
         failures += runGoldenRenderTests(e, root, tmp);
     } // golden
