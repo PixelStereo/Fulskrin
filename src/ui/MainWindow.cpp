@@ -338,7 +338,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_seqWindow = new SequenceWindow(m_engine, this);
     connect(m_seqBar, &SequenceBar::goRequested, this, &MainWindow::sequenceGo);
     connect(m_seqBar, &SequenceBar::backRequested, this, &MainWindow::sequenceBack);
-    connect(m_seqBar, &SequenceBar::windowRequested, this, &MainWindow::openSequences);
     connect(m_seqWindow, &SequenceWindow::goToRequested, this, &MainWindow::sequenceGoTo);
     connect(m_seqWindow, &SequenceWindow::edited, this, &MainWindow::markDirty);
     connect(m_seqBar, &SequenceBar::stopRequested, &m_engine->sequencer(), &Sequencer::stop);
@@ -348,7 +347,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_timelineWindow = new TimelineWindow(m_engine, m_undo, this);
     m_timelineWindow->addActions({m_undoAction, m_redoAction}); // undo / redo from the Timelines window too
     connect(m_timelineWindow, &TimelineWindow::edited, this, &MainWindow::markDirty);
-    connect(m_seqBar, &SequenceBar::timelinesRequested, this, &MainWindow::openTimelines);
     connect(m_seqWindow, &SequenceWindow::timelinesRequested, this, &MainWindow::openTimelines);
     connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
         m_timelineWindow->setCurrentLayer(r >= 0 ? m_engine->layerId(r) : 0);
