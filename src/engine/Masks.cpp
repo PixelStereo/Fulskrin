@@ -155,6 +155,34 @@ Mask Mask::fromJson(const QJsonObject &o)
 
 namespace masks {
 
+bool alignNodes(Mask &mask, const std::vector<int> &selected, AlignEdge edge)
+{
+    if (selected.size() < 2) return false;
+    for (int i : selected) if (i < 0 || i >= int(mask.nodes.size())) return false;
+    const bool xAxis = edge == AlignEdge::Left || edge == AlignEdge::Right;
+    const bool lower = edge == AlignEdge::Left || edge == AlignEdge::Top;
+    double target = lower ? std::numeric_limits<double>::infinity()
+                          : -std::numeric_limits<double>::infinity();
+    for (int i : selected) {
+        const QPointF p = mask.nodes[size_t(i)].p;
+        const double value = xAxis ? p.x() : p.y();
+        target = lower ? std::min(target, value) : std::max(target, value);
+    }
+    if (!std::isfinite(target)) return false;
+    bool modified = false;
+    for (int i : selected) {
+        MaskNode &n = mask.nodes[size_t(i)];
+        const QPointF delta = xAxis ? QPointF(target - n.p.x(), 0) : QPointF(0, target - n.p.y());
+        if (delta.isNull()) continue;
+        n.p += delta;
+        n.in += delta;
+        n.out += delta;
+        modified = true;
+    }
+    if (modified) mask.shape = Mask::Shape::Path;
+    return modified;
+}
+
 QJsonArray toJson(const std::vector<Mask> &m)
 {
     QJsonArray a;
