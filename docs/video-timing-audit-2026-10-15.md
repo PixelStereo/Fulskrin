@@ -22,6 +22,7 @@ Les régressions supplémentaires utilisent les API réelles du moteur. [Le pilo
 |---|---:|---:|---:|---:|---:|---:|
 | H.264 + ProRes + HAP + H.264/AAC, composition 1080p, 60 Hz | 12 s | 720 frames, 60 Hz | 0 | 17,67 / 17,67 ms | 4,00 / 4,38 ms | 1,66 ms |
 | Même charge, 120 Hz | 12 s | 1 440 frames, 120 Hz | 0 | 9,31 / 9,31 ms | 4,00 / 4,94 ms | 1,37 ms |
+| Deux H.264 4K à 25 images/s, composition 4K, 60 Hz (essai isolé) | 20 s | 1 200 frames, 60 Hz | 0 | 17,67 / 17,67 ms | 4,00 / 5,22 ms | 1,36 ms |
 
 Les fichiers gardent leur cadence propre de 25 ou 30 images/s. Les percentiles sont des bornes issues d’histogrammes, pas des quantiles calculés sur tous les échantillons bruts. Le compteur « missed » ne compte qu’un intervalle dépassant **1,5 période** : zéro à ce compteur ne signifie pas que chaque image est arrivée exactement à sa deadline.
 
