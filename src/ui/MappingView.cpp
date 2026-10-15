@@ -67,6 +67,7 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
                                                       "edges, centers and corners around them.\nHold Ctrl / ⌘ while "
                                                       "dragging to move freely. On or off at start: Settings."));
     m_magnetButton->setIcon(magnet::icon());
+    m_magnetButton->setObjectName(QStringLiteral("mappingMagnet"));
     m_magnetButton->setCheckable(true);
     m_magnetButton->setChecked(magnet::enabled());
     connect(m_magnetButton, &QToolButton::toggled, this, [](bool on) { magnet::setEnabled(on); });
@@ -93,6 +94,7 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     // Mask nodes never accidentally move while the layer tool is active.
     m_maskModeButton = button(QStringLiteral("Layer"), QStringLiteral("Layer mode: select and move layers. "
                                                       "Press to switch to Mask mode: click, snap and align mask nodes."));
+    m_maskModeButton->setObjectName(QStringLiteral("mappingSelectionMode"));
     m_maskModeButton->setCheckable(true);
     connect(m_maskModeButton, &QToolButton::toggled, this, &MappingView::setMaskEditMode);
     for (int i = 0; i < 4; ++i) {
@@ -101,6 +103,7 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
                                         "Align mask nodes top", "Align mask nodes bottom"};
         m_alignMask[i] = button(QString::fromUtf8(icons[i]), QString::fromLatin1(labels[i]) +
                                 QStringLiteral(" (Ctrl/Command-click at least two points first)"));
+        m_alignMask[i]->setObjectName(QStringLiteral("maskAlign%1").arg(i));
         m_alignMask[i]->setEnabled(false);
         connect(m_alignMask[i], &QToolButton::clicked, this, [this, i] { alignMaskNodes(i); });
     }
@@ -122,6 +125,7 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     for (QDoubleSpinBox **box : {&m_coordX, &m_coordY}) {
         auto *label = new QLabel(box == &m_coordX ? QStringLiteral("X") : QStringLiteral("Y"));
         auto *b = new NumberBox;
+        b->setObjectName(box == &m_coordX ? QStringLiteral("mappingCoordX") : QStringLiteral("mappingCoordY"));
         b->setRange(-100000, 100000);
         b->setDecimals(1);
         b->setSuffix(QStringLiteral(" px"));
@@ -953,7 +957,24 @@ void MappingView::mousePressEvent(QMouseEvent *e)
     Engine::Lock lk(&m_engine->mutex());
     const QPointF p = e->position();
     m_lastNorm = toNorm(p);
-    if ((m_drawing || (m_maskEditMode && m_maskIndex >= 0)) && pressMask(e)) { // a mask's point, handle or inside, or one being drawn
+    if (m_maskEditMode && !m_drawing && e->button() == Qt::LeftButton && !m_engine->isLocked(m_layer)) {
+        // The mode button is sufficient to pick a mask: no inspector selection is required first.
+        if (const Layer *layer = m_engine->layer(m_layer)) {
+            for (int i = int(layer->masks.size()) - 1; i >= 0; --i) {
+                const Mask &mask = layer->masks[size_t(i)];
+                if (!mask.enabled) continue;
+                const QPolygonF outline = maskOutline(mask);
+                bool hit = outline.containsPoint(p, Qt::OddEvenFill);
+                for (const auto &node : mask.nodes)
+                    hit |= QLineF(frameToWidget(maskInComposition(&mask), node.p), p).length() <= 8;
+                if (hit) {
+                    if (i != m_maskIndex) { setMaskIndex(i); emit maskPicked(i); }
+                    break;
+                }
+            }
+        }
+    }
+    if ((m_drawing || m_maskEditMode) && pressMask(e)) { // a mask's point, handle or inside, or one being drawn
         update();
         return;
     }
