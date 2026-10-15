@@ -309,7 +309,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_store = new QPushButton(QStringLiteral("+"));
     m_store->setToolTip(QStringLiteral("Store the current state of the layers in a new snapshot"));
     m_store->setFixedWidth(34);
-    m_go = new QPushButton(QStringLiteral("GO"));
+    m_go = new QPushButton(QStringLiteral("PLAY ▶"));
     m_go->setStyleSheet("QPushButton { font-weight:bold; background:#2f6b3a; color:white; padding:3px 14px; }");
     m_go->setToolTip(QStringLiteral("Recall the selected snapshot (double-click or Enter in the list)"));
     m_newGroup = new QPushButton(QStringLiteral("Group"));
@@ -370,7 +370,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_presetNew = new QPushButton(QStringLiteral("+"));
     m_presetNew->setFixedWidth(34);
     m_presetNew->setToolTip(QStringLiteral("A new empty preset: fill it in Edit mode, or right-click a value › Add to Preset"));
-    m_presetGo = new QPushButton(QStringLiteral("GO"));
+    m_presetGo = new QPushButton(QStringLiteral("PLAY ▶"));
     m_presetGo->setStyleSheet("QPushButton { font-weight:bold; background:#2f6b3a; color:white; padding:3px 14px; }");
     m_presetGo->setToolTip(QStringLiteral("Recall the selected preset (double-click or Enter in the list)"));
     pbar->addWidget(m_presetEdit);
@@ -526,7 +526,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
         menu.addAction(QStringLiteral("New Group"), this, &SnapshotPanel::newGroup);
         if (i >= 0) {
             menu.addSeparator();
-            menu.addAction(QStringLiteral("Recall"), this, [this, i] { recall(i); });
+            menu.addAction(QStringLiteral("Play"), this, [this, i] { recall(i); });
             menu.addAction(QStringLiteral("Update with Current State"), this, [this, i] { updateSnapshot(i); });
             menu.addAction(QStringLiteral("Rename"), this, [this] {
                 m_name->setFocus();
