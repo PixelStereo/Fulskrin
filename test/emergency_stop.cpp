@@ -4,6 +4,7 @@
 #include "Sequencer.h"
 #include <cmath>
 #include <cstdio>
+#include <QTemporaryDir>
 
 int runEmergencyStopTests(Engine &engine)
 {
@@ -68,6 +69,47 @@ int runEmergencyStopTests(Engine &engine)
     check(std::abs(double(engine.layer(engine.indexOfId(layer))->opacity) - held) < 1e-5,
           "parameters do not continue fading after stop");
     check(!engine.sequencer().anyActive(), "canceled follow never fires on future tick");
+
+    // A source crossfade must hold its actual mixed pixels, rather than jumping to the new source.
+    engine.newProject();
+    engine.setCompositionSize(QSize(64, 64));
+    engine.setViewportSize(engine.indexOfId(engine.mainViewportId()), QSize(64, 64));
+    QTemporaryDir files;
+    QImage red(64, 64, QImage::Format_RGBA8888), blue = red;
+    red.fill(Qt::red); blue.fill(Qt::blue);
+    const QString redPath = files.path() + "/red.png", bluePath = files.path() + "/blue.png";
+    check(red.save(redPath) && blue.save(bluePath), "create transition images");
+    const int imageLayer = engine.addLayer("Crossfade");
+    QString error;
+    check(engine.setLayerImage(imageLayer, bluePath, &error), "load destination image");
+    Engine::Snapshot mixed;
+    mixed.name = "Blue"; mixed.fade = 2;
+    mixed.layers = engine.captureLayers();
+    const int mi = engine.addSnapshot(mixed);
+    check(engine.setLayerImage(imageLayer, redPath, &error), "load outgoing image");
+    engine.renderFrame();
+    engine.recallSnapshot(mi);
+    engine.advanceFades(0.5);
+    engine.renderFrame();
+    const QColor before = engine.grabOutput().pixelColor(32, 32);
+    check(before.red() > 10 && before.blue() > 10, "mixed frame exists before stop");
+    const quint64 imageId = engine.layerId(imageLayer);
+    engine.stopShowPlayback();
+    check(!engine.isTransitioning(imageId), "frozen source transition is no longer a running transport");
+    engine.advanceFades(10);
+    engine.renderFrame();
+    const QColor after = engine.grabOutput().pixelColor(32, 32);
+    check(before == after, "Escape preserves exact source-transition pixels on subsequent frames");
+
+    // Typewriter output is held as shown, including after another manual fade tick.
+    const int textLayer = engine.addLayer("Typing");
+    check(engine.setLayerText(textLayer), "create text layer");
+    auto &text = engine.layer(textLayer)->text;
+    text.typedFrom = "A"; text.content = "ABCDE"; text.typeDur = 10; text.typeProgress = 0.5;
+    const QString shown = text.shown();
+    engine.stopShowPlayback();
+    engine.advanceFades(20);
+    check(text.shown() == shown && text.typeDur == 0, "typewriter does not finish after Escape");
 
     engine.setFadesManual(false);
     engine.newProject();

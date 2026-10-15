@@ -366,6 +366,12 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
 // layer's picture; the layer's mapping, opacity and blend then apply to the mix.
 void Engine::renderTransition(Layer &l, SourceTransition &t, const IsfRenderContext &rc)
 {
+    if (t.frozen && t.target.tex) {
+        l.finalTex = t.target.tex;
+        l.finalW = t.target.w;
+        l.finalH = t.target.h;
+        return;
+    }
     renderLayer(*t.from, rc);
     const GLuint a = t.from->finalTex, b = l.finalTex;
     const int w = b ? l.finalW : t.from->finalW, h = b ? l.finalH : t.from->finalH;

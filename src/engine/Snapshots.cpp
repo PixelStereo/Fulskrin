@@ -897,15 +897,27 @@ void Engine::stopShowPlayback()
             a.reversed = false;
         }
         if (l.hasTransport()) l.playing = false;
+        if (l.tcClock) l.tcClock->setPlaying(false);
+        if (l.text.typeDur > 0) {
+            l.text.content = l.text.shown();
+            l.text.stopTyping();
+        }
     }
-    // Conclude transitions onto their incoming source; GPU resources are retired
-    // through the engine's existing deferred retirement path.
+    // Preserve the last mixed frame instead of jumping onto the incoming source.
     for (auto &[id, transition] : m_transitions) {
-        for (auto &lp : m_layers)
-            if (lp->id == id) lp->transitionGain = 1.0f;
-        retireTransition(std::move(transition));
+        transition->frozen = true;
+        transition->from->playing = false;
+        if (transition->from->tcClock) transition->from->tcClock->setPlaying(false);
     }
-    m_transitions.clear();
+    // Cancel filter tails and input events already queued before Escape.
+    for (auto &[id, run] : m_interactionRun) {
+        run.proc.reset();
+        for (auto &channel : run.channels) channel.reset();
+    }
+    {
+        std::lock_guard<std::mutex> events(m_interactionEventsMutex);
+        m_interactionEvents.clear();
+    }
     // Halt an independent audio blackout/ramp at the current gain, too.
     m_audio->fadeTo(m_audio->fadeLevel(), 0);
 }
@@ -982,7 +994,8 @@ QString Engine::defaultTransition() const
 bool Engine::isTransitioning(quint64 layer) const
 {
     Lock lk(&m_mutex);
-    return m_transitions.count(layer) > 0;
+    const auto it = m_transitions.find(layer);
+    return it != m_transitions.end() && !it->second->frozen;
 }
 
 // The layer keeps its place and its id; the object that held the outgoing source becomes the transition's
@@ -1034,6 +1047,7 @@ void Engine::stepTransitions(double dt)
         Layer *l = nullptr;
         for (auto &x : m_layers)
             if (x->id == it->first) l = x.get();
+        if (t.frozen) { ++it; continue; }
         t.elapsed += std::max(0.0, dt);
         if (!l || t.elapsed >= t.duration) {
             if (l) l->transitionGain = 1.0f;

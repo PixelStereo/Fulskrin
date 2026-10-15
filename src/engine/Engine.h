@@ -854,6 +854,7 @@ private:
         QString shaderPath;
         std::unique_ptr<IsfInstance> shader; // loaded by the render thread (none: a crossfade)
         bool loaded = false;
+        bool frozen = false; // emergency stop retains the last mixed picture
         bool crossfadeOnly = false; // a sound on either side: no shader, the levels cross (tests: transitionUsesShader)
         RenderTarget target;
         double elapsed = 0, duration = 1;
