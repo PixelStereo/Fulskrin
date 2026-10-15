@@ -101,6 +101,18 @@ int runEmergencyStopTests(Engine &engine)
     const QColor after = engine.grabOutput().pixelColor(32, 32);
     check(before == after, "Escape preserves exact source-transition pixels on subsequent frames");
 
+    engine.recallSnapshot(mi);
+    engine.advanceFades(3); engine.renderFrame();
+    check(engine.grabOutput().pixelColor(32, 32).blue() > 240, "a deliberate new recall releases the emergency-held picture");
+
+    // Cancel an output-level ramp without jumping to its old target on the next render.
+    engine.fadeCompositionOpacity(1, 0); engine.renderFrame();
+    const double level = engine.compositionOpacity();
+    engine.fadeCompositionOpacity(0, 2);
+    engine.stopShowPlayback();
+    engine.renderFrame();
+    check(std::abs(engine.compositionOpacity() - level) < 1e-8, "output level holds current value instead of jumping to ramp target");
+
     // Typewriter output is held as shown, including after another manual fade tick.
     const int textLayer = engine.addLayer("Typing");
     check(engine.setLayerText(textLayer), "create text layer");
