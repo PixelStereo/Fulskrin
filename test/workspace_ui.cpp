@@ -9,6 +9,7 @@
 #include <QMenu>
 #include <QUndoStack>
 #include <QListWidget>
+#include <QTreeWidget>
 #include <QTabWidget>
 #include <QPushButton>
 #include <QApplication>
@@ -112,6 +113,13 @@ int main(int argc, char **argv)
             tabs->setCurrentIndex(0); app.processEvents();
             if (argc > 1) check(window.grab().save(QString::fromLocal8Bit(argv[1])), "save workspace capture");
         }
+        // The controller is a direct MainWindow child and may die before the reparented lists.
+        delete window.findChild<PresetEditor *>();
+        if (lists) {
+            if (auto *presetList = lists->widget(1)->findChild<QTreeWidget *>())
+                presetList->setCurrentItem(nullptr);
+        }
+        app.processEvents();
         window.hide();
     }
     engine.shutdown();

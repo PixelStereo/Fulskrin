@@ -35,6 +35,7 @@ PresetEditor::PresetEditor(Engine *engine, QUndoStack *undo, QObject *parent)
 PresetEditor::~PresetEditor()
 {
     if (s_instance == this) s_instance = nullptr;
+    delete m_overlay; // its parent window can outlive this controller
 }
 
 PresetEditor *PresetEditor::instance() { return s_instance; }

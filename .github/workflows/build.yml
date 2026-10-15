@@ -107,7 +107,7 @@ jobs:
             libavutil-dev libasound2-dev xvfb
       - name: Build with AddressSanitizer
         run: |
-          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
           cmake --build build-asan --target pinol_workspace_ui_test -j4

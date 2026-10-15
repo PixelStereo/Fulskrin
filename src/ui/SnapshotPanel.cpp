@@ -1868,10 +1868,11 @@ void SnapshotPanel::connectPresets()
         connect(del, &QShortcut::activated, this, removePreset);
     }
     connect(m_presetDelete, &QPushButton::clicked, this, removePreset);
-    connect(m_presets, &QTreeWidget::currentItemChanged, this, [this, pe](QTreeWidgetItem *it) {
+    connect(m_presets, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *it) {
         if (m_filling) return;
         const quint64 id = it ? it->data(0, PresetRole).toULongLong() : 0;
-        if (pe) pe->select(id);
+        // The shared controller may already have been destroyed during window teardown.
+        if (PresetEditor *editor = PresetEditor::instance()) editor->select(id);
         if (it) {
             QSignalBlocker b(m_list);
             m_list->setCurrentItem(nullptr);
