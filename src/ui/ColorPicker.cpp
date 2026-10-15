@@ -2,6 +2,8 @@
 #include "Widgets.h"
 
 #include <QGridLayout>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLinearGradient>
@@ -17,6 +19,15 @@
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
+constexpr auto kDefaultViewKey = "ui/colorPickerDefaultView";
+
+ColorPickerPreferences &preferences()
+{
+    static ColorPickerPreferences value;
+    return value;
+}
+
+bool validView(int value) { return value >= ColorPicker::RGB && value <= ColorPicker::HSL; }
 
 QGradientStops channelGradient(const QColor &a, const QColor &b)
 {
@@ -170,10 +181,12 @@ ColorPicker::ColorPicker(bool withAlpha, QWidget *parent) : QWidget(parent), m_w
     m_swatch->setFixedSize(66, 22);
     head->addWidget(m_swatch);
     head->addStretch(1);
-    const QStringList names = {QStringLiteral("RGB"), QStringLiteral("HSV"), QStringLiteral("◉"), QStringLiteral("▦")};
+    const QStringList names = {QStringLiteral("RGB"), QStringLiteral("HSV"), QStringLiteral("◉"), QStringLiteral("▦"), QStringLiteral("HSL")};
     const QStringList tips = {QStringLiteral("RGB channels"), QStringLiteral("HSV channels"),
-                              QStringLiteral("Hue wheel and saturation/value square"), QStringLiteral("Color palette")};
-    for (int i = 0; i < 4; ++i) {
+                              QStringLiteral("Hue wheel and saturation/value square"), QStringLiteral("Color palette"),
+                              QStringLiteral("Hue, saturation and lightness")};
+    for (View view : {RGB, HSL, HSV, Wheel, Palette}) {
+        const int i = int(view);
         auto *button = new QToolButton;
         button->setText(names[i]);
         button->setToolTip(tips[i]);
@@ -275,33 +288,87 @@ ColorPicker::ColorPicker(bool withAlpha, QWidget *parent) : QWidget(parent), m_w
     layout->addWidget(m_palettePage);
 
     updateControls();
-    setView(Wheel);
+    applyView(defaultView());
+    connect(&preferences(), &ColorPickerPreferences::defaultViewChanged, this, [this] {
+        if (!m_hasLocalView) applyView(defaultView());
+    });
 }
 
-void ColorPicker::setSettingsKey(const QString &key, const QString &legacyKey)
+ColorPicker::View ColorPicker::defaultView()
 {
-    m_settingsKey = key;
     QSettings settings;
-    int value = static_cast<int>(m_view);
-    if (!key.isEmpty() && settings.contains(key)) {
-        value = settings.value(key).toInt();
-    } else if (!legacyKey.isEmpty() && settings.contains(legacyKey)) {
-        const int old = settings.value(legacyKey).toInt();
-        value = old == 2 ? Palette : std::clamp(old, 0, 1);
+    bool ok = false;
+    const int value = settings.value(kDefaultViewKey).toInt(&ok);
+    if (ok && validView(value)) return View(value);
+    // Preserve the old global preference when it represented an available view.
+    if (settings.contains("ui/colorModel") && settings.value("ui/colorModel").toInt() == ColorEditor::Rgb) return RGB;
+    return HSL;
+}
+
+void ColorPicker::setDefaultView(View view)
+{
+    if (!validView(int(view))) view = HSL;
+    const View before = defaultView();
+    QSettings().setValue(kDefaultViewKey, int(view));
+    if (before != view) emit preferences().defaultViewChanged();
+}
+
+void ColorPicker::setSettingsKey(const QString &key)
+{
+    // Older versions wrote their forced Wheel view even when the user had never
+    // chosen it. Keep explicit choices separately so those defaults cannot mask HSL.
+    m_settingsKey = key.isEmpty() ? QString() : key + QStringLiteral("/selectedView");
+    QSettings settings;
+    bool ok = false;
+    int value = m_settingsKey.isEmpty() ? -1 : settings.value(m_settingsKey).toInt(&ok);
+    m_hasLocalView = !m_settingsKey.isEmpty() && ok && validView(value);
+    if (!m_hasLocalView && !key.isEmpty()) {
+        const int previous = settings.value(key).toInt(&ok);
+        // A non-Wheel value could only have resulted from an explicit choice.
+        if (ok && validView(previous) && previous != Wheel) {
+            value = previous;
+            m_hasLocalView = true;
+            settings.setValue(m_settingsKey, value);
+        }
     }
-    setView(static_cast<View>(std::clamp(value, 0, 3)));
+    applyView(m_hasLocalView ? View(value) : defaultView());
 }
 
 void ColorPicker::setView(View view)
 {
-    const int index = std::clamp(static_cast<int>(view), 0, 3);
+    if (!validView(int(view))) return;
+    m_hasLocalView = true;
+    applyView(view);
+    if (!m_settingsKey.isEmpty()) QSettings().setValue(m_settingsKey, int(view));
+}
+
+void ColorPicker::applyView(View view)
+{
+    const int index = int(view);
     m_view = static_cast<View>(index);
-    for (int i = 0; i < 4; ++i) m_buttons[i]->setChecked(i == index);
-    m_channelPage->setVisible(m_view == RGB || m_view == HSV);
+    for (int i = 0; i < 5; ++i) m_buttons[i]->setChecked(i == index);
+    m_channelPage->setVisible(m_view == RGB || m_view == HSV || m_view == HSL);
     m_wheelPage->setVisible(m_view == Wheel);
     m_palettePage->setVisible(m_view == Palette);
     updateControls();
-    if (!m_settingsKey.isEmpty()) QSettings().setValue(m_settingsKey, index);
+}
+
+QColor ColorPicker::getColor(const QColor &initial, QWidget *parent, const QString &title,
+                            const QString &settingsKey, bool withAlpha)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(title);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *picker = new ColorPicker(withAlpha);
+    picker->setSettingsKey(settingsKey);
+    picker->setColor(initial);
+    layout->addWidget(picker);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.resize(360, dialog.sizeHint().height());
+    return dialog.exec() == QDialog::Accepted ? picker->color() : QColor();
 }
 
 void ColorPicker::setColor(const QColor &color)
@@ -311,6 +378,7 @@ void ColorPicker::setColor(const QColor &color)
     if (!m_withAlpha) c.setAlpha(255);
     if (c == m_color) return;
     m_color = c;
+    m_hslSaturation = c.hslSaturationF();
     if (c.hsvSaturation() > 0 && c.hsvHue() >= 0) m_hue = c.hsvHue();
     updateControls();
 }
@@ -320,7 +388,8 @@ void ColorPicker::editColor(const QColor &color)
     if (!color.isValid()) return;
     QColor c = color.toRgb();
     if (!m_withAlpha) c.setAlpha(255);
-    if (m_color == c) return;
+    if (m_view != HSL || (c.lightnessF() > 0 && c.lightnessF() < 1)) m_hslSaturation = c.hslSaturationF();
+    if (m_color == c) { updateControls(); return; }
     m_color = c;
     if (c.hsvSaturation() > 0 && c.hsvHue() >= 0) m_hue = c.hsvHue();
     updateControls();
@@ -331,7 +400,13 @@ void ColorPicker::editChannel(int channel, double value)
 {
     const int v = std::clamp(int(std::lround(value)), 0, channel == 0 && m_view == HSV ? 359 : 255);
     QColor c = m_color;
-    if (m_view == HSV && channel < 3) {
+    if (m_view == HSL && channel < 3) {
+        double saturation = m_hslSaturation, lightness = c.lightnessF();
+        if (channel == 0) m_hue = std::clamp(int(std::lround(value)), 0, 359);
+        if (channel == 1) m_hslSaturation = saturation = std::clamp(value / 100.0, 0.0, 1.0);
+        if (channel == 2) lightness = std::clamp(value / 100.0, 0.0, 1.0);
+        c.setHslF(m_hue / 360.0, saturation, lightness, c.alphaF());
+    } else if (m_view == HSV && channel < 3) {
         int h = m_hue, s = c.hsvSaturation(), brightness = c.value();
         if (channel == 0) h = v;
         if (channel == 1) s = v;
@@ -355,9 +430,14 @@ void ColorPicker::updateControls()
     m_swatch->setToolTip(m_color.name(m_withAlpha ? QColor::HexArgb : QColor::HexRgb).toUpper());
     for (int i = 0; i < (m_withAlpha ? 4 : 3); ++i) {
         const bool hsv = m_view == HSV;
-        m_labels[i]->setText(QString::fromLatin1(hsv ? "HSVA" : "RGBA").mid(i, 1));
-        m_fields[i]->setRange(0, hsv && i == 0 ? 359 : 255);
+        const bool hsl = m_view == HSL;
+        m_labels[i]->setText(QString::fromLatin1(hsl ? "HSLA" : hsv ? "HSVA" : "RGBA").mid(i, 1));
+        m_fields[i]->setRange(0, (hsv || hsl) && i == 0 ? 359 : hsl && i < 3 ? 100 : 255);
+        m_fields[i]->setDecimals(hsl && (i == 1 || i == 2) ? 1 : 0);
+        m_fields[i]->setSuffix(hsl && i < 3 ? (i == 0 ? QStringLiteral("°") : QStringLiteral(" %")) : QString());
+        m_fields[i]->setSingleStep(hsl && (i == 1 || i == 2) ? 0.1 : 1);
         m_fields[i]->setValue(i == 3 ? m_color.alpha()
+                                      : hsl ? (i == 0 ? m_hue : 100.0 * (i == 1 ? m_hslSaturation : m_color.lightnessF()))
                                       : hsv ? (i == 0 ? m_hue : i == 1 ? m_color.hsvSaturation() : m_color.value())
                                             : (i == 0 ? m_color.red() : i == 1 ? m_color.green() : m_color.blue()));
     }
@@ -377,6 +457,11 @@ void ColorPicker::updateGradients()
             transparent.setAlpha(0);
             opaque.setAlpha(255);
             stops = channelGradient(transparent, opaque);
+        } else if (m_view == HSL) {
+            const double h = m_hue / 360.0, s = m_hslSaturation, l = m_color.lightnessF();
+            if (i == 0) stops = hueGradient();
+            else if (i == 1) stops = channelGradient(QColor::fromHslF(h, 0, l), QColor::fromHslF(h, 1, l));
+            else stops = {{0, Qt::black}, {0.5, QColor::fromHslF(h, s, 0.5)}, {1, Qt::white}};
         } else if (m_view == HSV) {
             const int h = m_hue, s = m_color.hsvSaturation(), v = m_color.value();
             if (i == 0) stops = hueGradient();

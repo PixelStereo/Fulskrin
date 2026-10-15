@@ -1,5 +1,6 @@
 #include "LayerInspector.h"
 #include "PresetEditor.h"
+#include "ColorPicker.h"
 #include <QTabBar>
 #include "AudioOutput.h"
 #include "DeckLink.h"
@@ -17,7 +18,6 @@
 
 #include <QButtonGroup>
 #include <QCheckBox>
-#include <QColorDialog>
 #include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -941,8 +941,8 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
             b->setEnabled(!m_locked);
             paint(b, c);
             connect(b, &QPushButton::clicked, this, [this, b, label, set, applyColor] {
-                const QColor picked = QColorDialog::getColor(b->property("color").value<QColor>(), this, label,
-                                                             QColorDialog::ShowAlphaChannel);
+                const QColor picked = ColorPicker::getColor(b->property("color").value<QColor>(), this, label,
+                    QStringLiteral("ui/colorPickerMode/layer/%1/text/%2").arg(m_layerId).arg(label));
                 if (picked.isValid()) applyColor(b, picked, label, set);
             });
             return b;

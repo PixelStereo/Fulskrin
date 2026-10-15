@@ -223,7 +223,7 @@ private:
 };
 
 // Color Add / Remove: lightweight title, enable switch and hexadecimal entry
-// around the shared RGB ColorPicker. The picker owns all channel/wheel/palette UI.
+// around the shared ColorPicker. The picker owns all channel/wheel/palette UI.
 // Legacy enum values remain only because Settings serializes their historical ids.
 class ColorEditor : public QWidget
 {

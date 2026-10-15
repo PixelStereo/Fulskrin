@@ -1,8 +1,8 @@
 #include "SettingsPanel.h"
 #include "Widgets.h"
+#include "ColorPicker.h"
 
 #include <QCheckBox>
-#include <QColorDialog>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -22,7 +22,6 @@
 
 static const char *kPlayModeKey = "playback/defaultMode";
 static const char *kHardwareKey = "playback/hardwareDecoding";
-static const char *kColorKey = "ui/colorModel";
 static const char *kFollowKey = "ui/followFades";
 static const char *kOscKey = "osc/enabled";
 static const char *kOscPortKey = "osc/udpPort";        // (osc/port, osc/queryPort: earlier defaults, ignored)
@@ -74,7 +73,7 @@ bool SettingsPanel::followFades()
     if (s_followFades < 0) s_followFades = QSettings().value(kFollowKey, true).toBool() ? 1 : 0;
     return s_followFades == 1;
 }
-int SettingsPanel::colorModels() { return QSettings().value(kColorKey, int(ColorEditor::Rgb)).toInt(); }
+int SettingsPanel::colorModels() { return ColorPicker::defaultView() == ColorPicker::HSL ? ColorEditor::Hsl : ColorEditor::Rgb; }
 QString SettingsPanel::startupProject()
 {
     QSettings s;
@@ -277,7 +276,8 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
         s_followFades = on ? 1 : 0;
     });
     connect(swatch, &QPushButton::clicked, this, [this, paintSwatch] {
-        const QColor c = QColorDialog::getColor(theme::accent(), this, QStringLiteral("Accent color"));
+        const QColor c = ColorPicker::getColor(theme::accent(), this, QStringLiteral("Accent color"),
+                                               QStringLiteral("ui/colorPickerMode/settings/accent"), false);
         if (!c.isValid()) return;
         theme::setAccent(c);
         paintSwatch();
@@ -350,18 +350,21 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     auto *color = new QGroupBox(QStringLiteral("Color"));
     auto *cf = new QFormLayout(color);
     m_colorModels = new QComboBox;
-    m_colorModels->addItem(QStringLiteral("RGB"), int(ColorEditor::Rgb));
-    m_colorModels->addItem(QStringLiteral("HSL"), int(ColorEditor::Hsl));
-    m_colorModels->addItem(QStringLiteral("Additive (R G B light)"), int(ColorEditor::Additive));
-    m_colorModels->addItem(QStringLiteral("Subtractive (C M Y filters)"), int(ColorEditor::Subtractive));
-    m_colorModels->addItem(QStringLiteral("All together"), int(ColorEditor::All));
-    m_colorModels->setCurrentIndex(std::max(0, m_colorModels->findData(colorModels())));
-    cf->addRow(new ResetLabel(QStringLiteral("Color widgets"), [this] { m_colorModels->setCurrentIndex(0); }), m_colorModels);
-    cf->addRow(note(QStringLiteral("How the colors of a new layer's Color tab are edited. "
-                                   "Each layer keeps its own choice (Color tab ▸ Edit in).")));
+    m_colorModels->setObjectName(QStringLiteral("defaultColorPickerView"));
+    m_colorModels->addItem(QStringLiteral("HSL"), int(ColorPicker::HSL));
+    m_colorModels->addItem(QStringLiteral("RGB"), int(ColorPicker::RGB));
+    m_colorModels->addItem(QStringLiteral("HSV"), int(ColorPicker::HSV));
+    m_colorModels->addItem(QStringLiteral("Wheel"), int(ColorPicker::Wheel));
+    m_colorModels->addItem(QStringLiteral("Palette"), int(ColorPicker::Palette));
+    m_colorModels->setCurrentIndex(m_colorModels->findData(int(ColorPicker::defaultView())));
+    cf->addRow(new ResetLabel(QStringLiteral("Color widgets"), [this] {
+        m_colorModels->setCurrentIndex(m_colorModels->findData(int(ColorPicker::HSL)));
+    }), m_colorModels);
+    cf->addRow(note(QStringLiteral("Initial view for every color picker. Each location remembers its own view "
+                                   "once you choose one there. Locations without a choice follow this setting.")));
     interfacePage->addWidget(color);
     connect(m_colorModels, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
-        QSettings().setValue(kColorKey, m_colorModels->currentData().toInt());
+        ColorPicker::setDefaultView(ColorPicker::View(m_colorModels->currentData().toInt()));
         emit colorModelsChanged();
     });
 
