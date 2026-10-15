@@ -445,6 +445,7 @@ static QString layerNameOf(Engine *e, int i)
 
 void LayerInspector::rebuild()
 {
+    m_layoutKey = layoutKey();
     m_tcTransport.reset();
     if (m_content) {
         m_content->hide();
@@ -2780,4 +2781,23 @@ void LayerInspector::refreshDynamic()
         m_loop->setRange(0, std::max(0.01, d));
         m_loop->setValues(in, out < 0 ? d : out);
     }
+}
+
+
+QString LayerInspector::layoutKey() const
+{
+    Engine::Lock lock(&m_engine->mutex());
+    const Layer *layer = m_engine->layer(m_layer);
+    if (!layer) return {};
+    QStringList key{QString::number(layer->id), QString::number(int(layer->type)), layer->sourcePath,
+        QString::number(layer->colorModels), QString::number(layer->isGroup), QString::number(layer->isViewport), QString::number(m_engine->isLocked(m_layer)),
+        QString::number(bool(layer->timecode)), QString::number(layer->sourceLayer), QString::number(int(layer->sourceTap))};
+    for (const auto &effect : layer->effects) key << effect->path();
+    return key.join(QChar(0x1f));
+}
+
+void LayerInspector::refreshAfterRecall()
+{
+    if (m_layoutKey != layoutKey()) rebuild();
+    else refreshDynamic();
 }

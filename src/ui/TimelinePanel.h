@@ -36,6 +36,7 @@ public:
 
 protected:
     bool fetch(Animation *a) const override;
+    bool fetchPlayback(Engine::AnimationPlayback *a) const override;
     void store(const Animation &before, const Animation &after, const QString &text, const QString &mergeKey) override;
     void control(AnimAction action, double time) override;
     TrackRow *makeRow(int index) override;
@@ -55,6 +56,7 @@ public:
     explicit TimelineWindow(Engine *engine, QUndoStack *undo, QWidget *parent = nullptr);
     QWidget *listPanel() const { return m_listPanel; }
     TimelineEditor *editor() const { return m_editor; }
+    void selectTimeline(quint64 id);
     void setCurrentLayer(quint64 id) { m_editor->setCurrentLayer(id); } // the layer a new track drives
 
 signals:

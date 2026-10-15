@@ -291,7 +291,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     split->setObjectName("mainSplit2"); // (layout changed: earlier saved states are not restored)
     top->setObjectName("topSplit2");
     connect(m_snapshots, &SnapshotPanel::edited, this, &MainWindow::markDirty);
-    connect(m_snapshots, &SnapshotPanel::recalled, this, [this] { refreshAll(); });
+    connect(m_snapshots, &SnapshotPanel::recalled, this, &MainWindow::scheduleRecallRefresh);
     qApp->installEventFilter(this); // Shift+1 / Shift+2: left tabs
     setCentralWidget(split);
 
@@ -481,6 +481,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_timelineWindow->addActions({m_undoAction, m_redoAction}); // undo / redo from the Timelines window too
     connect(m_timelineWindow, &TimelineWindow::edited, this, &MainWindow::markDirty);
     connect(m_seqWindow, &SequenceWindow::timelinesRequested, this, &MainWindow::openTimelines);
+    connect(m_seqWindow, &SequenceWindow::timelineRequested, this, [this](quint64 id) { openTimelines(); m_timelineWindow->selectTimeline(id); });
     connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
         m_timelineWindow->setCurrentLayer(r >= 0 ? m_engine->layerId(r) : 0);
     });
@@ -497,7 +498,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_engine->sequencer().setRecallRecorder([this](int snapshot, const Sequencer::RecallBefore &before) {
         if (snapshot < 0 || snapshot >= m_engine->snapshotCount()) return;
         m_undo->push(new cmd::RecallSnapshot(m_engine, snapshot, before.layers, before.composition, before.interactions));
-        refreshAll();
+        scheduleRecallRefresh();
         m_cueUndoIndex = m_undo->index();
         m_seqBar->setModified(false);
         m_seqWindow->setModified(false);
@@ -530,6 +531,15 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     });
 
     // UI: status and transport. Rendering itself does not depend on the UI.
+    m_recallRefreshTimer.setSingleShot(true);
+    m_recallRefreshTimer.setInterval(0);
+    connect(&m_recallRefreshTimer, &QTimer::timeout, this, [this] {
+        refreshLayerList();
+        m_inspector->refreshAfterRecall();
+        m_viewportInspector->refreshAfterRecall();
+        m_binTimer.start();
+        m_view->update();
+    });
     m_statusTimer.setInterval(100);
     connect(&m_statusTimer, &QTimer::timeout, this, &MainWindow::statusTick);
     m_statusTimer.start();
@@ -2296,4 +2306,10 @@ void MainWindow::collectFiles()
                                  QStringLiteral("Copied, but these originals could not be deleted:\n\n") + failed.join('\n'));
     }
     statusBar()->showMessage(done, 8000);
+}
+
+
+void MainWindow::scheduleRecallRefresh()
+{
+    if (!m_recallRefreshTimer.isActive()) m_recallRefreshTimer.start();
 }

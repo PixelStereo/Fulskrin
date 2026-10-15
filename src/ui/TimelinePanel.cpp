@@ -353,10 +353,25 @@ void TimelineWindow::showCurrent()
 void TimelineWindow::pollList()
 {
     if (!isVisible()) return;
+    std::vector<Engine::AnimationPlayback> playback;
+    if (!m_engine->sampleAnimations(&playback)) return;
     for (int k = 0; k < m_list->count(); ++k) {
         QListWidgetItem *it = m_list->item(k);
-        const Animation a = m_engine->animation(m_engine->indexOfAnimation(it->data(Qt::UserRole).toULongLong()));
+        const auto found = std::find_if(playback.begin(), playback.end(), [it](const auto &a) { return a.id == it->data(Qt::UserRole).toULongLong(); });
+        if (found == playback.end()) continue;
+        const auto &a = *found;
         const QBrush b = a.state == AnimState::Playing ? QBrush(kPlaying) : QBrush();
         if (it->foreground() != b) it->setForeground(b);
     }
+}
+
+
+bool TimelineEditor::fetchPlayback(Engine::AnimationPlayback *a) const { return m_engine->sampleAnimation(m_id, 0, {}, a); }
+
+
+void TimelineWindow::selectTimeline(quint64 id) {
+    if (m_engine->indexOfAnimation(id) < 0) return;
+    m_current = id;
+    for (int i=0; i<m_list->count(); ++i) if (m_list->item(i)->data(Qt::UserRole).toULongLong()==id) m_list->setCurrentRow(i);
+    showCurrent();
 }

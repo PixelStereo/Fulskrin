@@ -2,6 +2,7 @@
 // Audio output: one device (miniaudio), stereo float at a fixed sample rate.
 // The device callback mixes every registered AudioStream, applies the composition volume and feeds the meters.
 
+#include "AudioAnalysis.h"
 #include <QString>
 #include <QStringList>
 #include <atomic>
@@ -43,6 +44,7 @@ public:
     float fadeLevel() const { return m_fadeLevel.load(); }
 
     // Peak levels of the mix (0..1+), with decay
+    AudioAnalysis::Values analysis() const { return m_analysis.values(); }
     float peak(int channel) const { return m_peak[channel & 1].load(); }
 
     // Tests: receives every mixed buffer (audio thread)
@@ -65,6 +67,7 @@ private:
     std::atomic<const Mix *> m_mix{m_owned.get()};
     std::atomic<uint64_t> m_epoch{0};              // odd while the callback mixes
     std::atomic<float> m_volume{1.0f};
+    AudioAnalysis m_analysis;
     float m_gain = 1.0f; // ramped composition gain (audio thread)
     std::atomic<float> m_fadeTarget{1.0f}, m_fadeStep{1.0f}; // blackout: target and step per sample
     std::atomic<float> m_fadeLevel{1.0f};

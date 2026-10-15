@@ -29,6 +29,7 @@ public:
 
 protected:
     bool fetch(Animation *a) const override;
+    bool fetchPlayback(Engine::AnimationPlayback *a) const override;
     void store(const Animation &before, const Animation &after, const QString &text, const QString &mergeKey) override;
     void control(AnimAction action, double time) override;
     void loaded() override;

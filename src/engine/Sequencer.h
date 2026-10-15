@@ -113,6 +113,7 @@ public:
 
     Sequencer(Engine &engine, Annotated<QRecursiveMutex> &mutex);
     ~Sequencer() override;
+    bool requestSnapshot(quint64 id); // serialized on the cue clock; GUI stays available during source loading
     void shutdownClock(); // the clock thread stopped (the engine, before it goes)
 
     int count() const;
@@ -171,6 +172,9 @@ signals:
     void changed();         // their contents
     void positionChanged(); // current sequence or step
 
+private slots:
+    void deliverRecalls();
+
 private:
     int sequenceIndexLocked(quint64 id) const; // under m_mutex; stable identity for queued GO
     bool goToSequence(quint64 id, int step, bool chain);
@@ -192,6 +196,10 @@ private:
     quint64 m_nextSequenceId = 1;
     int m_startupSequence = -1; // none by default; adjusted on insert/remove
     std::map<quint64, qint64> m_stepStartedNs;
+    struct RecordedRecall { quint64 snapshot = 0, generation = 0; RecallBefore before; };
+    std::vector<quint64> m_pendingSnapshots;
+    std::vector<RecordedRecall> m_recordedRecalls;
+    quint64 m_generation = 0;
     std::vector<Run> m_runs; // all active sequences; each run owns a stable sequenceId
     std::function<void(int)> m_recaller;                         // under m_mutex
     std::function<void(int, const RecallBefore &)> m_recorder;   // under m_mutex

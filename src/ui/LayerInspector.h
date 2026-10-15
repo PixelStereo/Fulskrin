@@ -50,6 +50,7 @@ public:
     void setLayer(int index);
     int layerIndex() const { return m_layer; }
     void rebuild();
+    void refreshAfterRecall();
     void refreshDynamic(); // playback position (called periodically)
     void refreshMasks();   // the masks changed elsewhere (the preview, undo)
     void selectMask(int index); // a mask picked or drawn in the preview
@@ -67,6 +68,8 @@ signals:
     void maskDrawRequested();              // the preview draws a new mask point by point
 
 private:
+    QString layoutKey() const;
+    QString m_layoutKey;
     QWidget *buildSource(const LayerValues &s);    // above the tabs: the drop zone, the transition, the speed
     QWidget *buildSourceTab(const LayerValues &s); // the Source tab
     QWidget *buildViewports(const LayerValues &s); // the Viewports tab: how much of it each one shows

@@ -23,6 +23,11 @@ int main(int argc, char **argv)
     const auto target = engine.snapshot(index).id;
     int failures = 0;
     auto check = [&](bool ok, const char *why) { if (!ok) { ++failures; std::printf("FAIL snapshot_update_ui: %s\n", why); } };
+    for (const auto &path : {"audio/level","audio/bass","audio/mid","audio/high","audio/onset"}) {
+        ParamInfo info;
+        check(engine.parameterInfo(0,path,&info) && info.access==ParamInfo::Read, "audio analysis is a readable Internal interaction source");
+        check(!engine.setParameter(0,path,.5), "audio analysis cannot be overwritten by presets or OSC");
+    }
     QString reason;
     check(engine.snapshotMatches(target, &reason), qPrintable("fresh capture matches: " + reason));
     engine.layer(row)->colorModels = 7;

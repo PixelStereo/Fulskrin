@@ -116,6 +116,10 @@ int main(int argc, char **argv)
             reference.composition = engine.captureComposition();
             const int snapshotIndex = engine.addSnapshot(reference);
             const quint64 snapshotId = engine.snapshot(snapshotIndex).id;
+            auto *snapshotList = window.findChild<QTreeWidget *>("snapshotList");
+            auto *snapshotRow = snapshotList && snapshotList->topLevelItemCount() ? snapshotList->topLevelItem(0) : nullptr;
+            engine.recallSnapshot(snapshotIndex);
+            check(snapshotRow && snapshotList->topLevelItem(0) == snapshotRow, "snapshot recall preserves library rows and parameter editors");
             auto *snapshotEditor = PresetEditor::instance();
             snapshotEditor->selectSnapshot(snapshotId);
             engine.setParameter(surfaceId, "opacity", .37);

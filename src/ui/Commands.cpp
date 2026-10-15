@@ -251,7 +251,7 @@ SetStructure::SetStructure(Engine *e, const LayerTree &before, const LayerTree &
 
 RecallSnapshot::RecallSnapshot(Engine *e, int snapshot) : m_e(e), m_snapshot(snapshot)
 {
-    m_before = e->captureLayers(true);
+    m_before = e->captureRecallLayers(snapshot);
     m_beforeComposition = e->captureComposition();
     m_beforeInteractions = e->captureInteractions();
     setText(QStringLiteral("Recall \"%1\"").arg(e->snapshot(snapshot).name));

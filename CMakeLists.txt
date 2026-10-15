@@ -309,6 +309,7 @@ set(APP_SOURCES
   src/ui/SettingsPanel.cpp
   src/ui/SnapshotPanel.cpp
   src/ui/SequencePanel.cpp
+  src/ui/TimelineActivity.cpp
   src/ui/AnimEditor.cpp
   src/ui/ParamAnimPanel.cpp
   src/ui/TimelinePanel.cpp
@@ -422,14 +423,35 @@ if(PINOL_TESTS)
   # CTest: each area in a process of its own (a new engine), then every bundled shader compiled and rendered.
   # Test media first: sh test/make_media.sh
   enable_testing()
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME ci_scope COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_SOURCE_DIR}/.github/scripts -p test_ci_scope.py)
+    add_test(NAME matieres_score COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_SOURCE_DIR}/examples/matieres-instables -p test_show.py)
+    add_test(NAME matieres_fixture COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/examples/matieres-instables/build_show.py --out ${CMAKE_BINARY_DIR}/matieres-fixture)
+    set_tests_properties(matieres_fixture PROPERTIES FIXTURES_SETUP matieres)
+    add_test(NAME matieres_render COMMAND $<TARGET_FILE:Pinol> --render ${CMAKE_BINARY_DIR}/matieres-fixture/preview.png --frames 3 --strict ${CMAKE_BINARY_DIR}/matieres-fixture/Matieres_instables.pinol)
+    set_tests_properties(matieres_render PROPERTIES FIXTURES_REQUIRED matieres TIMEOUT 30)
+  endif()
   add_executable(pinol_mask_geometry_test test/mask_geometry.cpp src/engine/Masks.cpp)
   target_include_directories(pinol_mask_geometry_test PRIVATE src/engine)
   target_link_libraries(pinol_mask_geometry_test PRIVATE Qt6::Gui)
   add_test(NAME mask_geometry COMMAND pinol_mask_geometry_test)
+  add_executable(pinol_audio_analysis_test test/audio_analysis.cpp)
+  target_include_directories(pinol_audio_analysis_test PRIVATE src/engine)
+  add_test(NAME audio_analysis COMMAND pinol_audio_analysis_test)
   add_executable(pinol_snapshot_update_ui_test test/snapshot_update_ui.cpp src/ui/PresetEditor.cpp src/ui/Commands.cpp)
   target_include_directories(pinol_snapshot_update_ui_test PRIVATE src/ui)
   target_link_libraries(pinol_snapshot_update_ui_test PRIVATE pinol_engine Qt6::Widgets)
   add_test(NAME snapshot_update_ui COMMAND pinol_snapshot_update_ui_test)
+  add_executable(pinol_timeline_activity_test test/timeline_activity.cpp src/ui/TimelineActivity.cpp src/ui/SequencePanel.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
+  target_include_directories(pinol_timeline_activity_test PRIVATE src/ui)
+  target_link_libraries(pinol_timeline_activity_test PRIVATE pinol_engine Qt6::Widgets)
+  add_test(NAME timeline_activity COMMAND pinol_timeline_activity_test)
+  set_tests_properties(timeline_activity PROPERTIES TIMEOUT 30)
+  add_executable(pinol_cue_dispatch_test test/cue_dispatch.cpp)
+  target_link_libraries(pinol_cue_dispatch_test PRIVATE pinol_engine Qt6::Widgets)
+  add_test(NAME cue_dispatch COMMAND pinol_cue_dispatch_test)
+  set_tests_properties(cue_dispatch PROPERTIES TIMEOUT 15)
   foreach(area operator_state preview_sources emergency_stop cue_capture gpu_targets golden timeline_repeat recall_delay isf_safe video project playback undo structure compositing osc snapshots masks rendering thread publishing
           media sound layersource timecode interactions)
     add_test(NAME ${area} COMMAND pinol_tests --area ${area})
@@ -438,7 +460,7 @@ if(PINOL_TESTS)
   # others once, these with retries (ctest -L timing --repeat until-pass:3) — their thresholds stay as they are; a CI
   # runner without a sound card or a GPU is late now and then, a real regression fails every attempt
   set_tests_properties(sound playback thread publishing timecode snapshots media PROPERTIES LABELS timing)
-  add_executable(pinol_sequence_ui_test test/sequence_ui.cpp src/ui/SequencePanel.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
+  add_executable(pinol_sequence_ui_test test/sequence_ui.cpp src/ui/SequencePanel.cpp src/ui/TimelineActivity.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
   target_include_directories(pinol_sequence_ui_test PRIVATE src/ui)
   target_link_libraries(pinol_sequence_ui_test PRIVATE pinol_engine Qt6::Widgets)
   add_test(NAME sequence_ui COMMAND pinol_sequence_ui_test)
@@ -466,7 +488,7 @@ if(PINOL_TESTS)
   target_link_libraries(pinol_preview_ui_test PRIVATE pinol_engine Qt6::Widgets Qt6::OpenGLWidgets)
   add_test(NAME preview_ui COMMAND pinol_preview_ui_test)
   add_executable(pinol_recall_delay_ui_test test/recall_delay_ui.cpp src/ui/SnapshotPanel.cpp src/ui/PresetEditor.cpp
-                 src/ui/SequencePanel.cpp src/ui/Commands.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
+                 src/ui/SequencePanel.cpp src/ui/TimelineActivity.cpp src/ui/Commands.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
   target_include_directories(pinol_recall_delay_ui_test PRIVATE src/ui)
   target_link_libraries(pinol_recall_delay_ui_test PRIVATE pinol_engine Qt6::Widgets)
   add_test(NAME recall_delay_ui COMMAND pinol_recall_delay_ui_test)

@@ -331,7 +331,7 @@ bool Sequencer::goToSequence(quint64 owner, int step, bool chain)
         m_positions[size_t(index)] = step;
         m_stepStartedNs[owner] = FrameTiming::nowNs();
     }
-    advance(0);
+    if (!m_engine.isThreaded() || m_engine.fadesManual()) advance(0);
     emit positionChanged();
     startTimer();
     return true;
@@ -464,7 +464,7 @@ void Sequencer::startTimer()
     if (m_engine.fadesManual()) return;
     {
         QMutexLocker lk(&m_mutex);
-        if (m_runs.empty()) return;
+        if (m_runs.empty() && m_pendingSnapshots.empty()) return;
     }
     if (!m_clockThread) {
         m_clockThread = std::make_unique<QThread>();
@@ -499,11 +499,17 @@ void Sequencer::tick()
     // drift with the timer's own lateness
     const double dt = m_clock.nsecsElapsed() * 1e-9 * timeScale();
     m_clock.restart();
+    std::vector<quint64> pending;
+    { QMutexLocker lock(&m_mutex); pending.swap(m_pendingSnapshots); }
+    for (const auto id : pending) {
+        const int index = m_engine.indexOfSnapshot(id);
+        if (index >= 0) fireSnapshot(index);
+    }
     advance(dt);
     bool empty;
     {
         QMutexLocker lk(&m_mutex);
-        empty = m_runs.empty();
+        empty = m_runs.empty() && m_pendingSnapshots.empty();
     }
     if (empty && m_timer) {
         m_timer->stop();
@@ -528,6 +534,9 @@ void Sequencer::fireSnapshot(int mi)
     // The cue clock: record how long it takes to *actually* execute a
     // snapshot. CueTiming::noteFired() only measures timer lateness, which
     // can be tiny even when Undo capture or scene application is slow.
+    const auto snapshotId = m_engine.snapshot(mi).id;
+    quint64 generation;
+    { QMutexLocker lock(&m_mutex); generation = m_generation; }
     const qint64 start = FrameTiming::nowNs();
     const auto recordWork = [this, start](qint64 captured, qint64 applied) {
         QMutexLocker lk(&m_mutex);
@@ -545,14 +554,13 @@ void Sequencer::fireSnapshot(int mi)
     const qint64 captured = FrameTiming::nowNs();
     m_engine.recallSnapshot(mi);
     recordWork(captured, FrameTiming::nowNs());
-    QMetaObject::invokeMethod(this, [this, mi, before] {
-        std::function<void(int, const RecallBefore &)> f;
-        {
-            QMutexLocker lk(&m_mutex);
-            f = m_recorder;
-        }
-        if (f) f(mi, before);
-    }, Qt::QueuedConnection);
+    {
+        QMutexLocker lock(&m_mutex);
+        if (generation != m_generation) return;
+        m_recordedRecalls.push_back({snapshotId, generation, std::move(before)});
+    }
+    QMetaObject::invokeMethod(this, "deliverRecalls", Qt::QueuedConnection);
+
 }
 
 // Each step on its way moves on by dt: its snapshot once its pre-wait is over, the next step's GO when its
@@ -730,6 +738,9 @@ void Sequencer::clear()
     m_startupSequence = -1;
     m_current = -1;
     m_runs.clear();
+    m_pendingSnapshots.clear();
+    m_recordedRecalls.clear();
+    ++m_generation;
 }
 
 double Sequencer::stepDuration(const Step &st) const
@@ -739,3 +750,26 @@ double Sequencer::stepDuration(const Step &st) const
 }
 
 #include "Sequencer.moc"
+
+
+bool Sequencer::requestSnapshot(quint64 id)
+{
+    if (m_engine.indexOfSnapshot(id) < 0 || !m_engine.isThreaded() || m_engine.fadesManual()) return false;
+    { QMutexLocker lock(&m_mutex); m_pendingSnapshots.push_back(id); }
+    startTimer();
+    return true;
+}
+
+void Sequencer::deliverRecalls()
+{
+    std::vector<RecordedRecall> completed;
+    std::function<void(int, const RecallBefore &)> recorder;
+    quint64 generation;
+    { QMutexLocker lock(&m_mutex); completed.swap(m_recordedRecalls); recorder = m_recorder; generation = m_generation; }
+    if (!recorder) return;
+    for (const auto &record : completed) {
+        if (record.generation != generation) continue;
+        const int index = m_engine.indexOfSnapshot(record.snapshot);
+        if (index >= 0) recorder(index, record.before);
+    }
+}

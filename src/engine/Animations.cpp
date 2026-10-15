@@ -389,6 +389,12 @@ const std::vector<Parameter *> &Engine::compositionParameters()
                                                              [this](const QVariant &v) { m_audio->setVolume(float(v.toDouble())); });
     add("speed", "Speed").range(0, 10).byDefault(1.0).bind([this] { return QVariant(m_compositionSpeed.load()); },
                                                            [this](const QVariant &v) { setCompositionSpeed(v.toDouble()); });
+    // Read-only sources for Internal interactions; never saved or driven by a timeline.
+    add("audio/level", "Audio analysis › Level").range(0,1).readOnly().bind([this] { return QVariant(m_audio->analysis().level); }, {});
+    add("audio/bass", "Audio analysis › Bass").range(0,1).readOnly().bind([this] { return QVariant(m_audio->analysis().bass); }, {});
+    add("audio/mid", "Audio analysis › Mid").range(0,1).readOnly().bind([this] { return QVariant(m_audio->analysis().mid); }, {});
+    add("audio/high", "Audio analysis › High").range(0,1).readOnly().bind([this] { return QVariant(m_audio->analysis().high); }, {});
+    add("audio/onset", "Audio analysis › Attacks").range(0,1).readOnly().bind([this] { return QVariant(m_audio->analysis().onset); }, {});
     for (auto &p : m_compParams) m_compParamList.push_back(p.get());
     return m_compParamList;
 }
@@ -958,4 +964,45 @@ double Engine::animationRemaining(quint64 id) const
         return std::max(0.0, len - a.clock) / v;
     }
     return 0;
+}
+
+
+namespace {
+Engine::AnimationPlayback playbackOf(const Animation &a, bool captures)
+{
+    Engine::AnimationPlayback out;
+    out.id = a.id; out.name = a.name; out.state = a.state; out.loop = a.loop;
+    out.position = a.position(); out.duration = a.duration; out.clock = a.clock;
+    out.speed = a.speed; out.length = a.length(); out.tracks = int(a.tracks.size());
+    out.pass = int(std::min(1e9, std::floor(std::min(a.clock, a.length()) / std::max(.05, a.duration)))) + 1;
+    if (captures) { out.captured.reserve(a.tracks.size()); for (const auto &track : a.tracks) out.captured.push_back(track.captured); }
+    return out;
+}
+}
+
+bool Engine::sampleAnimations(std::vector<AnimationPlayback> *out) const
+{
+    if (!out || !m_mutex.tryLock()) return false;
+    std::vector<AnimationPlayback> sample;
+    sample.reserve(m_animations.size());
+    for (const auto &animation : m_animations) sample.push_back(playbackOf(animation, false));
+    m_mutex.unlock();
+    *out = std::move(sample);
+    return true;
+}
+
+bool Engine::sampleAnimation(quint64 timeline, quint64 layer, const QString &param, AnimationPlayback *out) const
+{
+    if (!out || !m_mutex.tryLock()) return false;
+    const Animation *found = nullptr;
+    if (timeline) {
+        for (const auto &animation : m_animations) if (animation.id == timeline) { found = &animation; break; }
+    } else {
+        for (const auto &owner : m_layers) if (owner->id == layer)
+            for (const auto &animation : owner->anims)
+                if (!animation.tracks.empty() && animation.tracks.front().param == param) { found = &animation; break; }
+    }
+    if (found) *out = playbackOf(*found, true);
+    m_mutex.unlock();
+    return found != nullptr;
 }

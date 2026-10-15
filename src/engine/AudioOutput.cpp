@@ -118,6 +118,7 @@ void AudioOutput::stop()
     d->deviceOk = d->contextOk = false;
     d->name.clear();
     m_peak[0] = m_peak[1] = 0.0f;
+    m_analysis.reset();
 }
 
 bool AudioOutput::isRunning() const { return d->deviceOk && ma_device_is_started(&d->device); }
@@ -186,6 +187,7 @@ void AudioOutput::render(float *out, int frames)
     const Mix *mix = m_mix.load();
     const double lat = latency();
     for (const auto &s : mix->streams) s->mix(out, frames, lat);
+    m_analysis.process(out, frames, kSampleRate);
 
     const float goal = std::max(0.0f, m_volume.load());
     const float ramp = 1.0f / (0.01f * kSampleRate);
