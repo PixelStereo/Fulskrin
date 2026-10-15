@@ -21,7 +21,7 @@ class QDoubleSpinBox;
 // (bottom left), the other selected points following it.
 // Magnetism (button next to the zoom): a dragged point is caught by the corners and edges around it — the
 // composition's, its center lines, the viewports' frames, the other layers', the other points of the layer —
-// and a dragged layer or viewport by its edges or center. Ctrl / ⌘ held while dragging: free.
+// and a dragged layer or viewport by its edges or center. Hold Shift while dragging to snap; otherwise move freely.
 class MappingView : public QOpenGLWidget
 {
     Q_OBJECT
@@ -89,7 +89,6 @@ private:
     void paintGuides();
     void refreshCoordinateBar(); // values of the point typed in, follows the selection and the mapping
     void typeCoordinate();       // a value typed: the point (and the selection) moves there
-    void alignMaskNodes(int edge); // 0 left, 1 right, 2 top, 3 bottom; selected nodes only
     QPointF outOf(int layer, QPointF canvas) const;
     QPointF canvasOf(int layer, QPointF out) const;
     QRectF fitRect() const;  // composition fitted in the widget (zoom 1)
@@ -140,7 +139,6 @@ private:
     QToolButton *m_magnetButton = nullptr;
     QToolButton *m_autoSelectButton = nullptr;
     QToolButton *m_maskModeButton = nullptr;
-    QToolButton *m_alignMask[4] = {};
     bool m_maskEditMode = false;
 
     // Masks

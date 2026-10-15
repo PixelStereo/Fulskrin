@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QDoubleSpinBox>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QSurfaceFormat>
 #include <QToolButton>
 #include <QUndoStack>
@@ -56,18 +57,49 @@ int main(int argc, char **argv)
         check(close(engine.layer(index)->masks[0].nodes[0].p.x(), .35), "typed X updates normalized node coordinate");
         undo.undo(); check(close(engine.layer(index)->masks[0].nodes[0].p.x(), .25), "numeric edit undo");
         undo.redo(); check(close(engine.layer(index)->masks[0].nodes[0].p.x(), .35), "numeric edit redo");
-        click(point(1), Qt::ControlModifier);
-        auto *align = view.findChild<QToolButton *>("maskAlign0");
-        check(align && align->isEnabled(), "multi-node selection enables alignment");
-        align->click();
-        check(close(engine.layer(index)->masks[0].nodes[0].p.x(), engine.layer(index)->masks[0].nodes[1].p.x()), "align left moves selected anchors");
-        undo.undo();
-        click(point(0)); magnet->setChecked(true);
-        const QPointF start = point(0), nearCenter(24 + .503*552, start.y());
+        for (int edge = 0; edge < 4; ++edge)
+            check(!view.findChild<QToolButton *>(QStringLiteral("maskAlign%1").arg(edge)), "no alignment arrows in preview");
+        magnet->setChecked(true);
+        auto at = [](double x, double y) { return QPointF(24 + x*552, 24 + y*552); };
+        auto anchor = [&] { return engine.layer(index)->masks[0].nodes[0].p; };
+        auto move = [&](QPointF p, Qt::KeyboardModifiers mods) {
+            send(QEvent::MouseMove, p, Qt::NoButton, Qt::LeftButton, mods);
+        };
+        auto guidePixels = [&] {
+            const QImage image = view.grabFramebuffer();
+            int count = 0;
+            for (int yy = 0; yy < image.height(); ++yy)
+                for (int xx = 0; xx < image.width(); ++xx) {
+                    const QColor c = image.pixelColor(xx, yy);
+                    if (c.red() > 180 && c.blue() > 130 && c.green() < 120) ++count;
+                }
+            return count;
+        };
+        click(point(0));
+        const QPointF start = point(0);
         send(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-        send(QEvent::MouseMove, nearCenter, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-        send(QEvent::MouseButtonRelease, nearCenter, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
-        check(close(engine.layer(index)->masks[0].nodes[0].p.x(), .5), "mask anchor snaps to composition center");
+        move(at(.753, .45), Qt::NoModifier);
+        check(close(anchor().x(), .753), "without Shift a nearby point does not catch the anchor");
+        const int freePixels = guidePixels();
+        move(at(.753, .45), Qt::ShiftModifier);
+        check(close(anchor().x(), .75) && close(anchor().y(), .45), "Shift snaps vertically to another anchor without changing Y");
+        check(guidePixels() > freePixels + 100, "vertical snap draws a visible temporary guide");
+        QKeyEvent releaseShift(QEvent::KeyRelease, Qt::Key_Shift, Qt::NoModifier);
+        QApplication::sendEvent(&view, &releaseShift);
+        check(guidePixels() <= freePixels + 10, "guide disappears immediately on Shift release");
+        move(at(.753, .45), Qt::NoModifier);
+        check(close(anchor().x(), .753), "releasing Shift restores free movement");
+        move(at(.70, .45), Qt::ShiftModifier);
+        check(close(anchor().x(), .70), "Shift does not attract points outside the pixel tolerance");
+        move(at(.55, .753), Qt::ShiftModifier);
+        check(close(anchor().x(), .55) && close(anchor().y(), .75), "Shift snaps horizontally without changing X");
+        check(guidePixels() > freePixels + 100, "horizontal snap draws its guide");
+        move(at(.753, .753), Qt::ShiftModifier);
+        check(close(anchor().x(), .75) && close(anchor().y(), .75), "near another anchor both coordinates snap together");
+        send(QEvent::MouseButtonRelease, at(.753, .753), Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+        check(guidePixels() <= freePixels + 10, "mouse release clears the guides");
+        undo.undo(); check(close(anchor().x(), .35) && close(anchor().y(), .25), "whole snapped gesture is one undo step");
+        undo.redo(); check(close(anchor().x(), .75) && close(anchor().y(), .75), "snapped gesture can be redone");
         view.hide();
     }
     engine.shutdown();
