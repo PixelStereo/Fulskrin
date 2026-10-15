@@ -49,6 +49,7 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp); // video_
 int runCueCaptureTests(Engine &e); // cue_capture.cpp
 int runGpuTargetTests(Engine &e); // gpu_targets.cpp
 int runGoldenRenderTests(Engine &e, const QString &root, const QString &tmp); // golden_render.cpp
+int runTimelineRepeatTests(Engine &e, const QString &tmp); // timeline_repeat.cpp
 #define CHECK(cond)                                                                 \
     do {                                                                            \
         if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++failures; } \
@@ -163,6 +164,9 @@ int main(int argc, char **argv)
     if (area("golden")) {
         failures += runGoldenRenderTests(e, root, tmp);
     } // golden
+    if (area("timeline_repeat")) {
+        failures += runTimelineRepeatTests(e, tmp);
+    } // timeline_repeat
     if (area("isf_safe")) {
         // Live reloading or inserting an invalid shader must never take the
         // existing source, its program, its parameters or its image away.
