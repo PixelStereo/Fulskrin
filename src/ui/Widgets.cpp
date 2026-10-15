@@ -654,9 +654,11 @@ void compactBox(QAbstractSpinBox *s)
     s->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     s->setFixedHeight(kBoxHeight);
     s->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    s->setStyleSheet(QStringLiteral("QAbstractSpinBox { background: #232326; border: 1px solid #3a3a40; border-radius: 3px; "
-                                    "padding: 0 4px; } QAbstractSpinBox:focus { border-color: %1; }")
-                         .arg(theme::css()));
+    // Keep the native edit-field geometry. Styling the spinbox box model can
+    // collapse its NoButtons editor to one pixel on supported Qt versions.
+    QPalette palette = s->palette();
+    palette.setColor(QPalette::Base, QColor(35, 35, 38));
+    s->setPalette(palette);
 }
 
 QSize boxHint(const QAbstractSpinBox *s, const QString &longest)
@@ -927,7 +929,6 @@ QDoubleSpinBox *valueField(QWidget *parent, Qt::Alignment align = Qt::AlignRight
     s->setAlignment(align | Qt::AlignVCenter);
     s->setKeyboardTracking(false);
     s->setFrame(false);
-    s->setStyleSheet("QDoubleSpinBox { background: #232326; border: none; padding: 0 5px; }");
     s->setFixedHeight(kFieldHeight - 2);
     return s;
 }
