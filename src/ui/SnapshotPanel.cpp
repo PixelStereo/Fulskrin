@@ -352,7 +352,10 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_list->setObjectName(QStringLiteral("snapshotList"));
     lv->addWidget(m_list, 1);
     left->setMinimumWidth(220);
-    split->addWidget(left);
+    m_modeListStack = new QStackedWidget;
+    m_modeListStack->setObjectName(QStringLiteral("snapshotPresetLists"));
+    m_modeListStack->addWidget(left);
+    split->addWidget(m_modeListStack);
 
     // --- The presets, beside the snapshots: a few values each
     auto *presets = new QWidget;
@@ -392,7 +395,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_presets->setToolTip(QStringLiteral("Double-click or Enter: recall · a preset holds only the values put in it"));
     pv->addWidget(m_presets, 1);
     presets->setMinimumWidth(200);
-    split->addWidget(presets);
+    m_modeListStack->addWidget(presets);
 
     // --- What the selected snapshot holds
     m_inspector = new QWidget;
@@ -452,6 +455,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     iv->addWidget(m_layers, 1);
     m_inspector->setMinimumWidth(340);
     m_middle = new QStackedWidget;
+    m_middle->setObjectName(QStringLiteral("snapshotPresetInspector"));
     m_middle->addWidget(m_inspector);
     m_middle->addWidget(buildPresetView());
     split->addWidget(m_middle);
@@ -463,10 +467,9 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_detail->setMinimumWidth(240);
     split->addWidget(m_detail);
     split->setStretchFactor(0, 1);
-    split->setStretchFactor(1, 1);
-    split->setStretchFactor(2, 2);
-    split->setStretchFactor(3, 1);
-    split->setSizes({240, 220, 480, 260});
+    split->setStretchFactor(1, 2);
+    split->setStretchFactor(2, 1);
+    split->setSizes({245, 480, 260});
     connectPresets();
 
     connect(m_list, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *it) {
@@ -476,7 +479,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
             QSignalBlocker b(m_presets);
             m_presets->setCurrentItem(nullptr);
             m_presets->clearSelection();
-            m_middle->setCurrentIndex(0);
+            setMode(0);
         }
         showInspector(selected());
     });
@@ -711,6 +714,21 @@ void SnapshotPanel::removeGroup(quint64 group)
         };
         drop(t);
     });
+}
+
+void SnapshotPanel::setMode(int mode)
+{
+    mode = std::clamp(mode, 0, 1);
+    if (m_modeListStack->currentIndex() == mode && m_middle->currentIndex() == mode) return;
+    m_modeListStack->setCurrentIndex(mode);
+    m_middle->setCurrentIndex(mode);
+    m_detail->setVisible(mode == 0); // preset values are edited in their own middle pane
+    if (mode == 0) {
+        showInspector(selected());
+    } else {
+        showPreset();
+    }
+    emit modeChanged(mode);
 }
 
 void SnapshotPanel::refresh()
@@ -1821,7 +1839,7 @@ void SnapshotPanel::connectPresets()
             QSignalBlocker b(m_list);
             m_list->setCurrentItem(nullptr);
             m_list->clearSelection();
-            m_middle->setCurrentIndex(1);
+            setMode(1);
         }
         showPreset();
     });

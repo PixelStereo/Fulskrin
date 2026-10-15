@@ -129,6 +129,7 @@ private:
     SequenceBar *m_seqBar = nullptr;
     SequenceWindow *m_seqWindow = nullptr;
     TimelineWindow *m_timelineWindow = nullptr;
+    class QTabBar *m_workspaceTabs = nullptr;
     void openTimelines();
     int m_cueUndoIndex = -1; // undo index when the current step was played: anything since is a change
     QTabWidget *m_leftTabs = nullptr;
