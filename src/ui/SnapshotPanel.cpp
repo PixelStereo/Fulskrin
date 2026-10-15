@@ -992,7 +992,7 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
     const QString delayKey = delayAddress(f);
     if (!delayKey.isEmpty()) {
         const QJsonObject storedDelays = o.value("delay").toObject();
-        const auto *label = new QLabel(QStringLiteral("Delay before execution"));
+        auto *label = new QLabel(QStringLiteral("Delay before execution"));
         auto *delay = new NumberBox;
         delay->setRange(0.0, 600.0);
         delay->setDecimals(2);
@@ -1002,7 +1002,7 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
         delay->setToolTip(QStringLiteral("0: executes with the snapshot; otherwise begins after this delay."));
         delay->setValue(storedDelays.value(delayKey).toDouble(0));
         auto *r = new QHBoxLayout;
-        r->addWidget(const_cast<QLabel *>(label));
+        r->addWidget(label);
         r->addWidget(delay);
         m_detailLayout->addLayout(r);
         connect(delay, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
