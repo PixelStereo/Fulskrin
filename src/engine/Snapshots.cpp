@@ -881,6 +881,9 @@ void Engine::stopShowPlayback()
     m_compFade.opacity = false;
     m_compFade.volume = false;
     m_fadeElapsed = m_recallTotal;
+    m_compositionOpacitySpeed = 0; // hold the current fader value
+    m_blackTarget = m_blackLevel;  // freeze a running blackout transition
+    m_blackSpeed = 0;
     for (Animation &a : m_animations) {
         a.state = AnimState::Stopped;
         a.clock = 0;
@@ -904,7 +907,7 @@ void Engine::stopShowPlayback()
     }
     m_transitions.clear();
     // Halt an independent audio blackout/ramp at the current gain, too.
-    m_audio->fadeTo(m_audio->volume(), 0);
+    m_audio->fadeTo(m_audio->fadeLevel(), 0);
 }
 
 // Every number moves on its own time, each snapshot on its own clock; a layer that fades out is hidden once its
