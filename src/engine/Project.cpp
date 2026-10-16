@@ -282,8 +282,9 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
     } else if (type == "isf") {
         {
             Lock lk(&m_mutex);
-            layer(index)->genWidth = src.value("width").toInt(m_compSize.width());
-            layer(index)->genHeight = src.value("height").toInt(m_compSize.height());
+            // Bounded as setGeneratorSize() bounds them: a hand-edited 0 or a size no GPU takes would leave it black
+            layer(index)->genWidth = std::clamp(src.value("width").toInt(m_compSize.width()), 1, 16384);
+            layer(index)->genHeight = std::clamp(src.value("height").toInt(m_compSize.height()), 1, 16384);
         }
         // A project: the generator stays even when its shader is missing or broken (path, values, error shown)
         if (!setLayerIsf(index, path, &err, IsfFailure::KeepWithError) && warnings) *warnings << name + ": " + err;

@@ -10,6 +10,7 @@
 #include <QHostInfo>
 #include <QJsonDocument>
 #include <QNetworkDatagram>
+#include <QNetworkInterface>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QUdpSocket>
@@ -433,15 +434,12 @@ void OscNamespace::build()
     add("/viewport", QString(), 0, "Viewports");
     m_nodes["/composition"].description = "Composition";
     QHash<quint64, QString> prefixOf;
-    QHash<QString, int> used;
+    osc::SegmentNamer namer;
     for (const Item &it : items) {
         const QString base = it.viewport ? QStringLiteral("/viewport")
                              : it.parent && prefixOf.contains(it.parent) ? prefixOf[it.parent] + "/layer"
                                                                          : QStringLiteral("/layer");
-        QString seg = osc::safeName(it.name);
-        const QString key = base + '/' + seg;
-        if (int n = used.value(key)) seg += QStringLiteral("_%1").arg(n + 1);
-        used[key] += 1;
+        const QString seg = namer.take(base, it.name);
         prefixOf[it.id] = base + '/' + seg;
         m_prefixOf[it.id] = base + '/' + seg;
         addLayer(base + '/' + seg, it.id);
@@ -678,14 +676,11 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         isGroup = l->isGroup || isViewport; // no source of its own
         topLevel = !l->parent && !isViewport;
         if (topLevel) {
-            QHash<QString, int> seen;
+            osc::SegmentNamer namer; // as build() names /viewport/…
             for (int i = 0; i < e->layerCount(); ++i) {
                 const Layer *v = e->layer(i);
                 if (!v->isViewport) continue;
-                QString seg = osc::safeName(v->name);
-                if (int n = seen.value(seg)) seg += QStringLiteral("_%1").arg(n + 1);
-                seen[osc::safeName(v->name)] += 1;
-                viewports.push_back({v->id, seg});
+                viewports.push_back({v->id, namer.take(QStringLiteral("/viewport"), v->name)});
             }
         }
         transport = l->hasTransport();
@@ -1190,6 +1185,8 @@ bool OscServer::handleMessage(const osc::Message &m)
     for (int k = 0; k < m.args.size(); ++k) {
         const QVariant &a = m.args[k];
         if (!numeric(a)) continue;
+        // A time tag or a MIDI message is decoded as an integer, but it is not a value (a time tag is ~1e19)
+        if (k < m.types.size() && (m.types.at(k) == QLatin1Char('t') || m.types.at(k) == QLatin1Char('m'))) continue;
         InteractionEvent event;
         event.source = InteractionSource::Osc;
         event.address = m.address;
@@ -1313,12 +1310,30 @@ void OscServer::onConnection()
 
 static QByteArray httpResponse(int status, const QByteArray &body, const QByteArray &type = "application/json")
 {
-    static const QHash<int, QByteArray> text = {{200, "OK"}, {204, "No Content"}, {400, "Bad Request"}, {404, "Not Found"}};
+    static const QHash<int, QByteArray> text = {{200, "OK"}, {204, "No Content"}, {400, "Bad Request"}, {403, "Forbidden"},
+                                                {404, "Not Found"}};
     QByteArray r = "HTTP/1.1 " + QByteArray::number(status) + ' ' + text.value(status, "Error") + "\r\n";
     if (status == 200) r += "Content-Type: " + type + "\r\n";
     r += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
     r += "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
     return r + body;
+}
+
+// A WebSocket controls the show: a browser lets any page open one to any host, so a page from elsewhere must not.
+// Native clients send no Origin. A page of this machine (localhost, or one of its addresses written as such) may.
+// Not "null" (a sandboxed frame of any page sends it), not a name (a rebound DNS name reaches this machine too).
+static bool websocketOriginAllowed(const QByteArray &origin)
+{
+    if (origin.isEmpty()) return true;
+    const QString host = QUrl(QString::fromUtf8(origin)).host();
+    if (host.isEmpty()) return false;
+    if (host.compare(QLatin1String("localhost"), Qt::CaseInsensitive) == 0) return true;
+    const QHostAddress address(host);
+    if (address.isNull()) return false;
+    if (address.isLoopback()) return true;
+    for (const QHostAddress &own : QNetworkInterface::allAddresses())
+        if (own.isEqual(address, QHostAddress::TolerantConversion)) return true;
+    return false;
 }
 
 void OscServer::onData(QTcpSocket *s)
@@ -1347,6 +1362,11 @@ void OscServer::onData(QTcpSocket *s)
             return;
         }
         if (headers.value("upgrade").toLower() == "websocket") {
+            if (!websocketOriginAllowed(headers.value("origin"))) {
+                s->write(httpResponse(403, {}));
+                s->disconnectFromHost();
+                return;
+            }
             const QByteArray accept = QCryptographicHash::hash(headers.value("sec-websocket-key") +
                                                                    "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
                                                                QCryptographicHash::Sha1)
