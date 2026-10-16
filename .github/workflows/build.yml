@@ -219,10 +219,11 @@ jobs:
           cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang-18 \
             -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_CXX_FLAGS=-fsanitize=thread -DCMAKE_C_FLAGS=-fsanitize=thread \
             -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
-          cmake --build build-tsan --target pinol_tests -j4
+          cmake --build build-tsan --target pinol_tests pinol_audio_analysis_concurrency_test -j4
       - name: Tests under ThreadSanitizer
         run: |
           export TSAN_OPTIONS="halt_on_error=1 exitcode=66 suppressions=$PWD/test/tsan.supp"
+          ctest --test-dir build-tsan -R '^audio_analysis_concurrency$' --output-on-failure
           # The decoders' threads, the sound callback and its decode threads, the OSC server. (The render-thread areas
           # render with llvmpipe, itself far too slow under ThreadSanitizer on a CI runner: run them locally.)
           # A data race (exit code 66) fails at once. Any other failure is a timing check under ThreadSanitizer's
