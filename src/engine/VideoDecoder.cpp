@@ -317,7 +317,17 @@ bool VideoDecoder::open(const QString &path, QString *err)
             return false;
         }
         m_codec = avcodec_alloc_context3(dec);
-        avcodec_parameters_to_context(m_codec, par);
+        if (!m_codec) {
+            if (err) *err = QStringLiteral("Unable to allocate video decoder: ") + avErr(AVERROR(ENOMEM));
+            close();
+            return false;
+        }
+        r = avcodec_parameters_to_context(m_codec, par);
+        if (r < 0) {
+            if (err) *err = QStringLiteral("Unable to configure video decoder: ") + avErr(r);
+            close();
+            return false;
+        }
         m_codec->pkt_timebase = st->time_base;
         const bool hw = s_hardware && setupHardware(dec);
         // Hardware: a few threads feed it. Software: an even share of the cores (see softwareThreads)
@@ -357,6 +367,11 @@ bool VideoDecoder::open(const QString &path, QString *err)
     m_frame = av_frame_alloc();
     m_swFrame = av_frame_alloc();
     m_packet = av_packet_alloc();
+    if (!m_frame || !m_swFrame || !m_packet) {
+        if (err) *err = QStringLiteral("Unable to allocate video buffers: ") + avErr(AVERROR(ENOMEM));
+        close();
+        return false;
+    }
 
     m_quit = false;
     m_eof = false;

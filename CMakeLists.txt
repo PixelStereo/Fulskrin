@@ -424,6 +424,19 @@ if(PINOL_TESTS)
   # CTest: each area in a process of its own (a new engine), then every bundled shader compiled and rendered.
   # Test media first: sh test/make_media.sh
   enable_testing()
+  # GNU-compatible Linux linkers inject failures at our FFmpeg call sites only.
+  # No test hooks or extra branches are compiled into the production decoder.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(pinol_decoder_allocations_test test/decoder_allocations.cpp)
+    target_link_libraries(pinol_decoder_allocations_test PRIVATE pinol_engine)
+    target_compile_options(pinol_decoder_allocations_test PRIVATE ${PINOL_WARNINGS})
+    target_compile_definitions(pinol_decoder_allocations_test PRIVATE TEST_DIR="${CMAKE_SOURCE_DIR}/test")
+    target_link_options(pinol_decoder_allocations_test PRIVATE
+      -Wl,--wrap=avcodec_alloc_context3 -Wl,--wrap=avcodec_parameters_to_context
+      -Wl,--wrap=av_frame_alloc -Wl,--wrap=av_packet_alloc)
+    add_test(NAME decoder_allocations COMMAND pinol_decoder_allocations_test)
+    set_tests_properties(decoder_allocations PROPERTIES TIMEOUT 20)
+  endif()
   find_package(Python3 QUIET COMPONENTS Interpreter)
   if(Python3_Interpreter_FOUND)
     add_test(NAME ci_scope COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_SOURCE_DIR}/.github/scripts -p test_ci_scope.py)
