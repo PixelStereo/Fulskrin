@@ -1,4 +1,5 @@
 #pragma once
+#include "RealtimeTiming.h"
 // Render engine: depends only on QtCore/QtGui/OpenGL, no dependency on widgets.
 //
 // Two modes:
@@ -943,6 +944,7 @@ private:
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
     FrameTiming m_frameTiming;
+    RealtimeTiming m_renderLockWait, m_renderLockHold;
     std::atomic<quint64> m_outputsDropped{0}; // frames an output window could not show (Metal: surfaces in use)
     std::atomic<quint64> m_sharesSkipped{0};  // Syphon / Spout one frame later: the previous frame not finished
     std::atomic<bool> m_shareOneFrameLate{true};
@@ -974,6 +976,7 @@ private:
     };
     std::map<quint64, InteractionRun> m_interactionRun; // render thread (m_mutex held)
     std::mutex m_interactionEventsMutex;
+    std::atomic<uint64_t> m_interactionEventsDropped{0};
     std::vector<InteractionEvent> m_interactionEvents; // since the last frame
     bool m_interactionLearn = false;
     std::optional<InteractionSource> m_learnKind;

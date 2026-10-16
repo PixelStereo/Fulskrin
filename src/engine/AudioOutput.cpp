@@ -17,7 +17,10 @@ struct AudioOutputPrivate {
     static void callback(ma_device *dev, void *output, const void *, ma_uint32 frames)
     {
         auto *self = static_cast<AudioOutput *>(dev->pUserData);
+        const uint64_t start = RealtimeTiming::nowNs();
         self->render(static_cast<float *>(output), int(frames));
+        self->m_callbackTiming.record(RealtimeTiming::nowNs() - start,
+                                     uint64_t(frames) * 1000000000ULL / AudioOutput::kSampleRate);
     }
 };
 

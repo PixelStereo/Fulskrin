@@ -1,4 +1,5 @@
 #pragma once
+#include "RealtimeTiming.h"
 // Audio output: one device (miniaudio), stereo float at a fixed sample rate.
 // The device callback mixes every registered AudioStream, applies the composition volume and feeds the meters.
 
@@ -44,6 +45,7 @@ public:
     float fadeLevel() const { return m_fadeLevel.load(); }
 
     // Peak levels of the mix (0..1+), with decay
+    RealtimeTiming::Snapshot callbackTiming() const { return m_callbackTiming.snapshot(); }
     AudioAnalysis::Spectrum spectrum() const { return m_analysis.spectrum(); }
     AudioAnalysis::Values analysis() const { return m_analysis.values(); }
     float peak(int channel) const { return m_peak[channel & 1].load(); }
@@ -69,6 +71,7 @@ private:
     std::atomic<uint64_t> m_epoch{0};              // odd while the callback mixes
     std::atomic<float> m_volume{1.0f};
     AudioAnalysis m_analysis;
+    RealtimeTiming m_callbackTiming;
     float m_gain = 1.0f; // ramped composition gain (audio thread)
     std::atomic<float> m_fadeTarget{1.0f}, m_fadeStep{1.0f}; // blackout: target and step per sample
     std::atomic<float> m_fadeLevel{1.0f};

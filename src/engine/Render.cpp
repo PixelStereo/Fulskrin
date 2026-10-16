@@ -881,6 +881,7 @@ double Engine::nextDt()
 
 void Engine::frame(double dt)
 {
+    const uint64_t lockRequested = RealtimeTiming::nowNs();
     // In threaded mode, keep serving OpenGL tasks while the UI holds the lock:
     // it may wait on a task while holding it, without deadlock.
     if (m_threaded) {
@@ -891,6 +892,8 @@ void Engine::frame(double dt)
     } else {
         m_mutex.lock();
     }
+    const uint64_t lockAcquired = RealtimeTiming::nowNs();
+    m_renderLockWait.record(lockAcquired - lockRequested);
     setRenderBits(effectiveRender().depth);
 
     // Composition opacity
@@ -985,6 +988,7 @@ void Engine::frame(double dt)
             atc.push_back(tc != m_atc.end() ? tc->second->now() : std::nullopt);
         }
     m_mutex.unlock();
+    m_renderLockHold.record(RealtimeTiming::nowNs() - lockAcquired);
 
     m_publishing.follow(publish);
     // NDI, OMT: read back in this context, before the frame's end
@@ -1122,6 +1126,16 @@ void Engine::renderFrame()
 QJsonObject Engine::frameTimingJson() const
 {
     QJsonObject o = m_frameTiming.stats().json();
+    auto realtime = [](const RealtimeTiming::Snapshot &s) {
+        return QJsonObject{{"count", double(s.count)}, {"p99_ms", s.p99Ms()},
+                           {"max_ms", double(s.maxNs) / 1e6},
+                           {"over_quarter_budget", double(s.overQuarter)},
+                           {"over_budget", double(s.overBudget)}};
+    };
+    o["audio_callback_lifetime"] = realtime(m_audio->callbackTiming());
+    o["render_lock_wait_lifetime"] = realtime(m_renderLockWait.snapshot());
+    o["render_lock_hold_lifetime"] = realtime(m_renderLockHold.snapshot());
+    o["interaction_events_dropped_lifetime"] = double(m_interactionEventsDropped.load(std::memory_order_relaxed));
     // The pace the render keeps: the frame rate asked, else the output window's screen, else the main screen's
     const double rate = effectiveRender().frameRate;
     o["main_screen_hz"] = screenRefreshRate();
