@@ -97,7 +97,17 @@ bool AudioStream::open(const QString &path, int outputRate, QString *err)
     for (unsigned i = 0; i < m_fmt->nb_streams; ++i)
         if (int(i) != m_stream) m_fmt->streams[i]->discard = AVDISCARD_ALL;
     m_codec = avcodec_alloc_context3(dec);
-    avcodec_parameters_to_context(m_codec, st->codecpar);
+    if (!m_codec) {
+        if (err) *err = QStringLiteral("Unable to allocate audio decoder: ") + avErr(AVERROR(ENOMEM));
+        close();
+        return false;
+    }
+    r = avcodec_parameters_to_context(m_codec, st->codecpar);
+    if (r < 0) {
+        if (err) *err = QStringLiteral("Unable to configure audio decoder: ") + avErr(r);
+        close();
+        return false;
+    }
     r = avcodec_open2(m_codec, dec, nullptr);
     if (r < 0) {
         if (err) *err = QStringLiteral("Audio decoder unavailable: ") + avErr(r);
@@ -129,6 +139,11 @@ bool AudioStream::open(const QString &path, int outputRate, QString *err)
 
     m_frame = av_frame_alloc();
     m_packet = av_packet_alloc();
+    if (!m_frame || !m_packet) {
+        if (err) *err = QStringLiteral("Unable to allocate audio buffers: ") + avErr(AVERROR(ENOMEM));
+        close();
+        return false;
+    }
 
     // Mixer buffers allocated once: the audio callback never allocates.
     m_buf.assign(size_t(m_rate * 2.0) * 2, 0.0f);

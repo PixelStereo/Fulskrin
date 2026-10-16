@@ -43,6 +43,10 @@ bool VideoDecoder::deliver(AVFrame *src, VideoFrame &f, bool mapped)
         }
         // No free upload buffer: the frame is kept as it is (copied out of the hardware's memory)
         AVFrame *keep = av_frame_alloc();
+        if (!keep) {
+            f.layout.reset();
+            return false; // decodeNext recycles the undelivered frame
+        }
         if (mapped) {
             if (av_hwframe_transfer_data(keep, m_frame, 0) < 0) {
                 av_frame_free(&keep);
