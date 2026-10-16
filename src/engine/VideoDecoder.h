@@ -152,7 +152,7 @@ public:
 
 private:
     void run();
-    void doSeek(double t);
+    bool doSeek(double t);
     int decodeNext(VideoFrame &f, double skipBefore = -1e9); // 1 = frame, 2 = skipped, 0 = end, -1 = error,
                                                              // 3 = transient I/O error (retry after a pause)
     int readVideoPacket(); // demux next packet from the selected video stream
@@ -241,6 +241,7 @@ private:
     void accountFrame(VideoFrame &frame); // counted in the process-wide budget of decoded frames
 
     bool m_quit = false, m_seekPending = false, m_eof = false, m_needFirst = true;
+    bool m_seekFailed = false; // protected by m_mutex; never reported as clean EOF
     double m_seekTarget = 0;
     uint64_t m_generation = 0;
     Timeline m_timeline, m_pendingTimeline; // pending: applied at the next seek

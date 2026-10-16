@@ -158,6 +158,7 @@ bool AudioStream::open(const QString &path, int outputRate, QString *err)
 
     m_quit = false;
     m_eof = false;
+    m_lastSeekError = 0;
     m_seekSeq = 0;
     m_seekSeen = 0;
     m_generation = m_mixGeneration = 0;
@@ -211,16 +212,24 @@ void AudioStream::setTransport(double clock, bool playing, double speed, const T
 // Decode thread
 // ---------------------------------------------------------------------------
 
-void AudioStream::doSeek(double t)
+bool AudioStream::doSeek(double t)
 {
     const int64_t ts = int64_t((t + m_startTime) / m_timeBase);
-    if (av_seek_frame(m_fmt, m_stream, ts, AVSEEK_FLAG_BACKWARD) < 0)
-        av_seek_frame(m_fmt, -1, int64_t(t * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD);
+    int result = av_seek_frame(m_fmt, m_stream, ts, AVSEEK_FLAG_BACKWARD);
+    if (result < 0)
+        result = av_seek_frame(m_fmt, -1, int64_t(t * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD);
+    if (result < 0) {
+        m_lastSeekError = result;
+        qWarning("Pinol audio seek failed (%s): playback stops until the next seek", qPrintable(avErr(result)));
+        return false;
+    }
     avcodec_flush_buffers(m_codec);
     swr_close(m_swr);
     swr_init(m_swr);
     m_draining = false;
     m_nextPts = t;
+    m_lastSeekError = 0;
+    return true;
 }
 
 // Decode thread: into the next slot of the ring (waits while the ring is full; dropped if a seek came meanwhile)
@@ -358,7 +367,7 @@ void AudioStream::startLeg(const Timeline::Leg &leg, double position)
 {
     m_leg = leg;
     if (leg.forward) {
-        doSeek(position);
+        if (!doSeek(position)) return;
         m_trimBefore = position;
     } else {
         m_backEnd = position;
@@ -372,7 +381,7 @@ void AudioStream::produceBackwardWindow()
     const double a = std::max(m_leg.to, m_backEnd - 0.25);
     const int n = int(std::lround((m_backEnd - a) * m_rate));
     m_window.assign(size_t(std::max(n, 0)) * 2, 0.0f);
-    doSeek(a);
+    if (!doSeek(a)) return;
     const float *s = nullptr;
     int frames = 0;
     double local = 0;
@@ -408,12 +417,13 @@ void AudioStream::run()
             m_timeline = tl;
             m_generation = gen; // chunks pushed from now on belong to the new generation
             m_eof = false;
+            m_lastSeekError = 0;
             startLeg(m_timeline.legAt(c), m_timeline.position(c));
             atEnd = false;
             continue;
         }
         // Enough ahead, or at the end: wait for the callback to take some, or to ask for a seek
-        if (m_eof || m_queuedFrames.load(std::memory_order_relaxed) >= maxFrames) {
+        if (m_eof || m_lastSeekError.load() != 0 || m_queuedFrames.load(std::memory_order_relaxed) >= maxFrames) {
             waitForWork();
             continue;
         }

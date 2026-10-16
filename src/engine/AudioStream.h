@@ -61,6 +61,7 @@ public:
     // Meters and diagnostics (any thread)
     float peak() const { return m_peak.load(); }
     double syncError() const { return m_syncError.load(); } // heard position - expected position (s)
+    int lastSeekError() const { return m_lastSeekError.load(); } // 0 after open or a successful seek
     int resyncCount() const { return m_resyncs.load(); }
 
 private:
@@ -89,7 +90,7 @@ private:
     };
 
     void run();
-    void doSeek(double t);
+    bool doSeek(double t);
     bool decodeFrame();           // false = end of file or error
     void pushSamples(const float *s, int frames, double pts);
     void pushSilence(int frames, double pts);
@@ -123,6 +124,7 @@ private:
     std::atomic<uint64_t> m_seekSeq{0};              // 2 × requests made (callback); odd: one being written
     uint64_t m_seekSeen = 0;                         // decode thread: the last request handled
     uint64_t m_generation = 0;                       // decode thread: the generation of what it pushes
+    std::atomic<int> m_lastSeekError{0};
     bool m_eof = false;                              // decode thread
     // Waking the decode thread: the callback only notifies (never waits for the mutex), the decode thread waits a
     // bounded time (a notify that came between its check and its wait is not lost for long)

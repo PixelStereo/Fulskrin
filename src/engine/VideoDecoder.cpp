@@ -376,6 +376,7 @@ bool VideoDecoder::open(const QString &path, QString *err)
     m_quit = false;
     m_eof = false;
     m_seekPending = false;
+    m_seekFailed = false;
     m_needFirst = true;
     m_draining = false;
     m_lastPts = 0;
@@ -852,7 +853,7 @@ void VideoDecoder::clearIoError()
 void VideoDecoder::resumeAfterIoError()
 {
     clearIoError();
-    doSeek(m_resumeSeek);
+    if (!doSeek(m_resumeSeek)) return;
     m_discardBefore = m_resumeDiscard;
 }
 
@@ -889,7 +890,7 @@ void VideoDecoder::startLeg(const Timeline::Leg &leg, double position)
     m_legDone = false;
     m_legFrames = 0;
     if (leg.forward) {
-        doSeek(position);
+        if (!doSeek(position)) return;
         m_discardBefore = position - 0.5 / m_fps;
         m_resumeSeek = position;
         m_resumeDiscard = m_discardBefore;
@@ -928,7 +929,7 @@ void VideoDecoder::produceBackwardWindow()
     const double dt = 1.0 / m_fps;
     const double window = std::max(4.0, std::min(12.0, m_fps * 0.3)) * dt; // a few frames: bounded memory
     const double a = std::max(m_leg.to, m_backEnd - window);
-    doSeek(a);
+    if (!doSeek(a)) return;
     std::vector<VideoFrame> got;
     for (;;) {
         VideoFrame f;
@@ -983,7 +984,7 @@ void VideoDecoder::run()
             bool held = false;
             m_cv.wait(lk, [&] {
                 if (m_quit || m_seekPending) return true;
-                if (m_eof || m_queue.size() >= kMaxQueue) return false;
+                if (m_eof || m_seekFailed || m_queue.size() >= kMaxQueue) return false;
                 if (m_queue.size() >= kMinQueue && decodedBudget::over()) {
                     if (!held) ++m_metricBudgetHolds;
                     held = true;
@@ -994,6 +995,7 @@ void VideoDecoder::run()
             if (m_quit) return;
             if (m_seekPending) {
                 m_seekPending = false;
+                m_seekFailed = false;
                 const double c = m_seekTarget;
                 m_timeline = m_pendingTimeline;
                 gen = m_generation;
