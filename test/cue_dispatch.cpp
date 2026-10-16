@@ -26,6 +26,21 @@ int main(int argc,char **argv) {
     if(inSlowRecall)engine.sequencer().clear();
     wait.restart();while(wait.elapsed()<250){app.processEvents();QThread::msleep(1);}
     check(recorded==1,"project generation invalidates pending undo delivery");
+    // A request queued during an executing recall must not survive STOP.
+    // Both operations happen in the direct callback: no timing-dependent race
+    // between the test and the next cue-clock tick.
+    std::atomic<int> stoppedRecalls{0};
+    auto stopping=QObject::connect(&engine,&Engine::snapshotRecalled,&engine,[&](int){
+        if(++stoppedRecalls==1){
+            engine.sequencer().requestSnapshot(id);
+            engine.sequencer().stopAll();
+        }
+    },Qt::DirectConnection);
+    engine.sequencer().requestSnapshot(id);
+    wait.restart();while(stoppedRecalls==0&&wait.elapsed()<5000){app.processEvents();QThread::msleep(1);}
+    wait.restart();while(wait.elapsed()<350){app.processEvents();QThread::msleep(1);}
+    check(stoppedRecalls==1,"STOP cancels snapshots queued during a recall");
+    QObject::disconnect(stopping);
     engine.sequencer().setRecallRecorder(nullptr);engine.sequencer().shutdownClock();engine.shutdown();
     return failures?1:0;
 }
