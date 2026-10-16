@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdio>
 #include <limits>
+#include <random>
 int main(){
     int failures=0;auto check=[&](bool ok,const char *why){if(!ok){++failures;std::printf("FAIL audio_analysis: %s\n",why);}};
     constexpr int frames=480,rate=48000;std::array<float,frames*2> buffer{};
@@ -26,5 +27,60 @@ int main(){
     check(std::abs(selected.band(900,1100)-opposite.band(900,1100))<1e-5f,"FFT combines powers without stereo phase cancellation");
     check(selected.band(1100,900)==0,"invalid frequency interval is silent");
     check(a.spectrum().band(20,20000)==0,"reset clears the spectrum");
+    // Nyquist has no distinct conjugate partner. Alternating samples have
+    // exactly 0.1 RMS, including with opposite-phase stereo.
+    for(int sampleRate:{32000,48000}){
+        for(bool oppositePhase:{false,true}){
+            AudioAnalysis nyquist;
+            std::array<float,AudioAnalysis::fftSize*2> alternating{};
+            for(int i=0;i<AudioAnalysis::fftSize;++i){
+                const float x=(i&1)?-.1f:.1f;
+                alternating[2*i]=x;
+                alternating[2*i+1]=oppositePhase?-x:x;
+            }
+            nyquist.process(alternating.data(),AudioAnalysis::fftSize,sampleRate);
+            const float measured=nyquist.spectrum().band(0,float(sampleRate));
+            check(std::abs(measured-(1.f-std::exp(-.4f)))<1e-5f,"Nyquist energy is counted once and calibrated to RMS");
+        }
+    }
+    // Differential regression against the original full scan: preserve the
+    // fractional edge weights, accumulation order and normalization exactly.
+    auto fullScan=[](const AudioAnalysis::Spectrum &s,float lo,float hi){
+        if(!std::isfinite(lo)||!std::isfinite(hi)||hi<=lo)return 0.f;
+        const float step=float(s.rate)/AudioAnalysis::fftSize;
+        double sum=0;
+        for(int k=1;k<AudioAnalysis::binCount;++k){
+            const float left=(k-.5f)*step,right=(k+.5f)*step;
+            const float weight=std::clamp((std::min(hi,right)-std::max(lo,left))/step,0.f,1.f);
+            sum+=s.power[size_t(k)]*weight;
+        }
+        return 1.f-std::exp(-4.f*float(std::sqrt(std::max(0.,sum))));
+    };
+    std::mt19937 random(188);
+    std::uniform_real_distribution<float> power(0.f,1e-5f),frequency(-50000.f,100000.f);
+    AudioAnalysis::Spectrum fixture;
+    for(auto &p:fixture.power)p=power(random);
+    bool same=true;
+    for(int sampleRate:{1,8000,44100,48000,96000,192000}){
+        fixture.rate=sampleRate;
+        for(int n=0;n<2000;++n){
+            float lo=frequency(random),hi=frequency(random);
+            if(lo>hi)std::swap(lo,hi);
+            same &= fixture.band(lo,hi)==fullScan(fixture,lo,hi);
+        }
+        const float step=float(sampleRate)/AudioAnalysis::fftSize;
+        for(int k=1;k<AudioAnalysis::binCount;++k){
+            const float edge=(k+.5f)*step;
+            for(float hi:{std::nextafter(edge,0.f),edge,std::nextafter(edge,std::numeric_limits<float>::infinity())})
+                same &= fixture.band(edge-step,hi)==fullScan(fixture,edge-step,hi);
+        }
+        const float huge=std::numeric_limits<float>::max();
+        same &= fixture.band(-huge,huge)==fullScan(fixture,-huge,huge);
+        same &= fixture.band(huge/2,huge)==0.f;
+        same &= fixture.band(-huge,-huge/2)==0.f;
+    }
+    check(same,"bounded band scan matches full scan for random bands and FFT boundaries");
+    fixture.rate=0;check(fixture.band(20,20000)==0,"invalid sample rate is silent");
+    fixture.rate=-48000;check(fixture.band(20,20000)==0,"negative sample rate is silent");
     std::printf("audio_analysis: %d failures\n",failures);return failures?1:0;
 }
