@@ -224,6 +224,7 @@ jobs:
         run: |
           export TSAN_OPTIONS="halt_on_error=1 exitcode=66 suppressions=$PWD/test/tsan.supp"
           ctest --test-dir build-tsan -R '^audio_analysis_concurrency$' --output-on-failure
+          timeout 120 xvfb-run -a ./build-tsan/pinol_tests --area cue_lifecycle
           # The decoders' threads, the sound callback and its decode threads, the OSC server. (The render-thread areas
           # render with llvmpipe, itself far too slow under ThreadSanitizer on a CI runner: run them locally.)
           # A data race (exit code 66) fails at once. Any other failure is a timing check under ThreadSanitizer's

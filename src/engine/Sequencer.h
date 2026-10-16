@@ -59,9 +59,11 @@ public:
         double speed = 1;               // Speed
         double preWait = 0, postWait = 0; // seconds
         StepContinue next = StepContinue::Wait;
+        quint64 runtimeId = 0; // stable across edits; assigned by Sequencer, not serialized
     };
     // A step on its way: since its GO, through its pre-wait, its action, and until the next step's GO
     struct Run {
+        std::shared_ptr<std::atomic<bool>> valid;
         int step = -1;
         quint64 sequenceId = 0; // stable runtime owner even when sequences are inserted or reordered
         Step target; // what it does (its snapshot, or its timeline and action)
@@ -176,8 +178,10 @@ private slots:
     void deliverRecalls();
 
 private:
+    std::shared_ptr<std::atomic<bool>> commandTokenLocked(quint64 owner);
+    bool relativeGo(quint64 owner, bool back, std::shared_ptr<std::atomic<bool>> valid = {});
     int sequenceIndexLocked(quint64 id) const; // under m_mutex; stable identity for queued GO
-    bool goToSequence(quint64 id, int step, bool chain);
+    bool goToSequence(quint64 id, int step, bool chain, std::shared_ptr<std::atomic<bool>> valid = {});
     int nextOfLocked(int index) const;     // under m_mutex
     int previousOfLocked(int index) const; // under m_mutex
     void stopSequenceLocked(int index);    // under m_mutex
@@ -189,15 +193,22 @@ private:
 
     Engine &m_engine;
     Annotated<QRecursiveMutex> &m_mutex;
+    // Dispatch -> engine lock, never the reverse. STOP invalidates queued work
+    // then drains an already executing recall without holding the engine lock. Recursive for
+    // a synchronous recaller that invokes STOP on its own thread.
+    Annotated<QRecursiveMutex> m_dispatchMutex;
     std::vector<Sequence> m_sequences;
     int m_current = -1; // UI selection only, never the owner of all active runs
     std::vector<int> m_positions; // playhead per sequence (not persisted)
     std::vector<quint64> m_sequenceIds; // runtime identity, aligned with m_sequences
     quint64 m_nextSequenceId = 1;
+    quint64 m_nextStepId = 1;
+    std::map<quint64, std::shared_ptr<std::atomic<bool>>> m_commandTokens;
     int m_startupSequence = -1; // none by default; adjusted on insert/remove
     std::map<quint64, qint64> m_stepStartedNs;
     struct RecordedRecall { quint64 snapshot = 0, generation = 0; RecallBefore before; };
-    std::vector<quint64> m_pendingSnapshots;
+    struct PendingSnapshot { quint64 id; std::shared_ptr<std::atomic<bool>> valid; };
+    std::vector<PendingSnapshot> m_pendingSnapshots;
     std::vector<RecordedRecall> m_recordedRecalls;
     quint64 m_generation = 0;
     std::vector<Run> m_runs; // all active sequences; each run owns a stable sequenceId

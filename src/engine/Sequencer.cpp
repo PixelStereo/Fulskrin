@@ -116,12 +116,27 @@ void Sequencer::setSequence(int i, const Sequence &s)
     {
         QMutexLocker lk(&m_mutex);
         if (i < 0 || i >= int(m_sequences.size())) return;
+        const auto &old = m_sequences[size_t(i)].steps;
+        const int position = m_positions[size_t(i)];
+        const quint64 played = position >= 0 && position < int(old.size()) ? old[size_t(position)].runtimeId : 0;
         m_sequences[size_t(i)] = s;
+        auto &steps = m_sequences[size_t(i)].steps;
+        QSet<quint64> seen;
+        for (Step &step : steps) {
+            if (!step.runtimeId || seen.contains(step.runtimeId)) step.runtimeId = m_nextStepId++;
+            seen.insert(step.runtimeId);
+        }
+        auto indexOf = [&](quint64 id) {
+            for (size_t k = 0; k < steps.size(); ++k) if (steps[k].runtimeId == id) return int(k);
+            return -1;
+        };
+        if (played) m_positions[size_t(i)] = indexOf(played);
         if (m_positions[size_t(i)] >= int(s.steps.size())) m_positions[size_t(i)] = int(s.steps.size()) - 1;
         const quint64 owner = m_sequenceIds[size_t(i)];
         m_runs.erase(std::remove_if(m_runs.begin(), m_runs.end(), [&](const Run &r) {
-            return r.sequenceId == owner && r.step >= int(s.steps.size());
+            return r.sequenceId == owner && indexOf(r.target.runtimeId) < 0;
         }), m_runs.end());
+        for (Run &r : m_runs) if (r.sequenceId == owner) r.step = indexOf(r.target.runtimeId);
     }
     emit changed();
 }
@@ -132,6 +147,7 @@ int Sequencer::add(const Sequence &s, int at)
         QMutexLocker lk(&m_mutex);
         if (at < 0 || at > int(m_sequences.size())) at = int(m_sequences.size());
         m_sequences.insert(m_sequences.begin() + at, s);
+        for (Step &step : m_sequences[size_t(at)].steps) step.runtimeId = m_nextStepId++;
         m_sequenceIds.insert(m_sequenceIds.begin() + at, m_nextSequenceId++);
         m_positions.insert(m_positions.begin() + at, -1);
         if (m_startupSequence >= at) ++m_startupSequence;
@@ -149,6 +165,10 @@ void Sequencer::remove(int i)
         QMutexLocker lk(&m_mutex);
         if (i < 0 || i >= int(m_sequences.size())) return;
         const quint64 owner = m_sequenceIds[size_t(i)];
+        if (auto it = m_commandTokens.find(owner); it != m_commandTokens.end()) {
+            *it->second = false;
+            m_commandTokens.erase(it);
+        }
         m_stepStartedNs.erase(owner);
         m_runs.erase(std::remove_if(m_runs.begin(), m_runs.end(),
             [owner](const Run &r) { return r.sequenceId == owner; }), m_runs.end());
@@ -299,23 +319,39 @@ bool Sequencer::goTo(int step, bool chain)
     return goToSequence(owner, step, chain);
 }
 
-bool Sequencer::goToSequence(quint64 owner, int step, bool chain)
+bool Sequencer::goToSequence(quint64 owner, int step, bool chain, std::shared_ptr<std::atomic<bool>> expected)
 {
     if (QThread::currentThread() != thread()) {
         // Bind delayed OSC commands to their original sequence, even if selection changes.
         bool ok = false;
+        quint64 stepId = 0;
+        std::shared_ptr<std::atomic<bool>> valid;
         {
             QMutexLocker lk(&m_mutex);
             const int index = sequenceIndexLocked(owner);
             ok = index >= 0 && step >= 0 && step < int(m_sequences[size_t(index)].steps.size());
+            if (ok) {
+                stepId = m_sequences[size_t(index)].steps[size_t(step)].runtimeId;
+                valid = commandTokenLocked(owner);
+            }
         }
-        if (ok) QMetaObject::invokeMethod(this, [this, owner, step, chain] {
-            goToSequence(owner, step, chain);
+        if (ok) QMetaObject::invokeMethod(this, [this, owner, stepId, chain, valid] {
+            if (!valid->load()) return;
+            int resolved = -1;
+            {
+                QMutexLocker lk(&m_mutex);
+                const int index = sequenceIndexLocked(owner);
+                if (index < 0) return;
+                const auto &steps = m_sequences[size_t(index)].steps;
+                for (size_t k = 0; k < steps.size(); ++k) if (steps[k].runtimeId == stepId) resolved = int(k);
+            }
+            if (valid->load()) goToSequence(owner, resolved, chain, valid);
         }, Qt::QueuedConnection);
         return ok;
     }
     {
         QMutexLocker lk(&m_mutex);
+        if (expected && !expected->load()) return false;
         const int index = sequenceIndexLocked(owner);
         if (index < 0) return false; // removed before a queued GO arrived
         const Sequence &s = m_sequences[size_t(index)];
@@ -326,6 +362,7 @@ bool Sequencer::goToSequence(quint64 owner, int step, bool chain)
                 [owner](const Run &r) { return r.sequenceId == owner; }), m_runs.end());
         }
         Run r = runOf(st, step, chain, owner);
+        r.valid = commandTokenLocked(owner);
         r.duration = stepDuration(st);
         m_runs.push_back(r);
         m_positions[size_t(index)] = step;
@@ -361,27 +398,54 @@ bool Sequencer::back()
 bool Sequencer::goSequence(int index)
 {
     quint64 owner;
-    int step;
     {
         QMutexLocker lk(&m_mutex);
         if (index < 0 || index >= int(m_sequences.size())) return false;
         owner = m_sequenceIds[size_t(index)];
-        step = nextOfLocked(index);
     }
-    return goToSequence(owner, step, true);
+    return relativeGo(owner, false);
 }
 
 bool Sequencer::backSequence(int index)
 {
     quint64 owner;
-    int step;
     {
         QMutexLocker lk(&m_mutex);
         if (index < 0 || index >= int(m_sequences.size())) return false;
         owner = m_sequenceIds[size_t(index)];
-        step = previousOfLocked(index);
     }
-    return goToSequence(owner, step, false);
+    return relativeGo(owner, true);
+}
+
+std::shared_ptr<std::atomic<bool>> Sequencer::commandTokenLocked(quint64 owner)
+{
+    auto &token = m_commandTokens[owner];
+    if (!token || !token->load()) token = std::make_shared<std::atomic<bool>>(true);
+    return token;
+}
+
+bool Sequencer::relativeGo(quint64 owner, bool back, std::shared_ptr<std::atomic<bool>> expected)
+{
+    if (QThread::currentThread() != thread()) {
+        std::shared_ptr<std::atomic<bool>> valid;
+        {
+            QMutexLocker lk(&m_mutex);
+            if (sequenceIndexLocked(owner) < 0) return false;
+            valid = commandTokenLocked(owner);
+        }
+        // Resolve the playhead when dequeued, not when several OSC commands arrive together.
+        QMetaObject::invokeMethod(this, [this, owner, back, valid] {
+            if (valid->load()) relativeGo(owner, back, valid);
+        }, Qt::QueuedConnection);
+        return true; // accepted; the sequence may reach its end before this command executes
+    }
+    int step;
+    {
+        QMutexLocker lk(&m_mutex);
+        const int index = sequenceIndexLocked(owner);
+        step = back ? previousOfLocked(index) : nextOfLocked(index);
+    }
+    return goToSequence(owner, step, !back, expected);
 }
 
 bool Sequencer::goToStepOf(int index, int step)
@@ -397,20 +461,27 @@ bool Sequencer::goToStepOf(int index, int step)
 
 void Sequencer::stop()
 {
-    QMutexLocker lk(&m_mutex);
-    stopSequenceLocked(m_current);
+    {
+        QMutexLocker lk(&m_mutex);
+        stopSequenceLocked(m_current);
+    }
+    QMutexLocker dispatch(&m_dispatchMutex); // drain an action that had already started
 }
 
 void Sequencer::stopSequence(int index)
 {
-    QMutexLocker lk(&m_mutex);
-    stopSequenceLocked(index);
+    {
+        QMutexLocker lk(&m_mutex);
+        stopSequenceLocked(index);
+    }
+    QMutexLocker dispatch(&m_dispatchMutex);
 }
 
 void Sequencer::stopSequenceLocked(int index)
 {
     if (index < 0 || index >= int(m_sequenceIds.size())) return;
     const quint64 owner = m_sequenceIds[size_t(index)];
+    if (auto it = m_commandTokens.find(owner); it != m_commandTokens.end()) *it->second = false;
     m_runs.erase(std::remove_if(m_runs.begin(), m_runs.end(),
         [owner](const Run &r) { return r.sequenceId == owner; }), m_runs.end());
 }
@@ -418,8 +489,15 @@ void Sequencer::stopSequenceLocked(int index)
 // Every sequence: the pre-waits and follows still to come, in the background too (the operator's panic button)
 void Sequencer::stopAll()
 {
-    QMutexLocker lk(&m_mutex);
-    m_runs.clear();
+    {
+        QMutexLocker lk(&m_mutex);
+        for (auto &[owner, token] : m_commandTokens) *token = false;
+        m_pendingSnapshots.clear();
+        m_runs.clear();
+    }
+    // Invalidate first so a batch cannot dispatch more actions while STOP waits.
+    // Never wait for dispatch while holding the engine mutex: a recall needs it.
+    QMutexLocker dispatch(&m_dispatchMutex);
 }
 
 bool Sequencer::anyActive() const
@@ -499,11 +577,12 @@ void Sequencer::tick()
     // drift with the timer's own lateness
     const double dt = m_clock.nsecsElapsed() * 1e-9 * timeScale();
     m_clock.restart();
-    std::vector<quint64> pending;
+    std::vector<PendingSnapshot> pending;
     { QMutexLocker lock(&m_mutex); pending.swap(m_pendingSnapshots); }
-    for (const auto id : pending) {
-        const int index = m_engine.indexOfSnapshot(id);
-        if (index >= 0) fireSnapshot(index);
+    for (const auto &request : pending) {
+        QMutexLocker dispatch(&m_dispatchMutex);
+        const int index = m_engine.indexOfSnapshot(request.id);
+        if (index >= 0 && request.valid->load()) fireSnapshot(index);
     }
     advance(dt);
     bool empty;
@@ -571,7 +650,7 @@ void Sequencer::advance(double dt)
     dt = std::max(0.0, dt);
     bool moved = false;
     for (int round = 0; round < 256; ++round) { // steps without any wait follow each other in the same call
-        std::vector<Step> fire;
+        std::vector<Run> fire;
         std::vector<Run> started;
         {
             QMutexLocker lk(&m_mutex);
@@ -587,7 +666,7 @@ void Sequencer::advance(double dt)
                     noteFired(r.elapsed - r.preWait); // how late the clock let it fire
                     if (r.target.timeline) r.duration = stepDuration(r.target); // where the timeline is now
                     r.trackPending = r.target.timeline && r.target.action == AnimAction::Play;
-                    fire.push_back(r.target);
+                    fire.push_back(r);
                 } else if (r.tracking) {
                     // Track the animation's real remaining time while it runs, including speed and loop edits.
                     // Freeze the action's duration when playback ends. Otherwise elapsed + 0 is recomputed
@@ -607,6 +686,7 @@ void Sequencer::advance(double dt)
                 if (k < 0) continue;
                 const Step &st = s.steps[size_t(k)];
                 Run x = runOf(st, k, true, r.sequenceId);
+                x.valid = r.valid;
                 x.elapsed = r.elapsed - at;
                 x.duration = stepDuration(st);
                 started.push_back(x);
@@ -621,7 +701,19 @@ void Sequencer::advance(double dt)
         // The snapshots and timelines, in the order of their GO (outside the lock: a recall loads, and may go
         // through the interface's undo stack)
         if (!fire.empty()) m_engine.noteInput(FrameTiming::Cue);
-        for (const Step &st : fire) {
+        for (const Run &action : fire) {
+            QMutexLocker dispatch(&m_dispatchMutex);
+            if (!action.valid->load()) continue;
+            {
+                QMutexLocker lk(&m_mutex);
+                const int index = sequenceIndexLocked(action.sequenceId);
+                if (index < 0) continue;
+                const auto &steps = m_sequences[size_t(index)].steps;
+                if (std::none_of(steps.begin(), steps.end(), [&](const Step &s) {
+                    return s.runtimeId == action.target.runtimeId;
+                })) continue;
+            }
+            const Step &st = action.target;
             if (st.timeline) {
                 m_engine.controlAnimation(st.timeline, st.action, st.action == AnimAction::Speed ? st.speed : st.seekTime, st.loop, st.repeat);
                 continue;
@@ -639,9 +731,15 @@ void Sequencer::advance(double dt)
         {
             QMutexLocker lk(&m_mutex);
             for (Run &x : started) {
+                if (!x.valid->load()) continue;
                 const int index = sequenceIndexLocked(x.sequenceId);
                 if (index < 0) continue; // sequence removed while an action fired
-                if (x.step >= int(m_sequences[size_t(index)].steps.size())) continue;
+                const auto &steps = m_sequences[size_t(index)].steps;
+                const auto found = std::find_if(steps.begin(), steps.end(), [&](const Step &s) {
+                    return s.runtimeId == x.target.runtimeId;
+                });
+                if (found == steps.end()) continue;
+                x.step = int(found - steps.begin());
                 m_runs.push_back(x);
                 m_positions[size_t(index)] = x.step;
                 m_stepStartedNs[x.sequenceId] = FrameTiming::nowNs() - qint64(x.elapsed / std::max(1e-9, timeScale().load()) * 1e9);
@@ -719,6 +817,7 @@ void Sequencer::fromJson(const QJsonArray &a, int current)
             s.steps.push_back(st);
         }
         m_sequences.push_back(s);
+        for (Step &step : m_sequences.back().steps) step.runtimeId = m_nextStepId++;
     }
     m_positions.assign(m_sequences.size(), -1);
     m_sequenceIds.clear();
@@ -731,6 +830,8 @@ void Sequencer::fromJson(const QJsonArray &a, int current)
 void Sequencer::clear()
 {
     QMutexLocker lk(&m_mutex);
+    for (auto &[owner, token] : m_commandTokens) *token = false;
+    m_commandTokens.clear();
     m_sequences.clear();
     m_stepStartedNs.clear();
     m_positions.clear();
@@ -755,7 +856,7 @@ double Sequencer::stepDuration(const Step &st) const
 bool Sequencer::requestSnapshot(quint64 id)
 {
     if (m_engine.indexOfSnapshot(id) < 0 || !m_engine.isThreaded() || m_engine.fadesManual()) return false;
-    { QMutexLocker lock(&m_mutex); m_pendingSnapshots.push_back(id); }
+    { QMutexLocker lock(&m_mutex); m_pendingSnapshots.push_back({id, commandTokenLocked(0)}); }
     startTimer();
     return true;
 }
