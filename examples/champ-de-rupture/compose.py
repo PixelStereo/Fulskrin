@@ -94,7 +94,7 @@ def compose(out):
         f.setnchannels(2);f.setsampwidth(2);f.setframerate(RATE);f.writeframes((mix*32767).astype('<i2').tobytes())
     mp3=out/'Champ_de_rupture.mp3'
     subprocess.run(['ffmpeg','-v','error','-y','-i',str(wav),'-codec:a','libmp3lame','-b:a','256k',str(mp3)],check=True)
-    (out/'Composition.json').write_text(json.dumps({'title':'Champ de rupture','duration':DURATION,'seed':SEED,'rate':RATE,'original':True,'external_samples':False,'events':sorted(events,key=lambda e:e['at'])},ensure_ascii=False,indent=2)+'\n')
+    (out/'Composition.json').write_text(json.dumps({'title':'Champ de rupture','duration':DURATION,'seed':SEED,'rate':RATE,'original':True,'external_samples':False,'events':sorted(events,key=lambda e:e['at'])},ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print(mp3)
     return mp3
 if __name__=='__main__':
