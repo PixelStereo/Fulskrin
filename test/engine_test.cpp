@@ -1901,6 +1901,7 @@ void main(){ gl_FragColor = definitely_not_defined; }
             CHECK(e.sequencer().go() && e.sequencer().position() == 1 && std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // snapshot 0, at once
             CHECK(e.sequencer().go() && e.sequencer().position() == 2); // its snapshot is gone: the position moves, nothing else
             CHECK(e.sequencer().next() == -1 && !e.sequencer().go()); // the end, no loop
+            seq = e.sequencer().sequence(0); // edit the live definition, retaining runtime cue identities
             seq.loop = true;
             e.sequencer().setSequence(0, seq);
             CHECK(e.sequencer().next() == 0);

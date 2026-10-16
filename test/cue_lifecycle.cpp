@@ -46,6 +46,13 @@ int runCueLifecycleTests(Engine &engine)
     seq.go(); check(fired == std::vector<int>({0}), "a deliberate GO after STOP still works");
 
     reset();
+    const int other = seq.add(seq.sequence(0));
+    std::thread independent([&] { seq.goSequence(0); seq.goSequence(other); }); independent.join();
+    seq.stopSequence(0); seq.setCurrent(other); drain();
+    check(fired == std::vector<int>({0}) && seq.positionOf(0) == -1 && seq.positionOf(other) == 0,
+          "selected STOP preserves another sequence's queued GO and original owner");
+
+    reset();
     auto s = seq.sequence(0);
     s.steps[0].preWait = 1; s.steps[0].next = Sequencer::StepContinue::Follow;
     s.steps[0].postWait = 1;
