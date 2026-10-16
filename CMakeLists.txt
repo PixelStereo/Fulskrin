@@ -433,7 +433,8 @@ if(PINOL_TESTS)
     target_compile_definitions(pinol_decoder_allocations_test PRIVATE TEST_DIR="${CMAKE_SOURCE_DIR}/test")
     target_link_options(pinol_decoder_allocations_test PRIVATE
       -Wl,--wrap=avcodec_alloc_context3 -Wl,--wrap=avcodec_parameters_to_context
-      -Wl,--wrap=av_frame_alloc -Wl,--wrap=av_packet_alloc)
+      -Wl,--wrap=av_frame_alloc -Wl,--wrap=av_packet_alloc
+      -Wl,--wrap=av_seek_frame -Wl,--wrap=avcodec_flush_buffers)
     add_test(NAME decoder_allocations COMMAND pinol_decoder_allocations_test)
     set_tests_properties(decoder_allocations PROPERTIES TIMEOUT 20)
   endif()
