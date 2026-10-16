@@ -136,6 +136,7 @@ void Engine::feedInteraction(const InteractionEvent &e)
     }
     std::lock_guard<std::mutex> lk(m_interactionEventsMutex);
     if (m_interactionEvents.size() < 8192) m_interactionEvents.push_back(e); // a flood is cut, not kept forever
+    else m_interactionEventsDropped.fetch_add(1, std::memory_order_relaxed);
     if (!m_interactionLearn || (m_learnKind && e.source != *m_learnKind)) return;
     if (e.source == InteractionSource::Keyboard && e.value < 0.5) return; // a key: when pressed
     for (InteractionEvent &x : m_learned)
