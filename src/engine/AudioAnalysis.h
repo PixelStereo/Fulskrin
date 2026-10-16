@@ -16,10 +16,17 @@ public:
         // Integrated, stereo-safe RMS over the selected FFT bins. Fractional
         // edge weights avoid jumps as a band handle crosses a bin boundary.
         float band(float lo, float hi) const {
-            if (!std::isfinite(lo) || !std::isfinite(hi) || hi <= lo) return 0;
+            if (rate <= 0 || !std::isfinite(lo) || !std::isfinite(hi) || hi <= lo) return 0;
             const float step = float(rate) / fftSize;
+            // Only overlapping bins can contribute. Keep a bin of margin on
+            // either side so rounding at fractional edges uses the same weight
+            // calculation as the full scan. Clamp before converting to int:
+            // callers can supply finite frequencies beyond the integer range.
+            const float lastBin = float(binCount - 1);
+            const int first = int(std::clamp(std::floor(lo / step) - 1.f, 1.f, lastBin));
+            const int last = int(std::clamp(std::ceil(hi / step) + 1.f, 1.f, lastBin));
             double sum = 0;
-            for (int k = 1; k < binCount; ++k) {
+            for (int k = first; k <= last; ++k) {
                 const float left = (k - .5f) * step, right = (k + .5f) * step;
                 const float weight = std::clamp((std::min(hi,right)-std::max(lo,left))/step,0.f,1.f);
                 sum += power[size_t(k)] * weight;
@@ -97,7 +104,13 @@ private:
                     for(int j=0;j<length/2;++j){const auto a=m_fft[base+j],b=m_fft[base+j+length/2]*m_twiddle[j*fftSize/length];m_fft[base+j]=a+b;m_fft[base+j+length/2]=a-b;}
             // Hann power correction (sum w²=3N/8), two one-sided spectra
             // averaged as powers, so opposite-phase stereo never cancels.
-            for(int k=1;k<binCount;++k)power[k]+=std::norm(m_fft[k])/(fftSize*fftSize*.375f);
+            for (int k = 1; k < binCount; ++k) {
+                // Interior bins include their negative-frequency partner. The
+                // Nyquist bin is its own partner, so it must not be doubled.
+                // The stereo average already cancels the interior factor of 2.
+                const float scale = k == fftSize / 2 ? .5f : 1.f;
+                power[k] += scale * std::norm(m_fft[k]) / (fftSize * fftSize * .375f);
+            }
         }
         m_generation.fetch_add(1,std::memory_order_acq_rel);
         for(int k=0;k<binCount;++k)m_power[k].store(power[k],std::memory_order_relaxed);
