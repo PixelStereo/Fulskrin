@@ -38,19 +38,23 @@ public:
         constexpr double pi=3.14159265358979323846;
         for(int n=0;n<fftSize;++n)m_window[n]=float(.5-.5*std::cos(2*pi*n/fftSize));
         for(int n=0;n<fftSize/2;++n)m_twiddle[n]=std::polar(1.f,float(-2*pi*n/fftSize));
-        for(auto &v:m_power)v.store(0);
+
     }
     Spectrum spectrum() const {
-        Spectrum result;
-        // Atomic bins, bounded retry: readers never block the audio callback.
-        for(int attempt=0;attempt<3;++attempt){
-            const auto before=m_generation.load(std::memory_order_acquire);
-            if(before&1)continue;
-            result.rate=m_rate.load(std::memory_order_relaxed);
-            for(int k=0;k<binCount;++k)result.power[k]=m_power[k].load(std::memory_order_relaxed);
-            if(before==m_generation.load(std::memory_order_acquire))return result;
+        // A pin protects the whole snapshot, including its sample rate. The
+        // writer can never recycle a pinned slot. Acquisition is bounded for
+        // render-thread readers too: extreme contention returns coherent silence.
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            auto &slot = m_spectra[m_published.load(std::memory_order_acquire)];
+            const unsigned state = slot.users.fetch_add(1, std::memory_order_acquire);
+            if (!(state & writing)) {
+                Spectrum result = slot.value;
+                slot.users.fetch_sub(1, std::memory_order_release);
+                return result;
+            }
+            slot.users.fetch_sub(1, std::memory_order_release);
         }
-        return result;
+        return {};
     }
     struct Values { float level=0, bass=0, mid=0, high=0, onset=0; };
     Values values() const { return {m_level.load(),m_bass.load(),m_mid.load(),m_high.load(),m_onset.load()}; }
@@ -58,9 +62,9 @@ public:
         for(int c=0;c<2;++c){m_low[c]=m_upper[c]=0;}
         m_write=m_filled=m_hop=0;
         for(auto &channel:m_ring)channel.fill(0);
-        m_generation.fetch_add(1,std::memory_order_acq_rel);
-        for(auto &v:m_power)v.store(0,std::memory_order_relaxed);
-        m_generation.fetch_add(1,std::memory_order_release);
+        Spectrum cleared;
+        cleared.rate = m_rate;
+        publish(cleared);
         m_slow=0; m_level=0; m_bass=0; m_mid=0; m_high=0; m_onset=0;
     }
     void process(const float *stereo,int frames,int rate) {
@@ -68,7 +72,7 @@ public:
         constexpr double pi=3.14159265358979323846;
         const float low=1-std::exp(float(-2*pi*180/rate)), upper=1-std::exp(float(-2*pi*2500/rate));
         double energy[4]={};
-        if(m_rate.load(std::memory_order_relaxed)!=rate){reset();m_rate.store(rate,std::memory_order_relaxed);}
+        if(m_rate!=rate){m_rate=rate;reset();}
         for(int i=0;i<frames;++i) {
           for(int c=0;c<2;++c) {
             float x=stereo[2*i+c]; if(!std::isfinite(x))x=0;
@@ -112,17 +116,43 @@ private:
                 power[k] += scale * std::norm(m_fft[k]) / (fftSize * fftSize * .375f);
             }
         }
-        m_generation.fetch_add(1,std::memory_order_acq_rel);
-        for(int k=0;k<binCount;++k)m_power[k].store(power[k],std::memory_order_relaxed);
-        m_generation.fetch_add(1,std::memory_order_release);
+        publish(Spectrum{power, m_rate});
     }
     std::array<float,fftSize> m_window{};
     std::array<std::array<float,fftSize>,2> m_ring{};
     std::array<std::complex<float>,fftSize> m_fft{};
     std::array<std::complex<float>,fftSize/2> m_twiddle{};
-    std::array<std::atomic<float>,binCount> m_power{};
-    std::atomic<unsigned> m_generation{0};
-    std::atomic<int> m_rate{48000};
+    static constexpr unsigned writing = 1u << 31;
+    struct SnapshotSlot {
+        Spectrum value;
+        mutable std::atomic<unsigned> users{0};
+    };
+    // Exactly one producer (process/reset, as for the FFT ring itself).
+    // Multiple readers may pin the same slot. A reader arriving after writer
+    // ownership only touches the atomic counter, never the snapshot. Subtract
+    // the writer bit on release instead of storing zero: failed reader pins
+    // may still be in flight and must retain their counts until they withdraw.
+    void publish(const Spectrum &value) {
+        const unsigned current = m_published.load(std::memory_order_relaxed);
+        for (unsigned offset = 1; offset < m_spectra.size(); ++offset) {
+            const unsigned next = (current + offset) % m_spectra.size();
+            auto &slot = m_spectra[next];
+            unsigned empty = 0;
+            if (!slot.users.compare_exchange_strong(empty, writing,
+                    std::memory_order_acquire, std::memory_order_relaxed)) continue;
+            slot.value = value;
+            slot.users.fetch_sub(writing, std::memory_order_release);
+            m_published.store(next, std::memory_order_release);
+            return;
+        }
+        // Slow readers may retain both inactive snapshots. Keep the previous
+        // complete publication; the audio callback must never wait for them.
+    }
+    static_assert(std::atomic<unsigned>::is_always_lock_free,
+                  "Audio spectrum publication requires lock-free counters");
+    std::array<SnapshotSlot, 3> m_spectra{};
+    std::atomic<unsigned> m_published{0};
+    int m_rate=48000;
     int m_write=0,m_filled=0,m_hop=0;
     float m_low[2]={},m_upper[2]={},m_slow=0;
     std::atomic<float> m_level{0},m_bass{0},m_mid{0},m_high{0},m_onset{0};
