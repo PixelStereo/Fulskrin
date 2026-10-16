@@ -20,3 +20,13 @@ On the local Apple Silicon run, 200 polls over this fixture copied 36 million ke
 `cue_dispatch` deliberately holds a recall on the cue clock for 120 ms and verifies that a GUI heartbeat continues, exactly one Undo record returns on the GUI thread, and clearing the show drops stale delivery. It requires a real OpenGL context and therefore runs in platform CI.
 
 `sequence_ui` and the workspace/mask regressions remain enabled. Local non-GL tests can run with `QT_QPA_PLATFORM=offscreen`; that platform cannot validate OpenGL rendering on macOS. GPU-dependent validation and the generated show render remain required in CI.
+
+## Interaction meters and audio regions
+
+The interaction panel now samples all live meter values through one `tryLock`, instead of taking a blocking engine lock for each displayed row and the selected editor. Busy rendering keeps the previous display intact; a successful empty sample clears stale readings. The sample contains only IDs and scalar levels, never mapping curves, and reuses its allocation between polls. The existing scalar API remains available for callers that require a synchronous result.
+
+Within each render frame, exact duplicate audio band intervals share one integration result. A fixed cache of 32 intervals avoids heap allocations; further unique intervals fall back to normal calculation, preserving arbitrary show sizes. In Champ de rupture, twelve band routes use four distinct intervals, so their band integrations drop from twelve to four per frame. This does not reuse envelopes or mapping chains: each target retains its own filter and response curve.
+
+The visible Audio spectrum does not request a repaint when its spectrum and sample rate are unchanged. Frequency dragging still requests its own repaint.
+
+`timeline_activity` verifies that a busy engine leaves the previous interaction sample untouched, and that an idle empty engine clears it. The interactions integration test compares batched telemetry with the existing scalar values. The sound test covers duplicate band routes and changing one without changing the other. These changes reduce blocking and repeated work; they are not a claim that all hardware-dependent stalls have been eliminated.

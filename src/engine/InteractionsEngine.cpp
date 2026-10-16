@@ -115,6 +115,22 @@ bool Engine::interactionLevels(quint64 id, double *level, double *output, double
     return true;
 }
 
+bool Engine::sampleInteractionLevels(std::vector<InteractionLevel> *out) const
+{
+    if (!out || !m_mutex.tryLock()) return false;
+    // Reuse the caller's capacity; copy only numbers, never interaction curves.
+    out->clear();
+    out->reserve(m_interactionRun.size());
+    for (const auto &[id, run] : m_interactionRun) {
+        const auto level = run.proc.level();
+        if (!level) continue;
+        out->push_back({id, *level, run.proc.output().value_or(*level), run.proc.curveInput().value_or(*level)});
+    }
+    m_mutex.unlock();
+    std::sort(out->begin(), out->end(), [](const InteractionLevel &a, const InteractionLevel &b) { return a.id < b.id; });
+    return true;
+}
+
 bool Engine::oscAddressClaimed(const QString &address) const
 {
     Lock lk(&m_mutex);
@@ -277,12 +293,24 @@ void Engine::stepInteractions(double dt)
     const bool needsSpectrum=std::any_of(m_interactions.begin(),m_interactions.end(),[](const Interaction &it){return it.enabled && it.source==InteractionSource::Audio && it.audioFeature==Interaction::AudioFeature::Band;});
     const auto spectrum=needsSpectrum?m_audio->spectrum():AudioAnalysis::Spectrum{};
     const auto audio=m_audio->analysis();
+    // A show commonly maps the same few audio regions to several layers.
+    // Integrate each exact region once per frame; fixed storage avoids heap work.
+    struct BandSample { float low, high, value; };
+    std::array<BandSample, 32> bands{};
+    size_t bandCount = 0;
+    auto bandValue = [&](float low, float high) {
+        for (size_t i = 0; i < bandCount; ++i)
+            if (bands[i].low == low && bands[i].high == high) return bands[i].value;
+        const float value = spectrum.band(low, high);
+        if (bandCount < bands.size()) bands[bandCount++] = {low, high, value};
+        return value;
+    };
     for (const Interaction &it : m_interactions) {
         if (!it.enabled || it.param.isEmpty()) continue;
         InteractionRun &run = m_interactionRun[it.id];
         bool fresh = false;
         if (it.source == InteractionSource::Audio) {
-            const double x=it.audioFeature==Interaction::AudioFeature::Band?spectrum.band(float(it.audioLow),float(it.audioHigh)):
+            const double x=it.audioFeature==Interaction::AudioFeature::Band?bandValue(float(it.audioLow),float(it.audioHigh)):
                 it.audioFeature==Interaction::AudioFeature::Level?audio.level:audio.onset;
             run.proc.input(it,x);
             fresh=true;

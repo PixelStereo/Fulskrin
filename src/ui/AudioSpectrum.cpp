@@ -12,7 +12,14 @@ AudioSpectrum::AudioSpectrum(AudioOutput *audio,QWidget *parent):QWidget(parent)
     setAccessibleName("Audio spectrum frequency selection");
     setToolTip("Drag either frequency boundary, or click to move the nearest one. Arrow keys adjust the last boundary; Shift makes a fine adjustment.");
     auto *timer=new QTimer(this);timer->setInterval(40);
-    connect(timer,&QTimer::timeout,this,[this]{if(isVisible()){m_spectrum=m_audio->spectrum();update();}});timer->start();
+    connect(timer,&QTimer::timeout,this,[this]{
+        if(!isVisible())return;
+        auto next=m_audio->spectrum();
+        if(next.rate==m_spectrum.rate && next.power==m_spectrum.power)return;
+        m_spectrum=std::move(next);
+        update();
+    });
+    timer->start();
 }
 QRectF AudioSpectrum::plot()const{return QRectF(10,22,std::max(1,width()-20),std::max(1,height()-47));}
 double AudioSpectrum::position(double hz)const{return plot().left()+std::log(std::clamp(hz,20.,20000.)/20.)/std::log(1000.)*plot().width();}

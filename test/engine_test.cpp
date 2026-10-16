@@ -4554,13 +4554,19 @@ void main(){ gl_FragColor = definitely_not_defined; }
         audioBand.dstMin=.2;audioBand.dstMax=.8;
         CHECK(e.setParameter(0,"opacity",.05)); // outside either expected range: missing routing cannot pass
         const auto audioMapping=e.addInteraction(audioBand);
+        Interaction duplicateBand=audioBand;duplicateBand.layer=e.layerId(e.addLayer("Band mapping target",e.layerCount()));
+        CHECK(e.setParameter(duplicateBand.layer,"opacity",.05));
+        e.addInteraction(duplicateBand);
         // This area uses Engine::start(): only the render thread steps interactions.
         // Wait for the observable result, not an arbitrary sleep or renderFrame()
         // (the latter deliberately does nothing while the render thread is running).
         CHECK(waitFor([&]{const double v=e.parameterValue(0,"opacity").toDouble();return v>.28 && v<=.8;}));
+        CHECK(waitFor([&]{const double v=e.parameterValue(duplicateBand.layer,"opacity").toDouble();return v>.28 && v<=.8;}));
         for(auto it:e.interactions())if(it.id==audioMapping){it.audioLow=6000;it.audioHigh=16000;CHECK(e.setInteraction(it));}
         CHECK(waitFor([&]{const double v=e.parameterValue(0,"opacity").toDouble();return v>=.2 && v<.22;}));
+        CHECK(e.parameterValue(duplicateBand.layer,"opacity").toDouble()>.28); // changing one route leaves its former duplicate intact
         e.setInteractions({});e.setParameter(0,"opacity",1.);
+        e.removeLayer(e.indexOfId(duplicateBand.layer));
         settle(400); // let the stream settle before measuring the synchronization
         double worst = 0;
         for (int k = 0; k < 20; ++k) {
@@ -5609,6 +5615,10 @@ void main(){ gl_FragColor = definitely_not_defined; }
         CHECK(std::abs(opacity(a) - 0.25) < 1e-6);
         double level = 0, output = 0;
         CHECK(e.interactionLevels(f, &level, &output) && std::abs(level - 0.25) < 1e-6);
+        std::vector<Engine::InteractionLevel> sampledLevels;
+        CHECK(e.sampleInteractionLevels(&sampledLevels));
+        const auto sampledFader=std::find_if(sampledLevels.begin(),sampledLevels.end(),[f](const auto &s){return s.id==f;});
+        CHECK(sampledFader!=sampledLevels.end() && std::abs(sampledFader->input-level)<1e-6 && std::abs(sampledFader->output-output)<1e-6);
         // Pick-up: moved by hand to 0.8, the fader at 0.1 leaves it; brought past it, it takes it
         fader.id = f;
         fader.takeover = Takeover::PickUp;

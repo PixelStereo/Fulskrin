@@ -518,22 +518,26 @@ void InteractionPanel::removeSelected()
 
 void InteractionPanel::refreshLevels()
 {
+    if (!m_engine->sampleInteractionLevels(&m_levelSample)) return;
+    auto sampled = [this](quint64 id) -> const Engine::InteractionLevel * {
+        const auto found = std::lower_bound(m_levelSample.begin(), m_levelSample.end(), id,
+            [](const Engine::InteractionLevel &level, quint64 target) { return level.id < target; });
+        return found != m_levelSample.end() && found->id == id ? &*found : nullptr;
+    };
     for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
         QTreeWidgetItem *item = m_list->topLevelItem(i);
-        double level = 0, out = 0;
-        const bool has = m_engine->interactionLevels(item->data(0, Qt::UserRole).toULongLong(), &level, &out);
-        const QString text = has ? QStringLiteral("%1 %").arg(std::lround(out * 100)) : QStringLiteral("—");
+        const auto *value = sampled(item->data(0, Qt::UserRole).toULongLong());
+        const QString text = value ? QStringLiteral("%1 %").arg(std::lround(value->output * 100)) : QStringLiteral("—");
         if (item->text(3) != text) {
             m_filling = true;
             item->setText(3, text);
             m_filling = false;
         }
     }
-    double level = 0, out = 0, curveIn = 0;
-    const bool has = m_shown && m_engine->interactionLevels(m_shown, &level, &out, &curveIn);
-    if (m_lane) m_lane->setPlayhead(curveIn, has);
-    if (m_inMeter) m_inMeter->setValue(has ? int(level * 1000) : 0);
-    if (m_outMeter) m_outMeter->setValue(has ? int(out * 1000) : 0);
+    const auto *value = sampled(m_shown);
+    if (m_lane) m_lane->setPlayhead(value ? value->curveInput : 0, value != nullptr);
+    if (m_inMeter) m_inMeter->setValue(value ? int(value->input * 1000) : 0);
+    if (m_outMeter) m_outMeter->setValue(value ? int(value->output * 1000) : 0);
     if (m_copy) m_copy->setEnabled(m_shown != 0);
     if (m_paste) m_paste->setEnabled(QApplication::clipboard()->mimeData() && QApplication::clipboard()->mimeData()->hasFormat(kMime) &&
                                      !m_list->selectedItems().isEmpty());
