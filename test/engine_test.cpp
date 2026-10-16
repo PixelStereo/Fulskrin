@@ -4549,13 +4549,14 @@ void main(){ gl_FragColor = definitely_not_defined; }
         Interaction audioBand=Interaction::made(InteractionSource::Audio);
         audioBand.audioLow=400;audioBand.audioHigh=480;audioBand.param="opacity";audioBand.filterOn=false;
         audioBand.dstMin=.2;audioBand.dstMax=.8;
+        CHECK(e.setParameter(0,"opacity",.05)); // outside either expected range: missing routing cannot pass
         const auto audioMapping=e.addInteraction(audioBand);
-        // Interactions run in the render tick; advanceFades only steps show recalls.
-        e.renderFrame();
-        CHECK(e.parameterValue(0,"opacity").toDouble()>.28);
+        // This area uses Engine::start(): only the render thread steps interactions.
+        // Wait for the observable result, not an arbitrary sleep or renderFrame()
+        // (the latter deliberately does nothing while the render thread is running).
+        CHECK(waitFor([&]{const double v=e.parameterValue(0,"opacity").toDouble();return v>.28 && v<=.8;}));
         for(auto it:e.interactions())if(it.id==audioMapping){it.audioLow=6000;it.audioHigh=16000;CHECK(e.setInteraction(it));}
-        e.renderFrame();
-        CHECK(e.parameterValue(0,"opacity").toDouble()<.22);
+        CHECK(waitFor([&]{const double v=e.parameterValue(0,"opacity").toDouble();return v>=.2 && v<.22;}));
         e.setInteractions({});e.setParameter(0,"opacity",1.);
         settle(400); // let the stream settle before measuring the synchronization
         double worst = 0;
