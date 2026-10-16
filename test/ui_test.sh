@@ -88,8 +88,11 @@ kill -9 $APP; sleep 1
 # Telemetry must survive an unclean process exit (rows flushed each second).
 test -s "$OUT/endurance.csv" || fail "endurance CSV not written"
 test -s "$OUT/endurance.csv.events.jsonl" || fail "endurance events log not written"
-grep -q '^# PINOL endurance metrics v1' "$OUT/endurance.csv" || fail "endurance CSV metadata missing"
+grep -q '^# PINOL endurance metrics v2$' "$OUT/endurance.csv" || fail "endurance CSV metadata missing"
 grep -q 'process_resident_mb' "$OUT/endurance.csv" || fail "endurance CSV has no process memory column"
+for column in audio_callback_count_lifetime audio_callback_p99_ms_lifetime audio_callback_max_ms_lifetime audio_callback_over_quarter_lifetime audio_callback_over_budget_lifetime render_lock_wait_p99_ms_lifetime render_lock_wait_max_ms_lifetime render_lock_hold_p99_ms_lifetime interaction_events_dropped_lifetime; do
+    grep '^utc,' "$OUT/endurance.csv" | tr ',' '\n' | grep -qx "$column" || fail "endurance CSV missing $column"
+done
 test "$(wc -l < "$OUT/endurance.csv")" -ge 6 || fail "endurance CSV has no periodic samples"
 ../build/Pinol >"$OUT/log2.txt" 2>&1 & APP=$!
 sleep 4; shot 12_recovery
