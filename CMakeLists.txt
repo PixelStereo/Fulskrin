@@ -522,6 +522,7 @@ if(PINOL_TESTS)
     target_link_libraries(pinol_workspace_ui_test PRIVATE "-framework AppKit")
   endif()
   add_test(NAME workspace_ui COMMAND pinol_workspace_ui_test)
+  add_test(NAME selection_ui COMMAND pinol_workspace_ui_test --selection) # not in the Valgrind job: see the test
   add_executable(pinol_preview_ui_test test/preview_ui.cpp src/ui/PreviewWorkspace.cpp src/ui/MappingView.cpp
                  src/ui/GlDraw.cpp src/ui/Commands.cpp src/ui/Widgets.cpp src/ui/ColorPicker.cpp)
   target_include_directories(pinol_preview_ui_test PRIVATE src/ui)
