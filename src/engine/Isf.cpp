@@ -11,6 +11,7 @@
 #include <QJsonParseError>
 #include <QMap>
 #include <QRegularExpression>
+#include <algorithm>
 #include <cmath>
 
 // ---------------------------------------------------------------------------
@@ -873,10 +874,9 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
     for (size_t i = 0; i < passes.size(); ++i) {
         const IsfPass &pass = passes[i];
         const bool last = i + 1 == passes.size();
-        int pw = int(std::lround(evalSize(pass.widthExpr, outW, outH, outW)));
-        int ph = int(std::lround(evalSize(pass.heightExpr, outW, outH, outH)));
-        pw = qBound(1, pw, 16384);
-        ph = qBound(1, ph, 16384);
+        // Bounded before rounding: lround of a value beyond a long is unspecified (1e30 became 0, then 1 pixel)
+        const int pw = int(std::lround(std::clamp(evalSize(pass.widthExpr, outW, outH, outW), 1.0, 16384.0)));
+        const int ph = int(std::lround(std::clamp(evalSize(pass.heightExpr, outW, outH, outH), 1.0, 16384.0)));
 
         IsfTarget *target = nullptr;
         if (!pass.target.isEmpty())

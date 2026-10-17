@@ -325,17 +325,23 @@ QString safeName(const QString &name)
     return s.isEmpty() ? QStringLiteral("_") : s;
 }
 
+QString SegmentNamer::take(const QString &scope, const QString &name)
+{
+    const QString base = safeName(name);
+    const QString key = scope + QLatin1Char('/') + base;
+    int k = m_used.value(key);
+    QString seg = k ? base + QStringLiteral("_%1").arg(k + 1) : base;
+    while (m_taken.contains(scope + QLatin1Char('/') + seg)) seg = base + QStringLiteral("_%1").arg(++k + 1);
+    m_used[key] = k + 1;
+    m_taken.insert(scope + QLatin1Char('/') + seg);
+    return seg;
+}
+
 QStringList uniqueSegments(const QStringList &names)
 {
     QStringList out;
-    QHash<QString, int> used;
-    for (const QString &n : names) {
-        const QString base = safeName(n);
-        QString seg = base;
-        if (int k = used.value(base)) seg += QStringLiteral("_%1").arg(k + 1);
-        used[base] += 1;
-        out << seg;
-    }
+    SegmentNamer namer;
+    for (const QString &n : names) out << namer.take(QString(), n);
     return out;
 }
 

@@ -304,6 +304,38 @@ void main(){ gl_FragColor = definitely_not_defined; }
             }
             e.newProject();
         }
+        // A generator size outside what setGeneratorSize() takes (hand-edited project): bounded on load, not left black
+        {
+            e.newProject();
+            const int g = e.addLayer(QStringLiteral("Sized generator"));
+            CHECK(e.setLayerIsf(g, isf + "/generators/SolidColor.fs", &err));
+            const QString sized = tmp + "/generator_size.pinol";
+            CHECK(e.saveProject(sized, {}, &err));
+            QFile f(sized);
+            CHECK(f.open(QIODevice::ReadOnly));
+            QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+            f.close();
+            QJsonArray layers = root.value("layers").toArray();
+            for (int k = 0; k < layers.size(); ++k) {
+                QJsonObject o = layers[k].toObject();
+                if (o.value("name").toString() != QLatin1String("Sized generator")) continue;
+                QJsonObject src = o.value("source").toObject();
+                src["width"] = 0;
+                src["height"] = 100000;
+                o["source"] = src;
+                layers[k] = o;
+            }
+            root["layers"] = layers;
+            CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(QJsonDocument(root).toJson());
+            f.close();
+            CHECK(e.loadProject(sized, nullptr, &err));
+            int found = -1;
+            for (int k = 0; k < e.layerCount(); ++k)
+                if (e.layer(k)->name == QStringLiteral("Sized generator")) found = k;
+            CHECK(found >= 0 && e.layer(found)->genWidth == 1 && e.layer(found)->genHeight == 16384);
+            e.newProject();
+        }
     } // isf_safe
 
     if (area("video")) {
@@ -1254,6 +1286,14 @@ void main(){ gl_FragColor = definitely_not_defined; }
         CHECK(!osc::match(QStringLiteral("/") + QString(4097, '*'), "/a"));
         CHECK(osc::match("/l/*/opacity", "/l/Video/opacity"));
         CHECK(osc::safeName(" My layer/1 ") == "My_layer_1");
+        // A repeated name gets _2, _3…; a suffix another name already gave itself is never shared
+        CHECK(osc::uniqueSegments({"Blur", "Blur", "Blur"}) == QStringList({"Blur", "Blur_2", "Blur_3"}));
+        CHECK(osc::uniqueSegments({"Video", "Video", "Video 2"}) == QStringList({"Video", "Video_2", "Video_2_2"}));
+        CHECK(osc::uniqueSegments({"Video", "Video 2", "Video"}) == QStringList({"Video", "Video_2", "Video_3"}));
+        {
+            osc::SegmentNamer namer; // scopes are separate containers
+            CHECK(namer.take("/layer", "A") == "A" && namer.take("/viewport", "A") == "A" && namer.take("/layer", "A") == "A_2");
+        }
         // Hostile packets (lengths read from the network): refused, never read out of bounds
         {
             auto be32 = [](qint32 v) {
@@ -1489,6 +1529,24 @@ void main(){ gl_FragColor = definitely_not_defined; }
             return got.args.value(0).toDouble() == 0.125;
         }));
         CHECK(got.address == F + "/opacity" && got.types == "f");
+        // A WebSocket controls the show: a page from elsewhere (or a sandboxed "null" one) is refused, a local one is not
+        auto upgrade = [&](const QByteArray &origin) {
+            QTcpSocket c;
+            c.connectToHost(QHostAddress::LocalHost, server.queryPort());
+            if (!pump([&] { return c.state() == QAbstractSocket::ConnectedState; })) return QByteArray();
+            c.write("GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: " + origin +
+                    "\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+            QByteArray in;
+            pump([&] {
+                in += c.readAll();
+                return in.contains("\r\n\r\n");
+            });
+            return in;
+        };
+        CHECK(upgrade("http://evil.example").startsWith("HTTP/1.1 403"));
+        CHECK(upgrade("null").startsWith("HTTP/1.1 403"));
+        CHECK(upgrade("http://localhost:8080").startsWith("HTTP/1.1 101"));
+        CHECK(upgrade("http://127.0.0.1").startsWith("HTTP/1.1 101"));
         // A new layer: the clients are told to fetch the tree again
         e.addLayer("Late");
         bool changed = false;
@@ -5699,6 +5757,16 @@ void main(){ gl_FragColor = definitely_not_defined; }
         server.handleMessage(m);
         e.renderFrame();
         CHECK(std::abs(opacity(b) - 0.4) < 1e-6);
+        // A time tag decodes as an integer but is no value: it does not drive the interaction
+        {
+            osc::Message tagged;
+            tagged.address = "/fader/1";
+            tagged.types = "it";
+            tagged.args = {QVariant(5), QVariant(qlonglong(1) << 62)};
+            server.handleMessage(tagged);
+            e.renderFrame();
+            CHECK(std::abs(opacity(b) - 0.4) < 1e-6);
+        }
 
         // OSC -> whole ISF color: never clobber the target's alpha unless
         // the user explicitly enabled the RGBA mapping option.

@@ -3,6 +3,8 @@
 // or hostile packet is refused), address patterns. No dependency beyond Qt Core (fuzz target: test/fuzz_osc.cpp).
 
 #include <QByteArray>
+#include <QHash>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -26,5 +28,16 @@ QString safeName(const QString &name);
 // The segment of each effect of a layer (names made safe; a repeated name gets _2, _3…): the same in OSC addresses,
 // timeline parameters and snapshot times
 QStringList uniqueSegments(const QStringList &names);
+// Segments unique within a scope (a container's path), taken in order: a repeated name gets _2, _3…, and a suffix
+// another name already gave itself ("Video", "Video", "Video 2") is skipped, never shared
+class SegmentNamer
+{
+public:
+    QString take(const QString &scope, const QString &name);
+
+private:
+    QHash<QString, int> m_used; // scope + base -> names given from it
+    QSet<QString> m_taken;      // scope + segment
+};
 
 } // namespace osc
