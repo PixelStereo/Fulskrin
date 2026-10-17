@@ -35,7 +35,13 @@ int main(int argc, char **argv) {
     std::thread busy([&]{ Engine::Lock lock(&engine.mutex()); held=true; while(!done) std::this_thread::yield(); });
     while(!held) std::this_thread::yield();
     check(!engine.sampleAnimations(&sample),"busy engine skips telemetry instead of blocking GUI");
+    std::vector<Engine::InteractionLevel> interactionSample{{999,.25,.5,.75}};
+    const bool sampledInteractions = engine.sampleInteractionLevels(&interactionSample);
+    check(!sampledInteractions && interactionSample.size()==1 && interactionSample[0].id==999,
+          "busy engine skips the whole meter poll and preserves the last displayed sample");
     done=true;busy.join();
+    check(engine.sampleInteractionLevels(&interactionSample) && interactionSample.empty(),
+          "idle engine clears stale meter values after interactions disappear");
     QElapsedTimer clock; clock.start();
     for(int repeat=0;repeat<200;++repeat) engine.sampleAnimations(&sample);
     const auto lightweight=clock.nsecsElapsed(); clock.restart();

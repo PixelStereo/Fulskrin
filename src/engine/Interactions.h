@@ -119,6 +119,12 @@ struct Interaction {
     static Interaction made(InteractionSource s);
 };
 
+// Live scalar values for UI telemetry; independent of curves and source definitions.
+struct InteractionTelemetry {
+    quint64 id = 0;
+    double input = 0, output = 0, curveInput = 0;
+};
+
 // The chain of one interaction, from its source's values to the value of its target. Pure: no engine, no clock.
 class InteractionProcessor
 {

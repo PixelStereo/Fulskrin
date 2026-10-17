@@ -92,5 +92,7 @@ private:
     quint64 m_shown = 0;        // the interaction whose settings are shown
     bool m_committing = false;  // its own edit going to the engine: the settings are not made again
     bool m_filling = false;
+    // Reused between meter polls; a busy engine leaves the display intact.
+    std::vector<InteractionTelemetry> m_levelSample;
     QHash<int, QString> m_pressed; // keys held: the name they were pressed with (their modifiers may change since)
 };

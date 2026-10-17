@@ -272,6 +272,9 @@ public:
     void removeInteraction(quint64 id);
     // What it does now (shown): its source after the range and the toggle, and its result (0..1); false: nothing yet
     // curveIn: what enters its curve (after the filter)
+    using InteractionLevel = InteractionTelemetry;
+    // One nonblocking UI sample, sorted by id. Busy engine: keep the previous sample.
+    bool sampleInteractionLevels(std::vector<InteractionLevel> *out) const;
     bool interactionLevels(quint64 id, double *level, double *output, double *curveIn = nullptr) const;
     void feedInteraction(const InteractionEvent &e); // a source's value (any thread)
     // An enabled OSC interaction listens on this exact address: it owns it. OSC then sends the message to the
