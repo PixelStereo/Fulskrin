@@ -166,8 +166,7 @@ private:
     QPointF m_pan;                // offset of the view center, widget pixels
     bool m_panning = false;
     QPointF m_panLast;
-    QWidget *m_zoomBar = nullptr;
-    QLabel *m_zoomLabel = nullptr;
+    class ZoomBar *m_zoomBar = nullptr;
     QWidget *m_coordBar = nullptr;
     QLabel *m_coordName = nullptr;
     QDoubleSpinBox *m_coordX = nullptr, *m_coordY = nullptr;

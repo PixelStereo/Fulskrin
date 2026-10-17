@@ -39,59 +39,13 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     setMouseTracking(false);
     setMinimumSize(320, 200);
 
-    // Zoom buttons, top right of the preview
-    m_zoomBar = new QWidget(this);
-    m_zoomBar->setStyleSheet("QWidget { background:rgba(20,20,22,200); border-radius:4px; }"
-                             "QToolButton { color:#ddd; min-width:24px; padding:2px 6px; }"
-                             "QToolButton:hover { background:#3a3a3e; } QToolButton:checked { background:#2f2f33; }"
-                             "QLabel { color:#aaa; padding:0 4px; }");
-    auto *h = new QHBoxLayout(m_zoomBar);
-    h->setContentsMargins(3, 2, 3, 2);
-    h->setSpacing(1);
-    auto button = [&](const QString &text, const QString &tip) {
-        auto *b = new QToolButton;
-        b->setText(text);
-        b->setToolTip(tip);
-        b->setFocusPolicy(Qt::NoFocus);
-        b->setAutoRaise(true);
-        h->addWidget(b);
-        return b;
-    };
-    QToolButton *out = button(QStringLiteral("−"), QStringLiteral("Zoom out (mouse wheel)"));
-    m_zoomLabel = new QLabel;
-    m_zoomLabel->setMinimumWidth(44);
-    m_zoomLabel->setAlignment(Qt::AlignCenter);
-    h->addWidget(m_zoomLabel);
-    QToolButton *in = button(QStringLiteral("+"), QStringLiteral("Zoom in (mouse wheel)"));
-    QToolButton *fit = button(QStringLiteral("Fit"), QStringLiteral("Whole composition in view\n"
-                                                                     "Pan: middle button, Alt/⌥ + drag, or two fingers on a trackpad"));
-    m_magnetButton = button(QString(), QStringLiteral("Magnetism: dragged points, layers and viewports are caught by the "
-                                                      "edges, centers and corners around them while Shift is held.\n"
-                                                      "Release Shift to move freely. On or off at start: Settings."));
-    m_magnetButton->setIcon(magnet::icon());
+    // Zoom buttons, top right of the preview (the bar every preview has), then this view's own tool switch
+    m_zoomBar = new ZoomBar(this, QStringLiteral("Whole composition in view\n"
+                                                 "Pan: middle button, Alt/⌥ + drag, or two fingers on a trackpad"));
+    m_magnetButton = m_zoomBar->magnetButton();
     m_magnetButton->setObjectName(QStringLiteral("mappingMagnet"));
-    m_magnetButton->setCheckable(true);
-    m_magnetButton->setChecked(magnet::enabled());
-    connect(m_magnetButton, &QToolButton::toggled, this, [](bool on) { magnet::setEnabled(on); });
-    connect(magnet::notifier(), &magnet::Notifier::changed, this, [this] {
-        QSignalBlocker b(m_magnetButton);
-        m_magnetButton->setChecked(magnet::enabled());
-    });
-    connect(theme::notifier(), &theme::Notifier::changed, this, [this] {
-        m_magnetButton->setIcon(magnet::icon());
-        m_autoSelectButton->setIcon(autoselect::icon());
-    });
-    m_autoSelectButton = button(QString(), QStringLiteral("Auto-select: a click in the preview selects the layer or the "
-                                                          "viewport under it.\nOff: they are chosen in the list; a click "
-                                                          "only moves the one selected."));
-    m_autoSelectButton->setIcon(autoselect::icon());
-    m_autoSelectButton->setCheckable(true);
-    m_autoSelectButton->setChecked(autoselect::enabled());
-    connect(m_autoSelectButton, &QToolButton::toggled, this, [](bool on) { autoselect::setEnabled(on); });
-    connect(autoselect::notifier(), &autoselect::Notifier::changed, this, [this] {
-        QSignalBlocker b(m_autoSelectButton);
-        m_autoSelectButton->setChecked(autoselect::enabled());
-    });
+    m_autoSelectButton = m_zoomBar->autoSelectButton();
+    auto button = [this](const QString &text, const QString &tip) { return m_zoomBar->addButton(text, tip); };
     // The same canvas supports two deliberate tools: layer mapping or mask node editing.
     // Mask nodes never accidentally move while the layer tool is active.
     m_maskModeButton = button(QStringLiteral("Layer"), QStringLiteral("Layer mode: select and move layers. "
@@ -100,9 +54,9 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     m_maskModeButton->setObjectName(QStringLiteral("mappingSelectionMode"));
     m_maskModeButton->setCheckable(true);
     connect(m_maskModeButton, &QToolButton::toggled, this, &MappingView::setMaskEditMode);
-    connect(out, &QToolButton::clicked, this, [this] { zoomBy(1 / 1.25); });
-    connect(in, &QToolButton::clicked, this, [this] { zoomBy(1.25); });
-    connect(fit, &QToolButton::clicked, this, &MappingView::zoomToFit);
+    connect(m_zoomBar, &ZoomBar::zoomOutClicked, this, [this] { zoomBy(1 / 1.25); });
+    connect(m_zoomBar, &ZoomBar::zoomInClicked, this, [this] { zoomBy(1.25); });
+    connect(m_zoomBar, &ZoomBar::fitClicked, this, &MappingView::zoomToFit);
     updateZoomLabel();
 
     // Position of the point clicked last, in composition pixels: typed, dragged left / right, or the wheel
@@ -251,9 +205,7 @@ void MappingView::typeCoordinate()
 
 void MappingView::updateZoomLabel()
 {
-    m_zoomLabel->setText(QStringLiteral("%1%").arg(int(std::lround(m_zoom * 100))));
-    m_zoomBar->adjustSize();
-    m_zoomBar->move(width() - m_zoomBar->width() - 8, 8);
+    m_zoomBar->setZoom(m_zoom);
 }
 
 void MappingView::resizeEvent(QResizeEvent *e)

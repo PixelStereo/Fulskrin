@@ -17,7 +17,6 @@
 #include <QPointer>
 #include <QShortcut>
 #include <QSignalBlocker>
-#include <QSlider>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolButton>
@@ -411,7 +410,7 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     h->setSectionResizeMode(ColEffects, QHeaderView::Fixed);
     m_table->setColumnWidth(ColEffects, 34);
     h->setSectionResizeMode(ColOpacity, QHeaderView::Fixed);
-    m_table->setColumnWidth(ColOpacity, 104);
+    m_table->setColumnWidth(ColOpacity, 150);
     h->setSectionResizeMode(ColBlend, QHeaderView::Fixed);
     m_table->setColumnWidth(ColBlend, 66);
     h->setSectionResizeMode(ColPlayback, QHeaderView::Interactive);
@@ -422,8 +421,9 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     connect(m_table, &QTableWidget::currentCellChanged, this, [this](int row, int, int prev, int) {
         if (!m_updating && row != prev) emit currentRowChanged(row);
     });
-    // The opacity value of a selected row is drawn on the selection color: it takes the color that reads there
-    connect(m_table, &QTableWidget::itemSelectionChanged, this, &LayerTable::restyleSelection);
+    connect(m_table, &QTableWidget::itemSelectionChanged, this, [this] {
+        if (!m_updating) emit selectionChanged();
+    });
     connect(m_table, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *it) {
         if (m_updating || it->column() != ColVisible) return;
         emit visibilityToggled(it->row(), it->checkState() == Qt::Checked);
@@ -582,25 +582,28 @@ void LayerTable::updateRow(int r, const Row &row)
         if (QTableWidgetItem *it = m_table->item(r, c)) it->setBackground(bg);
     m_table->setRowHidden(r, row.hidden);
 
-    // Opacity: slider right in the row
+    // Opacity: the application's own bar (SliderField, as in the inspector) right in the row; "—" without a picture
     auto *cell = m_table->cellWidget(r, ColOpacity);
-    QSlider *slider = cell ? cell->findChild<QSlider *>() : nullptr;
-    QLabel *label = cell ? cell->findChild<QLabel *>() : nullptr;
+    SliderField *slider = cell ? cell->findChild<SliderField *>() : nullptr;
+    QLabel *none = cell ? cell->findChild<QLabel *>() : nullptr;
     if (!cell) {
         cell = new QWidget;
         auto *h = new QHBoxLayout(cell);
-        h->setContentsMargins(4, 0, 6, 0);
-        slider = new QSlider(Qt::Horizontal);
+        h->setContentsMargins(4, 0, 4, 0);
+        slider = new SliderField;
         slider->setRange(0, 100);
+        slider->setDecimals(0);
+        slider->setSuffix(QStringLiteral(" %"));
+        slider->setSingleStep(1);
+        slider->setSnaps({100});
+        slider->setCompact(true);
         slider->setFocusPolicy(Qt::NoFocus);
-        label = new QLabel;
-        label->setMinimumWidth(38);
-        label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        none = new QLabel(QStringLiteral("—"));
+        none->setAlignment(Qt::AlignCenter);
         h->addWidget(slider, 1);
-        h->addWidget(label);
+        h->addWidget(none, 1);
         m_table->setCellWidget(r, ColOpacity, cell);
-        connect(slider, &QSlider::valueChanged, this, [this, slider, label](int v) {
-            label->setText(QStringLiteral("%1%").arg(v));
+        connect(slider, &SliderField::valueEdited, this, [this, slider](double v) {
             if (m_updating) return;
             // Find the slider's row (rows may have changed since it was created)
             for (int k = 0; k < m_table->rowCount(); ++k) {
@@ -613,17 +616,11 @@ void LayerTable::updateRow(int r, const Row &row)
         });
     }
     slider->setVisible(!row.noPicture);
+    none->setVisible(row.noPicture);
     slider->setEnabled(!row.locked && !row.lockedByGroup);
-    if (row.noPicture) {
-        label->setText(QStringLiteral("—"));
-        return;
-    }
-    const int pct = int(std::lround(row.opacity * 100));
-    if (!slider->isSliderDown() && slider->value() != pct) {
-        QSignalBlocker b(slider);
-        slider->setValue(pct);
-    }
-    label->setText(QStringLiteral("%1%").arg(slider->value()));
+    if (row.noPicture) return;
+    const double pct = std::round(row.opacity * 100);
+    if (!slider->isDragging() && std::abs(slider->value() - pct) > 1e-9) slider->setValue(pct);
 }
 
 void LayerTable::setRows(const std::vector<Row> &rows)
@@ -640,17 +637,5 @@ void LayerTable::setRows(const std::vector<Row> &rows)
     }
     for (int r = 0; r < int(rows.size()); ++r) updateRow(r, rows[size_t(r)]);
     m_updating = false;
-    restyleSelection();
 }
 
-void LayerTable::restyleSelection()
-{
-    const QList<int> sel = selectedRows();
-    const QString on = QStringLiteral("color:%1;").arg(theme::onAccent().name());
-    for (int r = 0; r < m_table->rowCount(); ++r)
-        if (QWidget *c = m_table->cellWidget(r, ColOpacity))
-            if (auto *label = c->findChild<QLabel *>()) {
-                const QString want = sel.contains(r) ? on : QString();
-                if (label->styleSheet() != want) label->setStyleSheet(want);
-            }
-}

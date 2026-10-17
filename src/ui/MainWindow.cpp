@@ -109,8 +109,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     auto *viewportPage = new QWidget;
     auto *viewportLayout = new QVBoxLayout(viewportPage);
     viewportLayout->setContentsMargins(0, 0, 0, 0);
-    auto *viewportHeader = new QHBoxLayout;
-    viewportHeader->addWidget(new QLabel(QStringLiteral("Viewports")), 1);
+    auto *viewportHeader = new QHBoxLayout; // no title: the tab already says Viewports
     auto *newViewport = new QPushButton(QStringLiteral("+"));
     newViewport->setFixedWidth(30);
     newViewport->setToolTip(QStringLiteral("New viewport"));
@@ -121,11 +120,13 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_viewportList->setObjectName(QStringLiteral("viewportList"));
     m_viewportList->setFixedHeight(86);
     m_viewportList->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    m_viewportList->setSelectionMode(QAbstractItemView::ExtendedSelection); // several edited or pasted onto at once
     auto *removeViewport = new QPushButton(QStringLiteral("−"));
     removeViewport->setObjectName(QStringLiteral("removeViewport"));
     removeViewport->setFixedWidth(30);
-    removeViewport->setToolTip(QStringLiteral("Delete selected viewport"));
+    removeViewport->setToolTip(QStringLiteral("Delete the selected viewports"));
     viewportHeader->addWidget(removeViewport);
+    viewportHeader->addStretch(1);
     connect(removeViewport, &QPushButton::clicked, this, [this] { m_tabs->setCurrentIndex(1); removeCurrentLayer(); });
     connect(m_viewportList, &QListWidget::itemChanged, this, [this](QListWidgetItem *item) {
         const quint64 id = item->data(Qt::UserRole).toULongLong();
@@ -135,6 +136,17 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
             m_undo->push(new cmd::SetLayerProp(m_engine, id, cmd::SetLayerProp::Name, before, name));
     });
     viewportLayout->addWidget(m_viewportList);
+    // As on the layers: copy one viewport's attributes, paste some or all of them onto the viewports selected
+    m_viewportList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_viewportList, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QListWidgetItem *item = m_viewportList->itemAt(pos);
+        if (item && !item->isSelected()) m_viewportList->setCurrentItem(item);
+        const int row = item ? m_engine->indexOfId(item->data(Qt::UserRole).toULongLong()) : -1;
+        QMenu menu(this);
+        if (row >= 0) menu.addAction(QStringLiteral("Copy Attributes"), this, [this, row] { copyLayerParams(row); });
+        addPasteMenu(&menu, row >= 0, true);
+        menu.exec(m_viewportList->viewport()->mapToGlobal(pos));
+    });
     m_viewportInspector = new LayerInspector(m_engine, m_undo);
     m_viewportInspector->setObjectName(QStringLiteral("viewportInspector"));
     viewportLayout->addWidget(scrolled(m_viewportInspector), 1);
@@ -144,11 +156,13 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_selectedViewport = item ? item->data(Qt::UserRole).toULongLong() : 0;
         const int index = m_engine->indexOfId(m_selectedViewport);
         m_viewportInspector->setLayer(index);
+        updateCoTargets();
         if (m_tabs->currentIndex() == 1) {
             m_view->setLayer(index);
             if (m_timelineWindow) m_timelineWindow->setCurrentLayer(m_selectedViewport);
         }
     });
+    connect(m_viewportList, &QListWidget::itemSelectionChanged, this, &MainWindow::updateCoTargets);
     connect(m_tabs, &QTabWidget::currentChanged, this, [this](int tab) {
         if (tab == 1) m_view->setLayer(m_engine->indexOfId(m_selectedViewport));
         else if (tab == 0 && m_layerTable) m_view->setLayer(m_layerTable->currentRow());
@@ -305,9 +319,11 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
         m_view->setLayer(r);
         m_inspector->setLayer(r);
+        updateCoTargets();
         if (r >= 0 && r != m_lastSelected) m_tabs->setCurrentIndex(0);
         m_lastSelected = r;
     });
+    connect(m_layerTable, &LayerTable::selectionChanged, this, &MainWindow::updateCoTargets);
     connect(m_layerTable, &LayerTable::visibilityToggled, this, [this](int row, bool on) {
         const quint64 id = m_engine->layerId(row);
         const QVariant before = cmd::SetLayerProp::read(m_engine, id, cmd::SetLayerProp::Enabled);
@@ -317,8 +333,15 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     });
     connect(m_layerTable, &LayerTable::opacityEdited, this, [this](int row, double v) {
         if (refuseLocked(row)) return refreshLayerList();
-        cmd::setValue(m_undo, m_engine, m_engine->layerId(row), QStringLiteral("opacity"), v, QStringLiteral("Change Opacity"));
-        if (row == m_inspector->layerIndex()) m_inspectorTimer.start(); // inspector resynced after the gesture
+        // A row of a multiple selection: the whole selection takes the value (one undo step), as in the inspector
+        QList<int> rows = m_layerTable->selectedRows();
+        if (!rows.contains(row)) rows = {row};
+        std::vector<std::pair<quint64, QJsonObject>> changes;
+        for (int r : rows)
+            if (r == row || !m_engine->isLocked(r)) changes.push_back({m_engine->layerId(r), {{QStringLiteral("opacity"), v}}});
+        cmd::setValues(m_undo, m_engine, changes, QStringLiteral("Change Opacity"));
+        if (rows.contains(m_inspector->layerIndex())) m_inspectorTimer.start(); // inspector resynced after the gesture
+        if (rows.size() > 1) refreshLayerList(); // the other rows' bars follow
     });
     connect(m_layerTable, &LayerTable::removeClicked, this, &MainWindow::removeCurrentLayer);
     connect(m_layerTable, &LayerTable::groupClicked, this, &MainWindow::createGroup);
@@ -1097,7 +1120,8 @@ void MainWindow::refreshLayerList()
     while (firstLayer < n && rows[size_t(firstLayer)].viewport) ++firstLayer;
     const int sel = keep >= 0 ? keep : n == 0 ? -1 : firstLayer < n ? firstLayer : -1;
     if (sel != m_layerTable->currentRow()) m_layerTable->setCurrentRow(sel);
-    if (sel != m_inspector->layerIndex()) {
+    // By index and by id: an opened project may put another layer at the same index (its edits would be lost)
+    if (sel != m_inspector->layerIndex() || (sel >= 0 && m_engine->layerId(sel) != m_inspector->layerId())) {
         m_inspector->setLayer(sel);
         m_view->setLayer(sel);
         m_lastSelected = sel;
@@ -1131,11 +1155,22 @@ void MainWindow::refreshViewports()
     for (int k = 0; k < m_viewportList->count(); ++k)
         if (m_viewportList->item(k)->data(Qt::UserRole).toULongLong() == m_selectedViewport) selected = m_viewportList->item(k);
     if (!selected && m_viewportList->count()) selected = m_viewportList->item(0);
-    m_viewportList->setCurrentItem(selected);
+    if (m_viewportList->currentItem() != selected) m_viewportList->setCurrentItem(selected); // keeps a multiple selection
     m_selectedViewport = selected ? selected->data(Qt::UserRole).toULongLong() : 0;
     const int index = m_engine->indexOfId(m_selectedViewport);
-    if (m_viewportInspector->layerIndex() != index) m_viewportInspector->setLayer(index);
+    if (m_viewportInspector->layerIndex() != index || (index >= 0 && m_viewportInspector->layerId() != m_selectedViewport))
+        m_viewportInspector->setLayer(index);
     if (m_tabs->currentIndex() == 1) m_view->setLayer(index);
+    updateCoTargets();
+}
+
+void MainWindow::updateCoTargets()
+{
+    QList<quint64> layers, viewports;
+    for (int row : m_layerTable->selectedRows()) layers << m_engine->layerId(row);
+    for (QListWidgetItem *item : m_viewportList->selectedItems()) viewports << item->data(Qt::UserRole).toULongLong();
+    m_inspector->setCoTargets(layers);
+    m_viewportInspector->setCoTargets(viewports);
 }
 
 void MainWindow::refreshAll()
@@ -1168,6 +1203,23 @@ void MainWindow::selectLayer(int index)
 }
 
 int MainWindow::currentLayer() const { return m_tabs->currentIndex() == 1 ? m_engine->indexOfId(m_selectedViewport) : m_layerTable->currentRow(); }
+
+// What the layer actions act on: the viewports selected in their list (Viewports tab), otherwise the layers selected
+// in the layer list; the current one when nothing is selected
+QList<int> MainWindow::selectedRows() const
+{
+    QList<int> rows;
+    if (m_tabs->currentIndex() == 1) {
+        for (QListWidgetItem *item : m_viewportList->selectedItems()) {
+            const int index = m_engine->indexOfId(item->data(Qt::UserRole).toULongLong());
+            if (index >= 0) rows << index;
+        }
+    } else {
+        rows = m_layerTable->selectedRows();
+    }
+    if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
+    return rows;
+}
 
 // ---------------------------------------------------------------------------
 // Layer actions (all undoable)
@@ -1384,9 +1436,7 @@ void MainWindow::addEmptyLayer()
 void MainWindow::removeCurrentLayer()
 {
     const bool viewportSelection = m_tabs->currentIndex() == 1;
-    QList<int> rows = m_tabs->currentIndex() == 1
-        ? (currentLayer() >= 0 ? QList<int>{currentLayer()} : QList<int>{}) : m_layerTable->selectedRows();
-    if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
+    const QList<int> rows = selectedRows();
     if (rows.isEmpty()) return;
     // A group goes with its layers; locked layers stay
     QSet<int> victims;
@@ -1450,6 +1500,26 @@ static std::vector<std::pair<int, QString>> attributeParts()
             {Engine::PartAnimations, QStringLiteral("Animations")}};
 }
 
+// Paste Attributes ›: everything, the choice, or one part, onto the selection of the list shown (layers or viewports)
+void MainWindow::addPasteMenu(QMenu *menu, bool enabled, bool noSource)
+{
+    QMenu *paste = menu->addMenu(m_paramClipboardName.isEmpty()
+                                     ? QStringLiteral("Paste Attributes")
+                                     : QStringLiteral("Paste Attributes from \"%1\"").arg(m_paramClipboardName));
+    paste->setEnabled(enabled && !m_paramClipboard.isEmpty());
+    if (!paste->isEnabled()) return;
+    auto add = [&](const QString &label, int parts, const QString &what) {
+        paste->addAction(label, this, [this, parts, what] { pasteLayerParams(parts, what); });
+    };
+    add(QStringLiteral("Everything"), Engine::PartAll, QStringLiteral("Attributes"));
+    paste->addAction(QStringLiteral("Choose…"), this, &MainWindow::pasteAttributesDialog);
+    paste->addSeparator();
+    for (const auto &[part, label] : attributeParts()) {
+        if (noSource && part == Engine::PartSource) continue;
+        add(label, part, label);
+    }
+}
+
 void MainWindow::pasteAttributesDialog()
 {
     if (m_paramClipboard.isEmpty()) {
@@ -1462,7 +1532,9 @@ void MainWindow::pasteAttributesDialog()
     QSettings s;
     const int last = s.value("ui/pasteParts", int(Engine::PartAll & ~Engine::PartSource)).toInt();
     std::vector<std::pair<int, QCheckBox *>> boxes;
+    const bool viewports = m_tabs->currentIndex() == 1; // no source of their own
     for (const auto &[part, label] : attributeParts()) {
+        if (viewports && part == Engine::PartSource) continue;
         auto *b = new QCheckBox(label);
         b->setChecked(last & part);
         if (part == Engine::PartSource)
@@ -1509,9 +1581,7 @@ void MainWindow::copyLayerParams(int row)
 void MainWindow::pasteLayerParams(int parts, const QString &what)
 {
     if (m_paramClipboard.isEmpty()) return;
-    QList<int> rows = m_tabs->currentIndex() == 1
-        ? (currentLayer() >= 0 ? QList<int>{currentLayer()} : QList<int>{}) : m_layerTable->selectedRows();
-    if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
+    const QList<int> rows = selectedRows();
     QList<int> targets;
     for (int i : rows)
         if (i >= 0 && i < m_engine->layerCount() && !m_engine->isLocked(i)) targets << i;
@@ -1592,22 +1662,7 @@ void MainWindow::layerContextMenu(int row, const QPoint &globalPos)
             pe->fillLayerMenu(&menu, m_engine->layerId(row));
         }
     }
-    QMenu *paste = menu.addMenu(m_paramClipboardName.isEmpty()
-                                    ? QStringLiteral("Paste Attributes")
-                                    : QStringLiteral("Paste Attributes from \"%1\"").arg(m_paramClipboardName));
-    paste->setEnabled(onLayer && !locked && !m_paramClipboard.isEmpty());
-    if (paste->isEnabled()) {
-        auto add = [&](const QString &label, int parts, const QString &what) {
-            paste->addAction(label, this, [this, parts, what] { pasteLayerParams(parts, what); });
-        };
-        add(QStringLiteral("Everything"), Engine::PartAll, QStringLiteral("Attributes"));
-        paste->addAction(QStringLiteral("Choose…"), this, &MainWindow::pasteAttributesDialog);
-        paste->addSeparator();
-        for (const auto &[part, label] : attributeParts()) {
-            if (group && part == Engine::PartSource) continue;
-            add(label, part, label);
-        }
-    }
+    addPasteMenu(&menu, onLayer && !locked, group);
     menu.addSeparator();
     menu.addAction(QStringLiteral("New Layer"), this, &MainWindow::addEmptyLayer);
     menu.exec(globalPos);
@@ -1720,9 +1775,7 @@ void MainWindow::ungroupCurrent()
 
 void MainWindow::toggleLockCurrent()
 {
-    QList<int> rows = m_tabs->currentIndex() == 1
-        ? (currentLayer() >= 0 ? QList<int>{currentLayer()} : QList<int>{}) : m_layerTable->selectedRows();
-    if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
+    const QList<int> rows = selectedRows();
     if (rows.isEmpty()) return;
     const bool lock = !cmd::SetLayerProp::read(m_engine, m_engine->layerId(rows.first()), cmd::SetLayerProp::Locked).toBool();
     m_undo->beginMacro(lock ? QStringLiteral("Lock") : QStringLiteral("Unlock"));

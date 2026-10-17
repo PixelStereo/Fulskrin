@@ -39,17 +39,25 @@ static void setSwatch(QPushButton *b, const float c[4])
 void ParamPanel::setValue(int input, const QString &label, const std::function<void(IsfValue &)> &modify)
 {
     IsfInput in;
+    std::vector<quint64> same; // the other selected layers with this shader in this place
     {
         Engine::Lock lk(&m_engine->mutex());
         IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
         if (!inst || input >= int(inst->inputs().size())) return;
         in = inst->inputs()[size_t(input)];
+        for (quint64 id : m_coTargets) {
+            const int index = m_engine->indexOfId(id);
+            const IsfInstance *other = id != m_layerId ? cmd::resolveIsf(m_engine, index, m_slot) : nullptr;
+            if (other && other->path() == inst->path() && !m_engine->isLocked(index)) same.push_back(id);
+        }
     }
     IsfValue after = in.value();
     modify(after);
     if (after == in.value()) return;
-    cmd::setValues(m_undo, m_engine, m_layerId, cmd::isfValueJson(m_engine->shaderPrefix(m_layerId, m_slot), in, after),
-                   QStringLiteral("Change \"%1\"").arg(label));
+    std::vector<std::pair<quint64, QJsonObject>> changes{{m_layerId, {}}};
+    for (quint64 id : same) changes.push_back({id, {}});
+    for (auto &[id, values] : changes) values = cmd::isfValueJson(m_engine->shaderPrefix(id, m_slot), in, after);
+    cmd::setValues(m_undo, m_engine, changes, QStringLiteral("Change \"%1\"").arg(label));
 }
 
 ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, int options, QWidget *parent)

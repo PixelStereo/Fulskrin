@@ -45,6 +45,7 @@ public:
 
 signals:
     void currentRowChanged(int row);
+    void selectionChanged(); // the rows selected (selectedRows) changed
     void addClicked();
     void groupClicked();
     void viewportClicked();
@@ -64,7 +65,6 @@ signals:
 
 private:
     void updateRow(int r, const Row &row);
-    void restyleSelection();
     QTableWidget *m_table;
     std::vector<Row> m_rows;
     bool m_updating = false;

@@ -469,6 +469,7 @@ void ColorEditor::build(const QString &title)
     layout->addLayout(head);
 
     m_picker = new ColorPicker(false, this); // no alpha for Add / Remove
+    m_picker->setSwatchVisible(false);       // the color is already shown next to its hexadecimal value
     layout->addWidget(m_picker);
     connect(m_picker, &ColorPicker::colorEdited, this, [this](const QColor &c) { apply(c, true); });
     connect(m_hex, &QLineEdit::editingFinished, this, [this] {
@@ -941,6 +942,85 @@ int fieldWidth(const QDoubleSpinBox *s)
     return s->fontMetrics().horizontalAdvance(longest) + 16;
 }
 } // namespace
+
+ZoomBar::ZoomBar(QWidget *view, const QString &fitTip) : QWidget(view)
+{
+    setStyleSheet("QWidget { background:rgba(20,20,22,200); border-radius:4px; }"
+                  "QToolButton { color:#ddd; min-width:24px; padding:2px 6px; }"
+                  "QToolButton:hover { background:#3a3a3e; } QToolButton:checked { background:#2f2f33; }"
+                  "QLabel { color:#aaa; padding:0 4px; }");
+    m_row = new QHBoxLayout(this);
+    m_row->setContentsMargins(3, 2, 3, 2);
+    m_row->setSpacing(1);
+    QToolButton *out = addButton(QStringLiteral("−"), QStringLiteral("Zoom out (mouse wheel)"));
+    m_percent = new QLabel;
+    m_percent->setMinimumWidth(44);
+    m_percent->setAlignment(Qt::AlignCenter);
+    m_row->addWidget(m_percent);
+    QToolButton *in = addButton(QStringLiteral("+"), QStringLiteral("Zoom in (mouse wheel)"));
+    QToolButton *fit = addButton(QStringLiteral("Fit"), fitTip);
+    connect(out, &QToolButton::clicked, this, &ZoomBar::zoomOutClicked);
+    connect(in, &QToolButton::clicked, this, &ZoomBar::zoomInClicked);
+    connect(fit, &QToolButton::clicked, this, &ZoomBar::fitClicked);
+    m_magnet = addButton(QString(), QStringLiteral("Magnetism: dragged points, layers and viewports are caught by the "
+                                                   "edges, centers and corners around them while Shift is held.\n"
+                                                   "Release Shift to move freely. On or off at start: Settings."));
+    m_magnet->setIcon(magnet::icon());
+    m_magnet->setCheckable(true);
+    m_magnet->setChecked(magnet::enabled());
+    connect(m_magnet, &QToolButton::toggled, this, [](bool on) { magnet::setEnabled(on); });
+    connect(magnet::notifier(), &magnet::Notifier::changed, this, [this] {
+        QSignalBlocker b(m_magnet);
+        m_magnet->setChecked(magnet::enabled());
+    });
+    m_autoSelect = addButton(QString(), QStringLiteral("Auto-select: a click in the preview selects the layer or the "
+                                                       "viewport under it.\nOff: they are chosen in the list; a click "
+                                                       "only moves the one selected."));
+    m_autoSelect->setIcon(autoselect::icon());
+    m_autoSelect->setCheckable(true);
+    m_autoSelect->setChecked(autoselect::enabled());
+    connect(m_autoSelect, &QToolButton::toggled, this, [](bool on) { autoselect::setEnabled(on); });
+    connect(autoselect::notifier(), &autoselect::Notifier::changed, this, [this] {
+        QSignalBlocker b(m_autoSelect);
+        m_autoSelect->setChecked(autoselect::enabled());
+    });
+    connect(theme::notifier(), &theme::Notifier::changed, this, [this] {
+        m_magnet->setIcon(magnet::icon());
+        m_autoSelect->setIcon(autoselect::icon());
+    });
+    view->installEventFilter(this);
+    setZoom(1.0);
+}
+
+QToolButton *ZoomBar::addButton(const QString &text, const QString &tip)
+{
+    auto *b = new QToolButton;
+    b->setText(text);
+    b->setToolTip(tip);
+    b->setFocusPolicy(Qt::NoFocus);
+    b->setAutoRaise(true);
+    m_row->addWidget(b);
+    return b;
+}
+
+void ZoomBar::setZoom(double zoom)
+{
+    m_percent->setText(QStringLiteral("%1%").arg(int(std::lround(zoom * 100))));
+    place();
+}
+
+bool ZoomBar::eventFilter(QObject *o, QEvent *e)
+{
+    if (o == parentWidget() && e->type() == QEvent::Resize) place();
+    return QWidget::eventFilter(o, e);
+}
+
+void ZoomBar::place()
+{
+    adjustSize();
+    if (QWidget *view = parentWidget()) move(view->width() - width() - 8, 8);
+    raise();
+}
 
 SliderField::SliderField(QWidget *parent) : QWidget(parent)
 {

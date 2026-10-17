@@ -49,6 +49,11 @@ public:
 
     void setLayer(int index);
     int layerIndex() const { return m_layer; }
+    quint64 layerId() const { return m_layerId; } // the layer its edits go to
+    // The other layers selected with it (a multiple selection): each value edited here is set on them too, in the
+    // same undo step, when they have it (opacity, ROI, color, transport…; a shader's values on the same shader)
+    void setCoTargets(const QList<quint64> &ids);
+    QList<quint64> coTargets() const; // the selection without the layer shown
     void rebuild();
     void refreshAfterRecall();
     void refreshDynamic(); // playback position (called periodically)
@@ -98,6 +103,9 @@ private:
 
     Engine *m_engine;
     QUndoStack *m_undo;
+    QList<quint64> m_selection; // the whole selection of its list (the layer shown may be in it or not yet)
+    void showSelectionNote();
+    QLabel *m_multiNote = nullptr;
     int m_layer = -1;
     int m_selectedEffect = 0;
     QString m_subTab = QStringLiteral("Source"); // the tab shown, by its name: kept from one layer to the next
