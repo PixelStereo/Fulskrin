@@ -2,10 +2,8 @@
   
 # PINOL
 
-## Pixels In New Optical Languages
-
-A new language for live visuals.
-
+## Pixels In New Open Logic - Pixels In New Optimal Layout
+Visual Software for live visuals.
 
 
 <p>
