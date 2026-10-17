@@ -41,9 +41,20 @@ int main(int argc, char **argv)
     Engine engine; QString error;
     if (!engine.initialize(&error)) return 1;
     engine.newProject();
+    // Two CTest entries share this program: workspace_ui (no argument; also run under Valgrind, where every window
+    // costs minutes) and selection_ui (--selection: multiple selections and reopened projects, never under Valgrind)
+    bool selection = false;
+    QString capture;
+    for (int k = 1; k < argc; ++k) {
+        const QString arg = QString::fromLocal8Bit(argv[k]);
+        if (arg == QLatin1String("--selection")) selection = true;
+        else capture = arg;
+    }
     int failures = 0;
-    auto check = [&](bool ok, const char *reason) { if (!ok) { ++failures; std::printf("FAIL workspace_ui: %s\n", reason); } };
-    {
+    auto check = [&](bool ok, const char *reason) {
+        if (!ok) { ++failures; std::printf("FAIL %s: %s\n", selection ? "selection_ui" : "workspace_ui", reason); }
+    };
+    if (!selection) {
         MainWindow window(&engine); window.setAutosaveEnabled(false); window.setQuiet(true);
         window.show(); app.processEvents();
         auto *defaultColorView = window.findChild<QComboBox *>("defaultColorPickerView");
@@ -191,7 +202,7 @@ int main(int argc, char **argv)
                 check(std::abs(engine.parameterValue(surfaceId, "opacity").toDouble() - .8) < .01, "undone delayed recall stays canceled after deadline");
             }
             tabs->setCurrentIndex(0); app.processEvents();
-            if (argc > 1) check(window.grab().save(QString::fromLocal8Bit(argv[1])), "save workspace capture");
+            if (!capture.isEmpty()) check(window.grab().save(capture), "save workspace capture");
         }
         // The controller is a direct MainWindow child and may die before the reparented lists.
         delete window.findChild<PresetEditor *>();
@@ -203,7 +214,7 @@ int main(int argc, char **argv)
         window.hide();
     }
     // An opened project may put another layer at the index shown: the inspector follows the layer, not the index
-    {
+    if (selection) {
         engine.newProject();
         const QString solid = QStringLiteral(TEST_DIR) + "/../isf/generators/SolidColor.fs";
         engine.addViewport("Front", QSize(640, 360));
@@ -229,7 +240,7 @@ int main(int argc, char **argv)
         window.hide();
     }
     // A multiple selection: the inspector's edits, the list's opacity bars and Paste Attributes reach all of it
-    {
+    if (selection) {
         engine.newProject();
         const QString solid = QStringLiteral(TEST_DIR) + "/../isf/generators/SolidColor.fs";
         QList<quint64> ids;
