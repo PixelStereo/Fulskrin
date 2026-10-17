@@ -54,6 +54,7 @@ void Publishing::release()
     }
     if (m_flipProgram && QOpenGLContext::currentContext()) gl()->glDeleteProgram(m_flipProgram);
     m_flipProgram = 0;
+    m_tapViewport = 0; // the tap, if on, goes back onto the first viewport at the next follow()
 }
 
 void Publishing::setTap(std::function<void(const CpuFrame &)> fn)
@@ -86,12 +87,19 @@ static bool isGpuKind(PublishKind k) { return k == PublishKind::Syphon || k == P
 
 void Publishing::follow(const std::vector<std::pair<quint64, PublishSettings>> &viewports)
 {
+    // The test tap follows whichever viewport is first, not the one first when it was set: a viewport replaced
+    // after that (a new project's) would take the tap away with its publication, and no frame would come again
+    const quint64 first = viewports.empty() ? 0 : viewports.front().first;
     std::function<void(const CpuFrame &)> tap;
     bool tapDirty;
     {
         std::lock_guard<std::mutex> lk(m_tapMutex);
-        tapDirty = std::exchange(m_tapDirty, false);
+        tapDirty = std::exchange(m_tapDirty, false) || (m_tapOn && m_tapViewport != first);
         if (tapDirty) tap = m_tap;
+    }
+    if (tapDirty) {
+        m_tapOn = bool(tap);
+        m_tapViewport = first;
     }
     bool changed = tapDirty || viewports.size() != m_pubs.size();
     for (const auto &[id, s] : viewports) {

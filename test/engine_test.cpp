@@ -4328,12 +4328,15 @@ void main(){ gl_FragColor = definitely_not_defined; }
         std::printf("       %d frames received by the send thread\n", frames);
         CHECK(frames >= 10);
         CHECK(last.width == 64 && last.height == 32 && last.stride == 256);
-        if (last.bgra.size() < size_t(last.stride) * 32) return 1; // nothing to read the pixels of
-        auto px = [&](int x, int y) { const uint8_t *p = last.bgra.data() + y * last.stride + x * 4; return QColor(p[2], p[1], p[0]); };
-        std::printf("       top pixel %s, bottom %s\n", qPrintable(px(10, 2).name()), qPrintable(px(10, 29).name()));
-        CHECK(px(10, 2) == QColor(255, 0, 0));  // top: red
-        CHECK(px(10, 29) == QColor(0, 0, 255)); // bottom: blue
-        CHECK(last.timestamp100ns > 0);
+        // Nothing to read the pixels of: the failures above are reported, the other areas still run (returning from
+        // here left the engine's threads running while main's objects were destroyed: a crash hid the cause)
+        if (last.bgra.size() >= size_t(last.stride) * 32 && last.stride >= 64 * 4) {
+            auto px = [&](int x, int y) { const uint8_t *p = last.bgra.data() + y * last.stride + x * 4; return QColor(p[2], p[1], p[0]); };
+            std::printf("       top pixel %s, bottom %s\n", qPrintable(px(10, 2).name()), qPrintable(px(10, 29).name()));
+            CHECK(px(10, 2) == QColor(255, 0, 0));  // top: red
+            CHECK(px(10, 29) == QColor(0, 0, 255)); // bottom: blue
+            CHECK(last.timestamp100ns > 0);
+        }
     }
     e.setTestTap(nullptr);
     {

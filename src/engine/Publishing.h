@@ -59,6 +59,8 @@ private:
     std::mutex m_tapMutex;
     std::function<void(const CpuFrame &)> m_tap;
     bool m_tapDirty = false;
+    bool m_tapOn = false;      // a tap is set (render thread)
+    quint64 m_tapViewport = 0; // the viewport carrying it (render thread; 0: none yet)
     std::mutex m_gpuFactoryMutex;
     GpuPublisherFactory m_gpuFactory; // tests (under m_gpuFactoryMutex)
     QElapsedTimer m_clock;

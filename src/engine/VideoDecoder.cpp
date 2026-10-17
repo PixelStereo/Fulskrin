@@ -445,6 +445,9 @@ void VideoDecoder::close()
     m_stagingById.clear();
     m_stagingSize = 0;
     m_layouts.clear();
+    // Keyed by the address of a layout just freed: a layout of the next media at the same address would get this
+    // one's surface layout (another size or format sampled in place)
+    m_surfaceLayouts.clear();
     m_rgbaLayout.reset();
     m_hapScratch = {};
     if (m_sws) sws_freeContext(m_sws);
@@ -737,15 +740,14 @@ int VideoDecoder::decodeNext(VideoFrame &f, double skipBefore)
             if (m_hwPixFmt >= 0 && m_frame->format == m_hwPixFmt) {
                 // Sampled by the GPU where it was decoded: the frame itself is handed over
                 if (auto L = surfaceLayout(m_frame)) {
-                    AVFrame *keep = av_frame_alloc();
-                    if (keep && av_frame_ref(keep, m_frame) >= 0) {
+                    if (AVFrame *keep = av_frame_alloc()) {
+                        // The decoder no longer uses this picture: moved to the queued frame, not referenced again
+                        av_frame_move_ref(keep, m_frame);
                         f.layout = L;
                         f.av = keep;
                         m_hwActive = true;
-                        av_frame_unref(m_frame);
                         return 1;
                     }
-                    av_frame_free(&keep);
                 }
                 // The hardware's memory: seen in place, or copied back when it cannot be
                 av_frame_unref(m_swFrame);
