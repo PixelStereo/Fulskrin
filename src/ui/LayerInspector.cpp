@@ -335,6 +335,12 @@ LayerInspector::LayerInspector(Engine *engine, QUndoStack *undo, QWidget *parent
 {
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(8, 8, 8, 8);
+    m_multiNote = new QLabel;
+    m_multiNote->setObjectName(QStringLiteral("multiSelectionNote"));
+    m_multiNote->setWordWrap(true);
+    m_multiNote->setStyleSheet("background:#3a3320; color:#f0d890; border-radius:3px; padding:4px 6px;");
+    m_multiNote->hide();
+    m_layout->addWidget(m_multiNote);
     // A number animated or no longer: the tabs again (the ∿ by its name); an edit of an animation: its card follows
     connect(engine, &Engine::layerAnimsChanged, this, [this](quint64 layer) {
         if (layer != m_layerId) return;
@@ -379,21 +385,61 @@ void LayerInspector::setLayer(int index)
     rebuild();
 }
 
+void LayerInspector::setCoTargets(const QList<quint64> &ids)
+{
+    m_selection = ids;
+    showSelectionNote();
+}
+
+// The others are told apart from the layer shown when they are used: the selection may arrive before the inspector
+// shows its new layer
+QList<quint64> LayerInspector::coTargets() const
+{
+    QList<quint64> out;
+    for (quint64 id : m_selection)
+        if (id && id != m_layerId && !out.contains(id)) out << id;
+    return out;
+}
+
+void LayerInspector::showSelectionNote()
+{
+    const QList<quint64> others = coTargets();
+    m_multiNote->setText(QStringLiteral("%1 selected: the values changed here are set on all of them.").arg(others.size() + 1));
+    m_multiNote->setVisible(!others.isEmpty());
+    for (ParamPanel *panel : {m_generatorParams.data(), m_effectParams.data()})
+        if (panel) panel->setCoTargets(others);
+}
+
 // --- Undoable edits ----------------------------------------------------------
 
 void LayerInspector::setProp(int prop, const QVariant &value)
 {
     const auto p = cmd::SetLayerProp::Prop(prop);
-    if (p != cmd::SetLayerProp::Enabled && p != cmd::SetLayerProp::Locked && m_engine->isLocked(m_layer)) return;
-    const QVariant before = cmd::SetLayerProp::read(m_engine, m_layerId, p);
-    if (!before.isValid() || before == value) return;
-    m_undo->push(new cmd::SetLayerProp(m_engine, m_layerId, p, before, value));
+    const bool always = p == cmd::SetLayerProp::Enabled || p == cmd::SetLayerProp::Locked; // even on a locked layer
+    if (!always && m_engine->isLocked(m_layer)) return;
+    // Its name and its color mask are its own; its switch, lock and transition go to the whole selection
+    QList<quint64> targets{m_layerId};
+    if (p != cmd::SetLayerProp::Name && p != cmd::SetLayerProp::ColorMask)
+        for (quint64 id : coTargets())
+            if (always || !m_engine->isLocked(m_engine->indexOfId(id))) targets << id;
+    std::vector<std::pair<quint64, QVariant>> changes;
+    for (quint64 id : targets) {
+        const QVariant before = cmd::SetLayerProp::read(m_engine, id, p);
+        if (before.isValid() && before != value) changes.push_back({id, before});
+    }
+    if (changes.empty()) return;
+    if (changes.size() > 1) m_undo->beginMacro(cmd::SetLayerProp::textOf(p));
+    for (const auto &[id, before] : changes) m_undo->push(new cmd::SetLayerProp(m_engine, id, p, before, value));
+    if (changes.size() > 1) m_undo->endMacro();
 }
 
 void LayerInspector::setValues(const QJsonObject &values, const QString &text)
 {
     if (m_engine->isLocked(m_layer)) return;
-    cmd::setValues(m_undo, m_engine, m_layerId, values, text);
+    std::vector<std::pair<quint64, QJsonObject>> changes{{m_layerId, values}};
+    for (quint64 id : coTargets())
+        if (!m_engine->isLocked(m_engine->indexOfId(id))) changes.push_back({id, values});
+    cmd::setValues(m_undo, m_engine, changes, text);
 }
 
 void LayerInspector::setRoi(const QRectF &r)
@@ -470,6 +516,7 @@ void LayerInspector::rebuild()
     }
 
     m_layerId = s.id;
+    showSelectionNote(); // the layer shown left out of "the others"
     m_locked = s.locked || s.lockedByGroup;
     m_animated.clear();
     for (const Animation &a : m_engine->layerAnims(s.id))
@@ -1724,6 +1771,7 @@ QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
             rebuild();
         });
         auto *params = new ParamPanel(m_engine, m_undo, m_layer, -1, ParamPanel::NoSpeed | ParamPanel::NoReset);
+        params->setCoTargets(coTargets());
         connect(reset, &QPushButton::clicked, params, &ParamPanel::resetToDefaults);
         m_generatorParams = params;
         params->attachAnimate(m_animate);
@@ -1970,6 +2018,7 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
     auto *form = new QFormLayout(g);
 
     auto *opacity = new SliderField;
+    opacity->setObjectName(QStringLiteral("inspectorOpacity"));
     opacity->setRange(0, 100);
     opacity->setDecimals(0);
     opacity->setSuffix(QStringLiteral(" %"));
@@ -2607,6 +2656,7 @@ void LayerInspector::showEffectParams()
     if (valid) {
         lay->addWidget(accentSeparator());
         auto *params = new ParamPanel(m_engine, m_undo, m_layer, m_selectedEffect, ParamPanel::NoSpeed);
+        params->setCoTargets(coTargets());
         m_effectParams = params;
         params->attachAnimate(m_animate);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);

@@ -1,4 +1,5 @@
 #pragma once
+#include <QList>
 #include <QWidget>
 #include <functional>
 #include <vector>
@@ -25,6 +26,8 @@ public:
     void refresh();
     // A right-click on a parameter offers to animate it (its numbers, and the shader's speed)
     void attachAnimate(AnimateMenu *menu);
+    // The other selected layers: an edit is set on those that have the same shader in the same place
+    void setCoTargets(const QList<quint64> &ids) { m_coTargets = ids; }
 
 signals:
     void rebuildRequested();
@@ -36,6 +39,7 @@ private:
     QUndoStack *m_undo;
     int m_layer;
     quint64 m_layerId;
+    QList<quint64> m_coTargets;
     int m_slot;
     SliderField *m_speed = nullptr;
     std::vector<std::pair<int, std::function<void(const IsfValue &)>>> m_followers; // input, shows its value

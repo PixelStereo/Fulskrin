@@ -313,6 +313,8 @@ void ColorPicker::setDefaultView(View view)
     if (before != view) emit preferences().defaultViewChanged();
 }
 
+void ColorPicker::setSwatchVisible(bool on) { m_swatch->setVisible(on); }
+
 void ColorPicker::setSettingsKey(const QString &key)
 {
     // Older versions wrote their forced Wheel view even when the user had never

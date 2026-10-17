@@ -59,6 +59,9 @@ private:
     void refreshLayerList();
     void scheduleRecallRefresh();
     void refreshViewports();
+    void updateCoTargets(); // the inspectors edit the whole selection of their list
+    void addPasteMenu(class QMenu *menu, bool enabled, bool noSource);
+    QList<int> selectedRows() const; // the selection the layer actions act on (layers, or viewports in their tab)
     void refreshAll();
     void selectLayer(int index);
     void toggleSolo(int row); // a setup aid: not undone, not saved

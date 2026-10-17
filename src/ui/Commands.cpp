@@ -49,12 +49,18 @@ bool SetValues::mergeWith(const QUndoCommand *other)
 
 bool setValues(QUndoStack *undo, Engine *e, quint64 layer, const QJsonObject &after, const QString &text)
 {
+    return setValues(undo, e, {{layer, after}}, text);
+}
+
+bool setValues(QUndoStack *undo, Engine *e, const std::vector<std::pair<quint64, QJsonObject>> &after, const QString &text)
+{
     std::vector<ValueChange> changes;
-    for (auto it = after.begin(); it != after.end(); ++it) {
-        const QJsonValue before = e->parameterValue(layer, it.key());
-        if (before.isUndefined() || before == it.value()) continue;
-        changes.push_back({layer, it.key(), before, it.value()});
-    }
+    for (const auto &[layer, values] : after)
+        for (auto it = values.begin(); it != values.end(); ++it) {
+            const QJsonValue before = e->parameterValue(layer, it.key());
+            if (before.isUndefined() || before == it.value()) continue;
+            changes.push_back({layer, it.key(), before, it.value()});
+        }
     if (changes.empty()) return false;
     undo->push(new SetValues(e, std::move(changes), text));
     return true;
@@ -96,6 +102,8 @@ SetLayerProp::SetLayerProp(Engine *e, quint64 layer, Prop prop, const QVariant &
 {
     setText(propText(prop));
 }
+
+QString SetLayerProp::textOf(Prop prop) { return propText(prop); }
 
 QVariant SetLayerProp::read(Engine *e, quint64 layer, Prop prop)
 {

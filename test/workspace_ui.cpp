@@ -10,6 +10,10 @@
 #include "ColorPicker.h"
 #include <QComboBox>
 #include "Commands.h"
+#include "LayerTable.h"
+#include "Widgets.h"
+#include <QTableWidget>
+#include <QAction>
 #include <QMenu>
 #include <QUndoStack>
 #include <QListWidget>
@@ -196,6 +200,140 @@ int main(int argc, char **argv)
                 presetList->setCurrentItem(nullptr);
         }
         app.processEvents();
+        window.hide();
+    }
+    // An opened project may put another layer at the index shown: the inspector follows the layer, not the index
+    {
+        engine.newProject();
+        const QString solid = QStringLiteral(TEST_DIR) + "/../isf/generators/SolidColor.fs";
+        engine.addViewport("Front", QSize(640, 360));
+        for (const char *name : {"Under", "Over"}) engine.setLayerIsf(engine.addLayer(name), solid, &error);
+        QTemporaryDir dir;
+        const QString project = dir.path() + "/reopen.pinol";
+        check(engine.saveProject(project, {}, &error), "save project to reopen");
+        MainWindow window(&engine); window.setAutosaveEnabled(false); window.setQuiet(true);
+        window.show(); app.processEvents();
+        check(window.openProject(project, false), "reopen project");
+        app.processEvents();
+        LayerInspector *inspector = nullptr;
+        for (LayerInspector *candidate : window.findChildren<LayerInspector *>())
+            if (candidate->objectName() != "viewportInspector") inspector = candidate;
+        check(inspector && inspector->layerIndex() >= 0 &&
+                  inspector->layerId() == engine.layerId(inspector->layerIndex()),
+              "inspector edits the layer it shows after a project is opened");
+        if (auto *opacity = inspector ? inspector->findChild<SliderField *>("inspectorOpacity") : nullptr) {
+            emit opacity->valueEdited(30);
+            check(std::abs(engine.parameterValue(engine.layerId(inspector->layerIndex()), "opacity").toDouble() - .3) < 1e-6,
+                  "inspector edit after opening a project reaches the layer");
+        }
+        window.hide();
+    }
+    // A multiple selection: the inspector's edits, the list's opacity bars and Paste Attributes reach all of it
+    {
+        engine.newProject();
+        const QString solid = QStringLiteral(TEST_DIR) + "/../isf/generators/SolidColor.fs";
+        QList<quint64> ids;
+        for (const char *name : {"A", "B", "C"}) {
+            const int i = engine.addLayer(name);
+            engine.setLayerIsf(i, solid, &error);
+            ids << engine.layerId(i);
+        }
+        MainWindow window(&engine); window.setAutosaveEnabled(false); window.setQuiet(true);
+        window.show(); app.processEvents();
+        auto *table = qobject_cast<QTableWidget *>(window.findChild<LayerTable *>()->table());
+        auto *undo = window.findChild<QUndoStack *>();
+        LayerInspector *inspector = nullptr;
+        for (LayerInspector *candidate : window.findChildren<LayerInspector *>())
+            if (candidate->objectName() != "viewportInspector") inspector = candidate;
+        auto opacityOf = [&](quint64 id) { return engine.parameterValue(id, "opacity").toDouble(); };
+        check(table && undo && inspector, "layer list, undo stack and inspector present");
+        if (table && undo && inspector) {
+            const int a = engine.indexOfId(ids[0]), b = engine.indexOfId(ids[1]), c = engine.indexOfId(ids[2]);
+            table->clearSelection();
+            table->setCurrentCell(a, 3);
+            table->selectionModel()->select(table->model()->index(c, 0),
+                                            QItemSelectionModel::Select | QItemSelectionModel::Rows);
+            app.processEvents();
+            check(inspector->coTargets() == QList<quint64>{ids[2]}, "inspector knows the other selected layer");
+            auto *note = inspector->findChild<QLabel *>("multiSelectionNote");
+            check(note && note->isVisible(), "inspector says the edit applies to the whole selection");
+            auto *opacity = inspector->findChild<SliderField *>("inspectorOpacity");
+            check(opacity != nullptr, "inspector opacity field present");
+            if (opacity) {
+                const int steps = undo->count();
+                emit opacity->valueEdited(40);
+                check(std::abs(opacityOf(ids[0]) - .4) < 1e-6 && std::abs(opacityOf(ids[2]) - .4) < 1e-6,
+                      "inspector opacity edit reaches every selected layer");
+                check(std::abs(opacityOf(ids[1]) - 1) < 1e-6, "an unselected layer keeps its value");
+                check(undo->count() == steps + 1, "one undo step for the whole selection");
+                undo->undo();
+                check(std::abs(opacityOf(ids[0]) - 1) < 1e-6 && std::abs(opacityOf(ids[2]) - 1) < 1e-6,
+                      "undo restores every selected layer");
+            }
+            // The list's own opacity bar on a selected row
+            if (auto *cell = table->cellWidget(c, 5); auto *bar = cell ? cell->findChild<SliderField *>() : nullptr) {
+                emit bar->valueEdited(25);
+                check(std::abs(opacityOf(ids[0]) - .25) < 1e-6 && std::abs(opacityOf(ids[2]) - .25) < 1e-6,
+                      "list opacity bar of a selected row sets the whole selection");
+                undo->undo();
+            } else {
+                check(false, "list opacity bar is the application's SliderField");
+            }
+            // Paste Attributes onto the selection: B's compositing copied onto A and C
+            engine.setParameter(ids[1], "opacity", .6);
+            QAction *copy = nullptr, *pasteAll = nullptr;
+            for (QAction *act : window.findChildren<QAction *>()) {
+                if (act->text() == "Copy Attributes") copy = act;
+                if (act->text() == "Paste All Attributes") pasteAll = act;
+            }
+            check(copy && pasteAll, "Copy / Paste All Attributes actions present");
+            if (copy && pasteAll) {
+                table->clearSelection();
+                table->setCurrentCell(b, 3); app.processEvents();
+                copy->trigger();
+                table->clearSelection();
+                table->setCurrentCell(a, 3);
+                table->selectionModel()->select(table->model()->index(c, 0),
+                                                QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                app.processEvents();
+                pasteAll->trigger();
+                check(std::abs(opacityOf(ids[0]) - .6) < 1e-6 && std::abs(opacityOf(ids[2]) - .6) < 1e-6,
+                      "paste reaches every selected layer");
+            }
+            // Viewports: several selected in their list, pasted onto together and edited together
+            auto *tabs = window.findChild<QTabWidget *>("mainInspectorTabs");
+            auto *viewportList = window.findChild<QListWidget *>("viewportList");
+            auto *viewportInspector = window.findChild<LayerInspector *>("viewportInspector");
+            const quint64 v1 = engine.layerId(engine.addViewport("V1")), v2 = engine.layerId(engine.addViewport("V2")),
+                          v3 = engine.layerId(engine.addViewport("V3"));
+            if (tabs) tabs->setCurrentIndex(1);
+            app.processEvents();
+            check(viewportList && viewportList->selectionMode() == QAbstractItemView::ExtendedSelection,
+                  "viewport list takes a multiple selection");
+            if (tabs && viewportList && viewportInspector && copy && pasteAll) {
+                auto itemOf = [&](quint64 id) -> QListWidgetItem * {
+                    for (int k = 0; k < viewportList->count(); ++k)
+                        if (viewportList->item(k)->data(Qt::UserRole).toULongLong() == id) return viewportList->item(k);
+                    return nullptr;
+                };
+                engine.setParameter(v1, "opacity", .3);
+                viewportList->setCurrentItem(itemOf(v1)); app.processEvents();
+                copy->trigger();
+                viewportList->setCurrentItem(itemOf(v2));
+                if (QListWidgetItem *item = itemOf(v3)) item->setSelected(true);
+                app.processEvents();
+                check(viewportInspector->coTargets() == QList<quint64>{v3}, "viewport inspector knows the selection");
+                pasteAll->trigger();
+                check(std::abs(opacityOf(v2) - .3) < 1e-6 && std::abs(opacityOf(v3) - .3) < 1e-6,
+                      "paste reaches every selected viewport");
+                if (auto *vo = viewportInspector->findChild<SliderField *>("inspectorOpacity")) {
+                    emit vo->valueEdited(70);
+                    check(std::abs(opacityOf(v2) - .7) < 1e-6 && std::abs(opacityOf(v3) - .7) < 1e-6 &&
+                              std::abs(opacityOf(v1) - .3) < 1e-6,
+                          "viewport inspector edit reaches every selected viewport only");
+                }
+            }
+        }
         window.hide();
     }
     engine.shutdown();

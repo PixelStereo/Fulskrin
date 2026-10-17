@@ -36,6 +36,8 @@ public:
     static void setDefaultView(View view);
     // Only an explicit view choice is saved; opening a picker does not create an override.
     void setSettingsKey(const QString &key);
+    // Its own swatch, hidden where the host already shows the color (ColorEditor: next to the hexadecimal field)
+    void setSwatchVisible(bool on);
     static QColor getColor(const QColor &initial, QWidget *parent, const QString &title,
                            const QString &settingsKey, bool withAlpha = true);
 

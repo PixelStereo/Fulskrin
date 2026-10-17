@@ -826,7 +826,16 @@ void main(){ gl_FragColor = definitely_not_defined; }
         e.layer(V + 0)->enabled = false;
         img = render();
         CHECK(qGray(img.pixel(8, 16)) < 3 && !e.layer(V + 1)->parentEnabled);
+        // Switched off, it is not computed for a preview either: selected (inspector) or shown in a preview view
+        e.requestSourcePreview(e.layerId(V + 1));
+        e.setPreviewSource(0, e.layerId(V + 1));
+        render();
+        CHECK(!e.layer(V + 1)->needed && e.layer(V + 1)->finalTex == 0);
         e.layer(V + 0)->enabled = true;
+        render();
+        CHECK(e.layer(V + 1)->needed); // switched back on: previewed again
+        e.requestSourcePreview(0);
+        e.setPreviewSource(0, 0);
         // Solo: a soloed member keeps its group; a layer soloed elsewhere leaves the group out, and it is not drawn
         {
             const int o = e.addLayer("Other", e.layerCount());

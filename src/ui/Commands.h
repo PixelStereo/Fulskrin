@@ -48,6 +48,9 @@ private:
 // Pushes a change of values of one layer (address → value), each read as it is now; nothing when none changes.
 // False: nothing pushed
 bool setValues(QUndoStack *undo, Engine *e, quint64 layer, const QJsonObject &after, const QString &text);
+// The same for several layers at once (a multiple selection edited in the inspector): one undo step for all of them.
+// A layer that has no such value (another kind of source, another shader) is left as it is
+bool setValues(QUndoStack *undo, Engine *e, const std::vector<std::pair<quint64, QJsonObject>> &after, const QString &text);
 inline bool setValue(QUndoStack *undo, Engine *e, quint64 layer, const QString &path, const QJsonValue &after,
                      const QString &text)
 {
@@ -67,6 +70,7 @@ public:
     int id() const override { return PropId; }
     bool mergeWith(const QUndoCommand *other) override;
     static QVariant read(Engine *e, quint64 layer, Prop prop);
+    static QString textOf(Prop prop); // the name of its undo step
 
 private:
     void apply(const QVariant &v);

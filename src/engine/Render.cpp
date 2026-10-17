@@ -189,7 +189,9 @@ std::vector<bool> Engine::soloLeftOut() const
 }
 
 // Which layers are drawn this frame: shown (in a shown group), used as a source or as a mask by another,
-// previewed in the inspector, viewports. The others are neither uploaded nor rendered (their sound plays on).
+// previewed in the inspector or a preview view while switched on, viewports. The others are neither uploaded nor
+// rendered (their sound plays on). A layer switched off (or in a group switched off) is not computed for a preview:
+// only another layer that uses it keeps it rendered.
 void Engine::markNeeded()
 {
     for (auto &l : m_layers) l->referenced = false;
@@ -219,8 +221,10 @@ void Engine::markNeeded()
             const auto g = groupNeeded.find(l.parent);
             inShown = g != groupNeeded.end() && g->second;
         }
-        l.needed = l.isViewport || l.referenced || l.id == m_previewId ||
-                   std::any_of(m_previewSlots.begin(), m_previewSlots.end(), [&](const auto &p) { return p.id == l.id; }) ||
+        const bool previewed =
+            l.id == m_previewId ||
+            std::any_of(m_previewSlots.begin(), m_previewSlots.end(), [&](const auto &p) { return p.id == l.id; });
+        l.needed = l.isViewport || l.referenced || (previewed && l.enabled && l.parentEnabled) ||
                    (l.enabled && inShown && !l.soloHidden);
         if (l.isGroup) groupNeeded[l.id] = l.needed;
     }

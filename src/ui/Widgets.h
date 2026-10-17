@@ -80,6 +80,33 @@ void setEnabled(bool on);
 QIcon icon(); // a pointer arrow
 } // namespace autoselect
 
+// The bar at the top right of every preview: zoom out / percentage / zoom in / Fit, then the magnet and auto-select
+// switches (shared by all the previews: one setting each). A view can add its own buttons after them.
+class ZoomBar : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit ZoomBar(QWidget *view, const QString &fitTip);
+    QToolButton *addButton(const QString &text, const QString &tip);
+    void setZoom(double zoom); // the percentage shown; the bar stays at the top right of its view
+    void place();
+    QToolButton *magnetButton() const { return m_magnet; }
+    QToolButton *autoSelectButton() const { return m_autoSelect; }
+
+signals:
+    void zoomOutClicked();
+    void zoomInClicked();
+    void fitClicked();
+
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override; // follows its view's size
+
+private:
+    class QHBoxLayout *m_row;
+    QLabel *m_percent;
+    QToolButton *m_magnet, *m_autoSelect;
+};
+
 // Parameter name: a click puts the parameter back to its default value.
 class ResetLabel : public QLabel
 {

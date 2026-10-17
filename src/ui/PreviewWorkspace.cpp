@@ -2,6 +2,7 @@
 #include "MappingView.h"
 #include "Engine.h"
 #include "GlDraw.h"
+#include "Widgets.h"
 #include <QComboBox>
 #include <QGridLayout>
 #include <QMenu>
@@ -10,15 +11,39 @@
 #include <QStackedWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QMouseEvent>
+#include <QWheelEvent>
 #include <algorithm>
+#include <cmath>
 
+// A layer, a viewport or the composition as rendered, with the bar every preview has: zoom (buttons, wheel or
+// pinch, around the cursor), Fit, and the shared magnet / auto-select switches. Pan: middle button, Alt/⌥ + drag,
+// or two fingers on a trackpad.
 class PreviewPicture : public QOpenGLWidget
 {
 public:
-    PreviewPicture(Engine *engine, int slot) : m_engine(engine), m_slot(slot) { setMinimumSize(100, 70); }
+    PreviewPicture(Engine *engine, int slot) : m_engine(engine), m_slot(slot)
+    {
+        setMinimumSize(100, 70);
+        m_bar = new ZoomBar(this, QStringLiteral("Whole picture in view\n"
+                                                 "Pan: middle button, Alt/⌥ + drag, or two fingers on a trackpad"));
+        m_bar->setObjectName(QStringLiteral("previewZoomBar%1").arg(slot));
+        connect(m_bar, &ZoomBar::zoomOutClicked, this, [this] { zoomAt(QPointF(width() / 2.0, height() / 2.0), 1 / 1.25); });
+        connect(m_bar, &ZoomBar::zoomInClicked, this, [this] { zoomAt(QPointF(width() / 2.0, height() / 2.0), 1.25); });
+        connect(m_bar, &ZoomBar::fitClicked, this, [this] { fit(); });
+    }
     ~PreviewPicture() override {
         if (context()) { makeCurrent(); m_draw.destroy(); doneCurrent(); }
     }
+    void fit()
+    {
+        m_zoom = 1.0;
+        m_pan = QPointF();
+        m_bar->setZoom(m_zoom);
+        update();
+    }
+    double zoom() const { return m_zoom; }
+
 protected:
     void initializeGL() override { m_draw.init(); }
     void paintGL() override {
@@ -33,16 +58,86 @@ protected:
         int buffer = 0;
         const GLuint texture = m_engine->previewTexture(m_slot, &size, &buffer);
         if (!texture || size.isEmpty()) return;
-        size.scale(this->size(), Qt::KeepAspectRatio);
-        f->glViewport(int((width() - size.width()) * dpr / 2), int((height() - size.height()) * dpr / 2),
-                      int(size.width() * dpr), int(size.height() * dpr));
+        m_picture = size;
+        const QRectF r = viewRect();
+        // GL counts rows from the bottom
+        f->glViewport(int(std::lround(r.left() * dpr)), int(std::lround((height() - r.bottom()) * dpr)),
+                      int(std::lround(r.width() * dpr)), int(std::lround(r.height() * dpr)));
         m_draw.drawTexture(texture);
         m_engine->finishPreviewRead(m_slot, buffer, f);
     }
+    void wheelEvent(QWheelEvent *e) override
+    {
+        // As in the composition's view: trackpad scroll pans, a pinch or Ctrl/⌘ + scroll or the mouse wheel zooms
+        const bool trackpad = e->phase() != Qt::NoScrollPhase && !e->pixelDelta().isNull();
+        if (trackpad && !(e->modifiers() & Qt::ControlModifier)) {
+            m_pan += QPointF(e->pixelDelta());
+            update();
+        } else {
+            const double steps = e->angleDelta().y() != 0 ? e->angleDelta().y() : e->pixelDelta().y() * 2.0;
+            zoomAt(e->position(), std::pow(1.0015, steps));
+        }
+        e->accept();
+    }
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::MiddleButton || (e->button() == Qt::LeftButton && (e->modifiers() & Qt::AltModifier))) {
+            m_panning = true;
+            m_panLast = e->position();
+            e->accept();
+            return;
+        }
+        QOpenGLWidget::mousePressEvent(e);
+    }
+    void mouseMoveEvent(QMouseEvent *e) override
+    {
+        if (!m_panning) return QOpenGLWidget::mouseMoveEvent(e);
+        m_pan += e->position() - m_panLast;
+        m_panLast = e->position();
+        update();
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        if (!m_panning) return QOpenGLWidget::mouseReleaseEvent(e);
+        m_panning = false;
+    }
+    void mouseDoubleClickEvent(QMouseEvent *) override { fit(); }
+
 private:
+    QRectF fitRect() const
+    {
+        QSizeF s = m_picture.isEmpty() ? QSizeF(size()) : QSizeF(m_picture);
+        s.scale(QSizeF(size()), Qt::KeepAspectRatio);
+        return QRectF(QPointF((width() - s.width()) / 2, (height() - s.height()) / 2), s);
+    }
+    QRectF viewRect() const
+    {
+        const QRectF fit = fitRect();
+        QRectF r(0, 0, fit.width() * m_zoom, fit.height() * m_zoom);
+        r.moveCenter(fit.center() + m_pan);
+        return r;
+    }
+    void zoomAt(QPointF at, double factor)
+    {
+        const QRectF before = viewRect();
+        const QPointF n((at.x() - before.left()) / std::max(1.0, before.width()),
+                        (at.y() - before.top()) / std::max(1.0, before.height()));
+        m_zoom = std::clamp(m_zoom * factor, 0.25, 64.0);
+        const QRectF fit = fitRect();
+        const double w = fit.width() * m_zoom, h = fit.height() * m_zoom;
+        m_pan = QPointF(at.x() - n.x() * w + w / 2, at.y() - n.y() * h + h / 2) - fit.center();
+        m_bar->setZoom(m_zoom);
+        update();
+    }
+
     Engine *m_engine;
     int m_slot;
     GlDraw m_draw;
+    ZoomBar *m_bar = nullptr;
+    QSize m_picture;
+    double m_zoom = 1.0;
+    QPointF m_pan, m_panLast;
+    bool m_panning = false;
 };
 
 PreviewWorkspace::PreviewWorkspace(Engine *engine, MappingView *mapping, QWidget *parent)
